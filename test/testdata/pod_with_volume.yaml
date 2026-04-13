@@ -1,0 +1,20 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  name: app-with-volume
+  namespace: default
+  labels:
+    app: webapp
+spec:
+  containers:
+  - name: app
+    image: myapp:latest
+    volumeMounts:
+    - name: data
+      mountPath: /var/data
+  volumes:
+  - name: data
+    hostPath:
+      path: /tmp/app-data
+      type: Directory
+  restartPolicy: OnFailure
