@@ -83,11 +83,11 @@ AI 更新摘要工作流定义在 `.github/workflows/ai-summary.yml`。
 常见范式：
 
 - 功能分支 push 后自动收集 commit、变更文件、diff stat 和截断后的 diff。
-- 使用仓库 secret `OPENAI_API_KEY` 调用 OpenAI Responses API 生成中文摘要。
+- 使用仓库 secret `ZAI_API_KEY` 调用智谱 AI 的 OpenAI 兼容接口生成中文摘要。
 - 将摘要写入 GitHub Actions 的 job summary，作为非阻塞型辅助信息。
-- 如果没有配置 `OPENAI_API_KEY`，工作流不会失败，只会在 summary 中说明已跳过。
+- 如果没有配置 `ZAI_API_KEY`，工作流不会失败，只会在 summary 中说明已跳过。
 
-默认模型为 `gpt-5-mini`。如需更换模型，可在 GitHub 仓库的 Variables 中设置 `OPENAI_MODEL`。
+默认模型为 `glm-5.1`。如需更换模型，可在 GitHub 仓库的 Variables 中设置 `ZAI_MODEL`；如需更换兼容接口地址，可设置 `ZAI_BASE_URL`，默认值为 `https://open.bigmodel.cn/api/paas/v4`。
 
 摘要内容包括：
 
@@ -115,8 +115,8 @@ go build -trimpath -ldflags="-s -w" -o dist/minik8s ./cmd/minik8s
 
 ```bash
 # GitHub Repository Settings -> Secrets and variables -> Actions
-# Secret: OPENAI_API_KEY
-# Optional variable: OPENAI_MODEL
+# Secret: ZAI_API_KEY
+# Optional variables: ZAI_MODEL, ZAI_BASE_URL
 ```
 
 创建版本发布：
