@@ -98,12 +98,6 @@ jobs:
               top_p: 0.7
             }' > /tmp/ai-summary-request.json
 
-          status="$(curl -sS -w "%{http_code}" -o /tmp/ai-summary-response.json \
-            "${ZAI_BASE_URL%/}/chat/completions" \
-            -H "Authorization: Bearer ${ZAI_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d @/tmp/ai-summary-request.json)"
-
           {
             echo "## AI Change Summary"
             echo
@@ -112,16 +106,30 @@ jobs:
             echo
           } >> "$GITHUB_STEP_SUMMARY"
 
+          set +e
+          status="$(curl -sS --connect-timeout 10 --max-time 60 -w "%{http_code}" -o /tmp/ai-summary-response.json \
+            "${ZAI_BASE_URL%/}/chat/completions" \
+            -H "Authorization: Bearer ${ZAI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/ai-summary-request.json)"
+          curl_exit="$?"
+          set -e
+
+          if [ "$curl_exit" -ne 0 ]; then
+            echo "ZhipuAI API did not respond successfully; summary generation was skipped." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
             {
               echo "ZhipuAI API returned HTTP ${status}; summary generation was skipped."
               echo
-              jq -r '.error.message // empty' /tmp/ai-summary-response.json
+              jq -r '.error.message // empty' /tmp/ai-summary-response.json 2>/dev/null || true
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          summary="$(jq -r '.choices[0].message.content // empty' /tmp/ai-summary-response.json)"
+          summary="$(jq -r '.choices[0].message.content // empty' /tmp/ai-summary-response.json 2>/dev/null || true)"
 
           if [ -z "$summary" ]; then
             echo "ZhipuAI API returned an empty summary." >> "$GITHUB_STEP_SUMMARY"
