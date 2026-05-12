@@ -1,0 +1,166 @@
+name: AI Change Summary
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Collect update context and skip the ZhipuAI API call."
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches-ignore:
+      - main
+      - dev
+      - "dependabot/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  summarize:
+    name: Summarize Branch Update
+    runs-on: ubuntu-latest
+    env:
+      ZAI_BASE_URL: ${{ vars.ZAI_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4' }}
+      ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-5.1' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Collect update context
+        env:
+          EVENT_BEFORE_SHA: ${{ github.event.before || '' }}
+        run: |
+          set -euo pipefail
+
+          head_sha="${GITHUB_SHA}"
+          before_sha="${EVENT_BEFORE_SHA}"
+
+          if [ -z "$before_sha" ] || [ "$before_sha" = "0000000000000000000000000000000000000000" ]; then
+            if git rev-parse "${head_sha}^" >/dev/null 2>&1; then
+              base_sha="$(git rev-parse "${head_sha}^")"
+            else
+              base_sha="$(git rev-list --max-parents=0 "$head_sha")"
+            fi
+          elif git cat-file -e "${before_sha}^{commit}" 2>/dev/null; then
+            base_sha="$before_sha"
+          else
+            base_sha="$(git rev-list --max-parents=0 "$head_sha")"
+          fi
+
+          {
+            echo "# Branch update context"
+            echo
+            echo "- Repository: ${GITHUB_REPOSITORY}"
+            echo "- Branch: ${GITHUB_REF_NAME}"
+            echo "- Actor: ${GITHUB_ACTOR}"
+            echo "- Base: ${base_sha}"
+            echo "- Head: ${head_sha}"
+            echo
+            echo "## Commits"
+            git log --no-merges --pretty=format:'- %h %s (%an)' "${base_sha}..${head_sha}" || true
+            echo
+            echo
+            echo "## Changed files"
+            git diff --name-status "${base_sha}" "${head_sha}" || true
+            echo
+            echo
+            echo "## Diff stat"
+            git diff --stat "${base_sha}" "${head_sha}" || true
+            echo
+            echo
+            echo "## Diff"
+            git diff --unified=2 "${base_sha}" "${head_sha}" | head -c 60000 || true
+          } > /tmp/ai-summary-input.md
+
+      - name: Generate AI summary
+        env:
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          if [ "$DRY_RUN" = "true" ]; then
+            {
+              echo "## AI Change Summary"
+              echo
+              echo "Dry run completed. ZhipuAI API call was skipped."
+              echo
+              echo "- Context lines: $(wc -l < /tmp/ai-summary-input.md)"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ -z "${ZAI_API_KEY:-}" ]; then
+            {
+              echo "## AI Change Summary"
+              echo
+              echo "AI summary skipped because repository secret \`ZAI_API_KEY\` is not configured."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          jq -n --rawfile input /tmp/ai-summary-input.md \
+            --arg model "$ZAI_MODEL" \
+            '{
+              model: $model,
+              messages: [
+                {
+                  role: "system",
+                  content: "你是一个资深 Go 项目维护者。请根据分支 push 的 commit 和 diff，总结本次更新。用中文输出，结构固定为：1. 更新概览；2. 关键文件；3. 风险和注意事项；4. 建议验证。保持简洁，避免编造 diff 中不存在的内容。"
+                },
+                {
+                  role: "user",
+                  content: $input
+                }
+              ],
+              temperature: 0.3,
+              top_p: 0.7
+            }' > /tmp/ai-summary-request.json
+
+          {
+            echo "## AI Change Summary"
+            echo
+            echo "- Provider: ZhipuAI"
+            echo "- Model: \`${ZAI_MODEL}\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          set +e
+          status="$(curl -sS --connect-timeout 10 --max-time 60 -w "%{http_code}" -o /tmp/ai-summary-response.json \
+            "${ZAI_BASE_URL%/}/chat/completions" \
+            -H "Authorization: Bearer ${ZAI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/ai-summary-request.json)"
+          curl_exit="$?"
+          set -e
+
+          if [ "$curl_exit" -ne 0 ]; then
+            echo "ZhipuAI API did not respond successfully; summary generation was skipped." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            {
+              echo "ZhipuAI API returned HTTP ${status}; summary generation was skipped."
+              echo
+              jq -r '.error.message // empty' /tmp/ai-summary-response.json 2>/dev/null || true
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          summary="$(jq -r '.choices[0].message.content // empty' /tmp/ai-summary-response.json 2>/dev/null || true)"
+
+          if [ -z "$summary" ]; then
+            echo "ZhipuAI API returned an empty summary." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "$summary" >> "$GITHUB_STEP_SUMMARY"
