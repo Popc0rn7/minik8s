@@ -42,3 +42,24 @@ docker ps -a --filter label=minik8s.pod.name=nginx-pod
 
 Expected: `Running`; `get pods` shows `nginx-pod`; Docker shows pause + nginx;
 `curl` returns nginx HTML; delete removes both.
+
+Two-node CNI smoke test with static host-gw routes:
+```bash
+# On node A, whose host IP is <node-a-ip>.
+sudo ./minik8s cni init \
+  --pod-cidr 10.244.0.0/24 \
+  --gateway 10.244.0.1 \
+  --route 10.244.1.0/24=<node-b-ip>
+sudo go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
+
+# On node B, whose host IP is <node-b-ip>.
+sudo ./minik8s cni init \
+  --pod-cidr 10.244.1.0/24 \
+  --gateway 10.244.1.1 \
+  --route 10.244.0.0/24=<node-a-ip>
+sudo go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
+```
+
+Start one Pod on each node, then use `./minik8s get pods` to read their Pod IPs.
+Pods should be able to ping or curl each other directly by Pod IP when the two
+nodes can already reach each other by host IP and the Pod CIDRs do not overlap.

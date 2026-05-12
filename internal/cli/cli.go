@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -245,7 +247,11 @@ func (a *App) doctorNetwork(out io.Writer) error {
 
 func (a *App) cni(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 || args[0] != "init" {
-		return fmt.Errorf("usage: minik8s cni init")
+		return fmt.Errorf("usage: minik8s cni init [--pod-cidr cidr] [--gateway ip] [--route remote-cidr=node-ip]")
+	}
+	config, err := cniInitConfig(args[1:])
+	if err != nil {
+		return err
 	}
 	if err := os.MkdirAll(DefaultCNIBinDir(), 0o755); err != nil {
 		return err
@@ -254,23 +260,98 @@ func (a *App) cni(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	configPath := filepath.Join(DefaultCNIConfDir(), "10-minik8s.conf")
-	config := `{
-  "cniVersion": "1.0.0",
-  "name": "minik8s",
-  "type": "minik8s-bridge",
-  "bridge": "mk8s0",
-  "podCIDR": "10.244.0.0/24",
-  "gateway": "10.244.0.1",
-  "ipam": {
-    "statePath": ".minik8s/state/cni-ipam.json"
-  }
-}
-`
-	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(configPath, data, 0o644); err != nil {
 		return err
 	}
 	_ = ctx
 	return writes(out, cliui.SuccessLine("cni config initialized at %s", configPath))
+}
+
+type cniInitRoute struct {
+	Dst string `json:"dst"`
+	GW  string `json:"gw"`
+}
+
+type cniInitIPAM struct {
+	StatePath string `json:"statePath"`
+}
+
+type cniInitPluginConfig struct {
+	CNIVersion string         `json:"cniVersion"`
+	Name       string         `json:"name"`
+	Type       string         `json:"type"`
+	Bridge     string         `json:"bridge"`
+	PodCIDR    string         `json:"podCIDR"`
+	Gateway    string         `json:"gateway"`
+	IPAM       cniInitIPAM    `json:"ipam"`
+	Routes     []cniInitRoute `json:"routes,omitempty"`
+}
+
+func cniInitConfig(args []string) (cniInitPluginConfig, error) {
+	config := cniInitPluginConfig{
+		CNIVersion: "1.0.0",
+		Name:       "minik8s",
+		Type:       "minik8s-bridge",
+		Bridge:     "mk8s0",
+		PodCIDR:    "10.244.0.0/24",
+		Gateway:    "10.244.0.1",
+		IPAM:       cniInitIPAM{StatePath: ".minik8s/state/cni-ipam.json"},
+	}
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--pod-cidr":
+			i++
+			if i >= len(args) {
+				return config, fmt.Errorf("missing value for --pod-cidr")
+			}
+			if _, _, err := net.ParseCIDR(args[i]); err != nil {
+				return config, fmt.Errorf("invalid --pod-cidr %q: %w", args[i], err)
+			}
+			config.PodCIDR = args[i]
+		case "--gateway":
+			i++
+			if i >= len(args) {
+				return config, fmt.Errorf("missing value for --gateway")
+			}
+			if net.ParseIP(args[i]) == nil {
+				return config, fmt.Errorf("invalid --gateway %q", args[i])
+			}
+			config.Gateway = args[i]
+		case "--route":
+			i++
+			if i >= len(args) {
+				return config, fmt.Errorf("missing value for --route")
+			}
+			route, err := parseCNIRoute(args[i])
+			if err != nil {
+				return config, err
+			}
+			config.Routes = append(config.Routes, route)
+		default:
+			return config, fmt.Errorf("unknown cni init flag %q", args[i])
+		}
+	}
+	return config, nil
+}
+
+func parseCNIRoute(value string) (cniInitRoute, error) {
+	dst, gw, ok := strings.Cut(value, "=")
+	if !ok || dst == "" || gw == "" {
+		return cniInitRoute{}, fmt.Errorf("route must use <remote-cidr>=<node-ip>, got %q", value)
+	}
+	if _, _, err := net.ParseCIDR(dst); err != nil {
+		return cniInitRoute{}, fmt.Errorf("invalid route dst %q: %w", dst, err)
+	}
+	if net.ParseIP(gw) == nil {
+		return cniInitRoute{}, fmt.Errorf("invalid route gw %q", gw)
+	}
+	return cniInitRoute{Dst: dst, GW: gw}, nil
 }
 
 func (a *App) usage(out io.Writer) error {
