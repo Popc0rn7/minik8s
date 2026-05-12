@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
@@ -107,19 +108,39 @@ func (d *DockerRuntime) CreateSandbox(ctx context.Context, config *runtime.Sandb
 	labels["minik8s.pod.name"] = config.Name
 	labels["minik8s.pod.namespace"] = config.Namespace
 	name := dockerName("minik8s-pod", config.Namespace, config.Name, "sandbox")
+	if err := d.cleanupExistingPodContainers(ctx, config.Namespace, config.Name); err != nil {
+		return "", err
+	}
+	hostConfig := &container.HostConfig{
+		PortBindings: portBindings,
+	}
+	if config.NetworkMode != "" {
+		hostConfig.NetworkMode = container.NetworkMode(config.NetworkMode)
+	}
+
 	resp, err := d.client.ContainerCreate(ctx, &container.Config{
 		Image:        imageName,
 		Cmd:          sandboxCommand(),
 		Labels:       labels,
 		ExposedPorts: exposedPorts,
-	}, &container.HostConfig{
-		PortBindings: portBindings,
-	}, nil, nil, name)
+	}, hostConfig, nil, nil, name)
 	if err != nil {
 		return "", fmt.Errorf("creating sandbox container: %w", err)
 	}
 	minilog.Success("sandbox-create", "created pod=%s/%s sandbox=%s", config.Namespace, config.Name, resp.ID)
 	return resp.ID, nil
+}
+
+// GetSandboxNetNSPath returns the Linux network namespace path for a sandbox.
+func (d *DockerRuntime) GetSandboxNetNSPath(ctx context.Context, sandboxID string) (string, error) {
+	info, err := d.client.ContainerInspect(ctx, sandboxID)
+	if err != nil {
+		return "", err
+	}
+	if info.State == nil || info.State.Pid <= 0 {
+		return "", fmt.Errorf("sandbox %s has no running pid", sandboxID)
+	}
+	return fmt.Sprintf("/proc/%d/ns/net", info.State.Pid), nil
 }
 
 // StartSandbox starts the pause container.
@@ -220,6 +241,24 @@ func (d *DockerRuntime) StopContainer(ctx context.Context, containerID string, t
 // RemoveContainer removes a Docker container
 func (d *DockerRuntime) RemoveContainer(ctx context.Context, containerID string) error {
 	return d.client.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+}
+
+func (d *DockerRuntime) cleanupExistingPodContainers(ctx context.Context, namespace, name string) error {
+	args := filters.NewArgs(
+		filters.Arg("label", "minik8s.pod.name="+name),
+		filters.Arg("label", "minik8s.pod.namespace="+namespace),
+	)
+	containers, err := d.client.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+	if err != nil {
+		return fmt.Errorf("listing existing pod containers: %w", err)
+	}
+	for _, existing := range containers {
+		minilog.Warn("pod-cleanup", "remove stale container=%s pod=%s/%s", existing.ID, namespace, name)
+		if err := d.client.ContainerRemove(ctx, existing.ID, container.RemoveOptions{Force: true}); err != nil {
+			return fmt.Errorf("removing stale pod container %s: %w", existing.ID, err)
+		}
+	}
+	return nil
 }
 
 // InspectContainer returns container information

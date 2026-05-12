@@ -24,16 +24,42 @@ const (
 type PodController struct {
 	runtime runtime.ContainerRuntime
 	store   store.PodStore
+	network PodNetworkManager
 	stopCh  chan struct{}
 	mu      sync.Mutex
 	running bool
 }
 
+// PodNetworkRequest contains the data needed to configure a sandbox network.
+type PodNetworkRequest struct {
+	Pod       *pod.Pod
+	SandboxID string
+	NetNSPath string
+}
+
+// PodNetworkResult contains the network data returned by CNI.
+type PodNetworkResult struct {
+	PodIP     string
+	CNIResult []byte
+}
+
+// PodNetworkManager configures and tears down Pod sandbox networking.
+type PodNetworkManager interface {
+	Add(ctx context.Context, req PodNetworkRequest) (PodNetworkResult, error)
+	Del(ctx context.Context, req PodNetworkRequest) error
+}
+
 // NewPodController creates a new Pod controller
 func NewPodController(r runtime.ContainerRuntime, s store.PodStore) *PodController {
+	return NewPodControllerWithNetwork(r, s, nil)
+}
+
+// NewPodControllerWithNetwork creates a Pod controller with optional CNI support.
+func NewPodControllerWithNetwork(r runtime.ContainerRuntime, s store.PodStore, network PodNetworkManager) *PodController {
 	return &PodController{
 		runtime: r,
 		store:   s,
+		network: network,
 		stopCh:  make(chan struct{}),
 	}
 }
@@ -131,11 +157,12 @@ func (pc *PodController) handlePendingPod(ctx context.Context, p *pod.Pod) error
 	minilog.Info("pod-pending", "pod=%s/%s create sandbox", p.Namespace, p.Name)
 	// Create sandbox for Pod
 	sandboxID, err := pc.runtime.CreateSandbox(ctx, &runtime.SandboxConfig{
-		ID:        p.Name,
-		Name:      p.Name,
-		Namespace: p.Namespace,
-		Labels:    p.Labels,
-		Ports:     podPorts(p),
+		ID:          p.Name,
+		Name:        p.Name,
+		Namespace:   p.Namespace,
+		Labels:      p.Labels,
+		Ports:       podPorts(p),
+		NetworkMode: pc.sandboxNetworkMode(),
 	})
 	if err != nil {
 		minilog.Error("pod-failed", "pod=%s/%s reason=%v", p.Namespace, p.Name, err)
@@ -156,6 +183,37 @@ func (pc *PodController) handlePendingPod(ctx context.Context, p *pod.Pod) error
 	}
 	p.Status.SandboxID = sandboxID
 
+	if pc.network != nil {
+		netNSPath, err := pc.sandboxNetNSPath(ctx, sandboxID)
+		if err != nil {
+			if removeErr := pc.runtime.RemoveSandbox(ctx, sandboxID); removeErr != nil {
+				minilog.Warn("sandbox-cleanup", "sandbox=%s after=netns-error error=%v", sandboxID, removeErr)
+			}
+			p.Status.Phase = pod.PodFailed
+			p.Status.Reason = fmt.Sprintf("Failed to get sandbox netns: %v", err)
+			return pc.store.Update(p)
+		}
+		p.Status.NetNSPath = netNSPath
+		result, err := pc.network.Add(ctx, PodNetworkRequest{
+			Pod:       p,
+			SandboxID: sandboxID,
+			NetNSPath: netNSPath,
+		})
+		if err != nil {
+			pc.cleanupNetwork(ctx, p, sandboxID)
+			if removeErr := pc.runtime.RemoveSandbox(ctx, sandboxID); removeErr != nil {
+				minilog.Warn("sandbox-cleanup", "sandbox=%s after=cni-error error=%v", sandboxID, removeErr)
+			}
+			p.Status.Phase = pod.PodFailed
+			p.Status.Reason = fmt.Sprintf("Failed to setup pod network: %v", err)
+			return pc.store.Update(p)
+		}
+		p.Status.PodIP = result.PodIP
+		if len(result.CNIResult) > 0 {
+			p.Status.CNIResult = string(result.CNIResult)
+		}
+	}
+
 	// Create and start each container
 	for _, containerSpec := range p.Spec.Containers {
 		minilog.Info("pod-pending", "pod=%s/%s create container=%s", p.Namespace, p.Name, containerSpec.Name)
@@ -163,6 +221,7 @@ func (pc *PodController) handlePendingPod(ctx context.Context, p *pod.Pod) error
 		containerID, err := pc.runtime.CreateContainer(ctx, sandboxID, config)
 		if err != nil {
 			pc.cleanupContainers(ctx, sandboxID)
+			pc.cleanupNetwork(ctx, p, sandboxID)
 			if removeErr := pc.runtime.RemoveSandbox(ctx, sandboxID); removeErr != nil {
 				minilog.Warn("sandbox-cleanup", "sandbox=%s after=container-create-error error=%v", sandboxID, removeErr)
 			}
@@ -174,6 +233,7 @@ func (pc *PodController) handlePendingPod(ctx context.Context, p *pod.Pod) error
 
 		if err := pc.runtime.StartContainer(ctx, containerID); err != nil {
 			pc.cleanupContainers(ctx, sandboxID)
+			pc.cleanupNetwork(ctx, p, sandboxID)
 			if removeErr := pc.runtime.RemoveSandbox(ctx, sandboxID); removeErr != nil {
 				minilog.Warn("sandbox-cleanup", "sandbox=%s after=container-start-error error=%v", sandboxID, removeErr)
 			}
@@ -295,18 +355,32 @@ func (pc *PodController) handleTerminalPod(ctx context.Context, p *pod.Pod) erro
 
 	// Delete containers
 	for _, containerStatus := range p.Status.Containers {
+		minilog.Step("docker-runtime", "stop container=%s pod=%s/%s", containerStatus.ContainerID, p.Namespace, p.Name)
 		if err := pc.runtime.StopContainer(ctx, containerStatus.ContainerID, DefaultTimeout); err != nil {
 			return fmt.Errorf("stopping container %s: %w", containerStatus.ContainerID, err)
 		}
+		minilog.Step("docker-runtime", "remove container=%s pod=%s/%s", containerStatus.ContainerID, p.Namespace, p.Name)
 		if err := pc.runtime.RemoveContainer(ctx, containerStatus.ContainerID); err != nil {
 			return fmt.Errorf("removing container %s: %w", containerStatus.ContainerID, err)
 		}
 	}
 
 	// Delete sandbox
+	if pc.network != nil && sandboxID != "" {
+		minilog.Step("pod-delete", "teardown network sandbox=%s pod=%s/%s", sandboxID, p.Namespace, p.Name)
+		if err := pc.network.Del(ctx, PodNetworkRequest{
+			Pod:       p,
+			SandboxID: sandboxID,
+			NetNSPath: p.Status.NetNSPath,
+		}); err != nil {
+			return fmt.Errorf("tearing down pod network: %w", err)
+		}
+	}
+	minilog.Step("docker-runtime", "stop sandbox=%s pod=%s/%s", sandboxID, p.Namespace, p.Name)
 	if err := pc.runtime.StopSandbox(ctx, sandboxID, DefaultTimeout); err != nil {
 		return fmt.Errorf("stopping sandbox %s: %w", sandboxID, err)
 	}
+	minilog.Step("docker-runtime", "remove sandbox=%s pod=%s/%s", sandboxID, p.Namespace, p.Name)
 	if err := pc.runtime.RemoveSandbox(ctx, sandboxID); err != nil {
 		return fmt.Errorf("removing sandbox %s: %w", sandboxID, err)
 	}
@@ -314,9 +388,37 @@ func (pc *PodController) handleTerminalPod(ctx context.Context, p *pod.Pod) erro
 	return nil
 }
 
+func (pc *PodController) sandboxNetNSPath(ctx context.Context, sandboxID string) (string, error) {
+	provider, ok := pc.runtime.(runtime.SandboxNetNSProvider)
+	if !ok {
+		return "", fmt.Errorf("runtime does not expose sandbox network namespace")
+	}
+	return provider.GetSandboxNetNSPath(ctx, sandboxID)
+}
+
+func (pc *PodController) sandboxNetworkMode() string {
+	if pc.network != nil {
+		return "none"
+	}
+	return ""
+}
+
+func (pc *PodController) cleanupNetwork(ctx context.Context, p *pod.Pod, sandboxID string) {
+	if pc.network == nil {
+		return
+	}
+	if err := pc.network.Del(ctx, PodNetworkRequest{
+		Pod:       p,
+		SandboxID: sandboxID,
+		NetNSPath: p.Status.NetNSPath,
+	}); err != nil {
+		minilog.Warn("network-cleanup", "pod=%s/%s sandbox=%s error=%v", p.Namespace, p.Name, sandboxID, err)
+	}
+}
+
 // DeletePod stops runtime resources and removes the Pod from the store.
 func (pc *PodController) DeletePod(ctx context.Context, name, namespace string) error {
-	minilog.Info("pod-delete", "pod=%s/%s", namespace, name)
+	minilog.Info("pod-delete", "start pod=%s/%s", namespace, name)
 	p, err := pc.store.Get(name, namespace)
 	if err != nil {
 		return err
@@ -324,9 +426,11 @@ func (pc *PodController) DeletePod(ctx context.Context, name, namespace string) 
 	if err := pc.handleTerminalPod(ctx, p); err != nil {
 		return err
 	}
+	minilog.LastStep("pod-delete", "remove stored pod=%s/%s", namespace, name)
 	if err := pc.store.Delete(name, namespace); err != nil {
 		return fmt.Errorf("deleting pod from store: %w", err)
 	}
+	minilog.Success("pod-delete", "removed pod=%s/%s", namespace, name)
 	return nil
 }
 

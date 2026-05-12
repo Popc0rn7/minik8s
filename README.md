@@ -10,16 +10,23 @@ on Docker, behind `pkg/runtime.ContainerRuntime` for future containerd support.
 - Support command, args, ports, hostPort, volumes, CPU, and memory limits.
 - Use local images when present; pull missing images and fail Pod if pull fails.
 - Persist local Pod state in `.minik8s/state/pods.json`.
-- List Pod name, status, uptime, namespace, and labels.
+- Configure Pod sandbox networking through CNI-compatible plugins.
+- List Pod name, status, IP, uptime, namespace, and labels.
 - Delete Pods and clean up Docker containers.
 - Restart crashed containers according to `restartPolicy`.
-- Logs use `[Minik8s|time] stage=...`; image pull falls back to `docker pull`.
+- CLI logs use Nerd Font status icons and tree guides, for example
+  `22:38:02 INFO  󰋽  cli-delete: start pod=default/nginx-pod`.
+  Set `MINIK8S_PLAIN=1` for ASCII output, or `NO_COLOR=1` to keep icons
+  while disabling ANSI color. Image pull falls back to `docker pull`.
 
 ```bash
 go build -o minik8s ./cmd/minik8s
+./minik8s cni init
+go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
 ./minik8s apply -f manifest/testdata/pod_nginx.yaml
 ./minik8s get pods
 ./minik8s doctor docker pull nginx:alpine
+./minik8s doctor network
 ./minik8s delete pod nginx-pod
 ```
 

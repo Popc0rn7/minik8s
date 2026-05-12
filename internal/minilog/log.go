@@ -6,6 +6,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"minik8s/internal/cliui"
 )
 
 var (
@@ -20,10 +22,10 @@ type level struct {
 }
 
 var (
-	levelInfo    = level{name: "INFO", color: "\x1b[36m"}
-	levelSuccess = level{name: "SUCCESS", color: "\x1b[32m"}
-	levelWarn    = level{name: "WARN", color: "\x1b[33m"}
-	levelError   = level{name: "ERROR", color: "\x1b[31m"}
+	levelInfo    = level{name: "INFO", color: cliui.ColorCyan}
+	levelSuccess = level{name: "DONE", color: cliui.ColorGreen}
+	levelWarn    = level{name: "WARN", color: cliui.ColorYellow}
+	levelError   = level{name: "ERROR", color: cliui.ColorRed}
 )
 
 // SetOutput changes the log destination and returns a restore function.
@@ -59,14 +61,48 @@ func Error(stage, format string, args ...interface{}) {
 	write(levelError, stage, format, args...)
 }
 
+// Step prints an informational child stage with a tree guide.
+func Step(stage, format string, args ...interface{}) {
+	writeStep(levelInfo, cliui.TreeMiddle(), stage, format, args...)
+}
+
+// LastStep prints the final informational child stage with a tree guide.
+func LastStep(stage, format string, args ...interface{}) {
+	writeStep(levelInfo, cliui.TreeLast(), stage, format, args...)
+}
+
 func write(l level, stage, format string, args ...interface{}) {
 	mu.Lock()
 	defer mu.Unlock()
 	message := fmt.Sprintf(format, args...)
 	timestamp := now().Format("15:04:05")
-	if os.Getenv("NO_COLOR") != "" {
-		_, _ = fmt.Fprintf(output, "[Minik8s|%s] stage=%s level=%s %s\n", timestamp, stage, l.name, message)
-		return
+	icon := iconForLevel(l, stage)
+	line := fmt.Sprintf("%s %-5s %s  %s: %s", timestamp, l.name, icon, stage, message)
+	_, _ = fmt.Fprintln(output, cliui.Paint(l.color, line))
+}
+
+func writeStep(l level, guide, stage, format string, args ...interface{}) {
+	mu.Lock()
+	defer mu.Unlock()
+	message := fmt.Sprintf(format, args...)
+	timestamp := now().Format("15:04:05")
+	line := fmt.Sprintf("%s %-5s %s %s  %s: %s", timestamp, l.name, guide, cliui.IconForStage(stage), stage, message)
+	_, _ = fmt.Fprintln(output, cliui.Paint(l.color, line))
+}
+
+func iconForLevel(l level, stage string) string {
+	switch l.name {
+	case levelSuccess.name:
+		return cliui.Icon(cliui.IconSuccess, "[ok]")
+	case levelWarn.name, levelError.name:
+		return cliui.Icon(cliui.IconWarning, "[!]")
+	default:
+		if os.Getenv("MINIK8S_PLAIN") != "" {
+			return cliui.Icon(cliui.IconInfo, "[i]")
+		}
+		if icon := cliui.IconForStage(stage); icon != "" {
+			return icon
+		}
+		return cliui.Icon(cliui.IconInfo, "[i]")
 	}
-	_, _ = fmt.Fprintf(output, "[Minik8s|%s] stage=%s level=%s %s%s\x1b[0m\n", timestamp, stage, l.name, l.color, message)
 }

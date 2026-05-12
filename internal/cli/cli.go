@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"minik8s/internal/cliui"
+	"minik8s/internal/cni"
 	"minik8s/internal/controller"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
@@ -23,19 +25,26 @@ import (
 type Config struct {
 	Runtime runtime.ContainerRuntime
 	Store   store.PodStore
+	Network controller.PodNetworkManager
 }
 
 // App is the Minik8s command-line application.
 type App struct {
 	runtime runtime.ContainerRuntime
 	store   store.PodStore
+	network controller.PodNetworkManager
 }
 
 // New creates an App.
 func New(config Config) *App {
+	network := config.Network
+	if network == nil {
+		network = defaultNetworkManager()
+	}
 	return &App{
 		runtime: config.Runtime,
 		store:   config.Store,
+		network: network,
 	}
 }
 
@@ -56,6 +65,8 @@ func (a *App) Run(ctx context.Context, args []string, out io.Writer) error {
 		return a.delete(ctx, args[1:], out)
 	case "doctor":
 		return a.doctor(ctx, args[1:], out)
+	case "cni":
+		return a.cni(ctx, args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -80,17 +91,21 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 			return err
 		}
 	}
-	ctrl := controller.NewPodController(a.runtime, a.store)
+	ctrl := controller.NewPodControllerWithNetwork(a.runtime, a.store, a.network)
 	ctrl.Sync(ctx)
 	updated, err := a.store.Get(p.Name, p.Namespace)
 	if err != nil {
 		return err
 	}
-	if err := writef(out, "pod/%s created (%s)\n", updated.Name, updated.Status.Phase); err != nil {
+	if updated.Status.Phase == pod.PodFailed {
+		if err := writes(out, cliui.WarnLine("pod/%s created (%s)", updated.Name, updated.Status.Phase)); err != nil {
+			return err
+		}
+	} else if err := writes(out, cliui.SuccessLine("pod/%s created (%s)", updated.Name, updated.Status.Phase)); err != nil {
 		return err
 	}
 	if updated.Status.Phase == pod.PodFailed && updated.Status.Reason != "" {
-		return writef(out, "reason: %s\n", updated.Status.Reason)
+		return writes(out, cliui.WarnLine("reason: %s", updated.Status.Reason))
 	}
 	return nil
 }
@@ -101,7 +116,7 @@ func (a *App) get(ctx context.Context, args []string, out io.Writer) error {
 		return fmt.Errorf("usage: minik8s get pods [-n namespace]")
 	}
 	namespace := namespaceFlag(args[1:])
-	ctrl := controller.NewPodController(a.runtime, a.store)
+	ctrl := controller.NewPodControllerWithNetwork(a.runtime, a.store, a.network)
 	ctrl.Sync(ctx)
 	pods, err := a.store.List(namespace, nil)
 	if err != nil {
@@ -110,15 +125,25 @@ func (a *App) get(ctx context.Context, args []string, out io.Writer) error {
 	sort.Slice(pods, func(i, j int) bool {
 		return pods[i].Name < pods[j].Name
 	})
-	if err := writef(out, "%-28s %-18s %-10s %-14s %s\n", "NAME", "STATUS", "UPTIME", "NAMESPACE", "LABELS"); err != nil {
+	if err := writef(out, "%s %s %s %s %s %s\n",
+		cliui.PadRight("POD", 31),
+		cliui.PadRight("STATUS", 18),
+		cliui.PadRight("IP", 15),
+		cliui.PadRight("UPTIME", 10),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
 		return err
 	}
 	for _, p := range pods {
-		if err := writef(out, "%-28s %-18s %-10s %-14s %s\n",
-			p.Name,
-			p.Status.Phase,
-			formatUptime(p.Status),
-			p.Namespace,
+		podName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconPod, "[pod]"), p.Name)
+		status := fmt.Sprintf("%s %s", cliui.StatusIcon(p.Status.Phase), p.Status.Phase)
+		if err := writef(out, "%s %s %s %s %s %s\n",
+			cliui.PadRight(podName, 31),
+			cliui.PadRight(status, 18),
+			formatPodIP(p.Status.PodIP),
+			cliui.PadRight(formatUptime(p.Status), 10),
+			cliui.PadRight(p.Namespace, 14),
 			formatLabels(p.Labels),
 		); err != nil {
 			return err
@@ -134,16 +159,22 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 	}
 	name := args[1]
 	namespace := namespaceFlag(args[2:])
-	ctrl := controller.NewPodController(a.runtime, a.store)
+	ctrl := controller.NewPodControllerWithNetwork(a.runtime, a.store, a.network)
 	if err := ctrl.DeletePod(ctx, name, namespace); err != nil {
 		return err
 	}
-	return writef(out, "pod/%s deleted\n", name)
+	return writes(out, cliui.SuccessLine("pod/%s deleted", name))
 }
 
 func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
-	if len(args) == 0 || args[0] != "docker" {
-		return fmt.Errorf("usage: minik8s doctor docker")
+	if len(args) == 0 {
+		return fmt.Errorf("usage: minik8s doctor docker|network")
+	}
+	if args[0] == "network" {
+		return a.doctorNetwork(out)
+	}
+	if args[0] != "docker" {
+		return fmt.Errorf("usage: minik8s doctor docker|network")
 	}
 	minilog.Info("doctor-docker", "start args=%v", args)
 	endpoint := dockerruntime.ResolveDockerEndpoint()
@@ -151,23 +182,23 @@ func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 	if host == "" {
 		host = "docker default"
 	}
-	if err := writef(out, "host: %s\n", host); err != nil {
+	if err := writes(out, cliui.InfoLine("host: %s", host)); err != nil {
 		return err
 	}
-	if err := writef(out, "source: %s\n", endpoint.Source); err != nil {
+	if err := writes(out, cliui.InfoLine("source: %s", endpoint.Source)); err != nil {
 		return err
 	}
 	if endpoint.Context != "" {
-		if err := writef(out, "context: %s\n", endpoint.Context); err != nil {
+		if err := writes(out, cliui.InfoLine("context: %s", endpoint.Context)); err != nil {
 			return err
 		}
 	}
 	if a.runtime.IsHealthy(ctx) {
-		if err := writef(out, "ping: ok\n"); err != nil {
+		if err := writef(out, "%s  ping: ok\n", cliui.Icon(cliui.IconSuccess, "[ok]")); err != nil {
 			return err
 		}
 	} else {
-		if err := writef(out, "ping: failed\n"); err != nil {
+		if err := writes(out, cliui.WarnLine("ping: failed")); err != nil {
 			return err
 		}
 	}
@@ -175,15 +206,75 @@ func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 		imageName := args[2]
 		minilog.Info("doctor-docker-pull", "image=%s", imageName)
 		if err := a.runtime.PullImage(ctx, imageName); err != nil {
-			return writef(out, "pull: failed %v\n", err)
+			return writes(out, cliui.WarnLine("pull: failed %v", err))
 		}
-		return writef(out, "pull: ok image=%s\n", imageName)
+		return writes(out, cliui.SuccessLine("pull: ok image=%s", imageName))
 	}
 	return nil
 }
 
+func (a *App) doctorNetwork(out io.Writer) error {
+	if err := writes(out, cliui.InfoLine("confDir: %s", DefaultCNIConfDir())); err != nil {
+		return err
+	}
+	if err := writes(out, cliui.InfoLine("binDir: %s", DefaultCNIBinDir())); err != nil {
+		return err
+	}
+	if err := writes(out, cliui.InfoLine("plugin: minik8s-bridge")); err != nil {
+		return err
+	}
+	if _, err := os.Stat(DefaultCNIConfDir()); err == nil {
+		if err := writes(out, cliui.InfoLine("config: present")); err != nil {
+			return err
+		}
+	} else if os.IsNotExist(err) {
+		if err := writes(out, cliui.WarnLine("config: missing")); err != nil {
+			return err
+		}
+	} else {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(DefaultCNIBinDir(), "minik8s-bridge")); err == nil {
+		return writes(out, cliui.InfoLine("minik8s-bridge: present"))
+	} else if os.IsNotExist(err) {
+		return writes(out, cliui.WarnLine("minik8s-bridge: missing"))
+	} else {
+		return err
+	}
+}
+
+func (a *App) cni(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) == 0 || args[0] != "init" {
+		return fmt.Errorf("usage: minik8s cni init")
+	}
+	if err := os.MkdirAll(DefaultCNIBinDir(), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(DefaultCNIConfDir(), 0o755); err != nil {
+		return err
+	}
+	configPath := filepath.Join(DefaultCNIConfDir(), "10-minik8s.conf")
+	config := `{
+  "cniVersion": "1.0.0",
+  "name": "minik8s",
+  "type": "minik8s-bridge",
+  "bridge": "mk8s0",
+  "podCIDR": "10.244.0.0/24",
+  "gateway": "10.244.0.1",
+  "ipam": {
+    "statePath": ".minik8s/state/cni-ipam.json"
+  }
+}
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		return err
+	}
+	_ = ctx
+	return writes(out, cliui.SuccessLine("cni config initialized at %s", configPath))
+}
+
 func (a *App) usage(out io.Writer) error {
-	_, err := fmt.Fprintln(out, "usage: minik8s apply -f <pod.yaml> | get pods | delete pod <name> | doctor docker [pull image]")
+	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s apply -f <pod.yaml> | get pods | delete pod <name> | doctor docker|network | cni init"))
 	return err
 }
 
@@ -210,6 +301,13 @@ func formatUptime(status pod.PodStatus) string {
 		return "-"
 	}
 	return shortDuration(time.Since(time.Unix(status.StartTime, 0)))
+}
+
+func formatPodIP(ip string) string {
+	if ip == "" {
+		return "-"
+	}
+	return ip
 }
 
 func shortDuration(d time.Duration) string {
@@ -246,10 +344,72 @@ func writef(out io.Writer, format string, args ...interface{}) error {
 	return err
 }
 
+func writes(out io.Writer, s string) error {
+	_, err := io.WriteString(out, s)
+	return err
+}
+
 // DefaultStatePath returns the default local state file path.
 func DefaultStatePath() string {
 	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
 		return filepath.Join(dir, "pods.json")
 	}
 	return filepath.Join(".minik8s", "state", "pods.json")
+}
+
+// DefaultCNIBinDir returns the default CNI plugin directory.
+func DefaultCNIBinDir() string {
+	if dir := os.Getenv("MINIK8S_CNI_BIN_DIR"); dir != "" {
+		return dir
+	}
+	return filepath.Join(".minik8s", "cni", "bin")
+}
+
+// DefaultCNIConfDir returns the default CNI config directory.
+func DefaultCNIConfDir() string {
+	if dir := os.Getenv("MINIK8S_CNI_CONF_DIR"); dir != "" {
+		return dir
+	}
+	return filepath.Join(".minik8s", "cni", "net.d")
+}
+
+type cniNetworkManager struct {
+	runner *cni.Runner
+}
+
+func (m cniNetworkManager) Add(ctx context.Context, req controller.PodNetworkRequest) (controller.PodNetworkResult, error) {
+	result, err := m.runner.Add(ctx, cni.PodNetwork{
+		ContainerID: req.SandboxID,
+		NetNS:       req.NetNSPath,
+		IfName:      "eth0",
+		PodName:     req.Pod.Name,
+		Namespace:   req.Pod.Namespace,
+	})
+	if err != nil {
+		return controller.PodNetworkResult{}, err
+	}
+	return controller.PodNetworkResult{PodIP: result.PodIP, CNIResult: result.Raw}, nil
+}
+
+func (m cniNetworkManager) Del(ctx context.Context, req controller.PodNetworkRequest) error {
+	return m.runner.Del(ctx, cni.PodNetwork{
+		ContainerID: req.SandboxID,
+		NetNS:       req.NetNSPath,
+		IfName:      "eth0",
+		PodName:     req.Pod.Name,
+		Namespace:   req.Pod.Namespace,
+	})
+}
+
+func defaultNetworkManager() controller.PodNetworkManager {
+	if os.Getenv("MINIK8S_CNI_DISABLED") == "1" {
+		return nil
+	}
+	if _, err := os.Stat(DefaultCNIConfDir()); err != nil {
+		return nil
+	}
+	return cniNetworkManager{runner: cni.NewRunner(cni.Config{
+		BinDir:  DefaultCNIBinDir(),
+		ConfDir: DefaultCNIConfDir(),
+	})}
 }
