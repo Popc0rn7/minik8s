@@ -83,10 +83,12 @@ AI 更新摘要工作流定义在 `.github/workflows/ai-summary.yml`。
 
 常见范式：
 
-- 功能分支 push 后自动收集 commit、变更文件、diff stat 和截断后的 diff。
+- 功能分支 push 后自动收集相对基线分支的 commit、变更文件、diff stat 和截断后的 diff。
 - 使用 GitHub Actions repository secret `ZAI_API_KEY` 调用智谱 AI 的 OpenAI 兼容接口生成中文摘要。
 - 将摘要写入 GitHub Actions 的 job summary，作为非阻塞型辅助信息。
 - 如果没有配置 `ZAI_API_KEY`、接口无响应、返回错误或响应无法解析，工作流不会失败，只会在 summary 中说明已跳过。
+
+默认基线分支为 `dev`，即摘要覆盖 `dev...HEAD` 的累计功能分支变化，而不是只覆盖最近一次 push。可在 GitHub 仓库的 Variables 中设置 `AI_SUMMARY_BASE_BRANCH` 覆盖。
 
 默认模型为 `glm-5.1`。如需更换模型，可在 GitHub 仓库的 Variables 中设置 `ZAI_MODEL`；如需更换兼容接口地址，可设置 `ZAI_BASE_URL`，默认值为 `https://open.bigmodel.cn/api/paas/v4`。
 
@@ -126,7 +128,7 @@ go build -trimpath -ldflags="-s -w" -o dist/minik8s ./cmd/minik8s
 ```bash
 # GitHub Repository Settings -> Secrets and variables -> Actions
 # Repository secret: ZAI_API_KEY
-# Optional variables: ZAI_MODEL, ZAI_BASE_URL
+# Optional variables: AI_SUMMARY_BASE_BRANCH, ZAI_MODEL, ZAI_BASE_URL
 ```
 
 创建版本发布：

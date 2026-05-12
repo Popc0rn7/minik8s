@@ -26,6 +26,7 @@ jobs:
     name: Summarize Branch Update
     runs-on: ubuntu-latest
     env:
+      AI_SUMMARY_BASE_BRANCH: ${{ vars.AI_SUMMARY_BASE_BRANCH || 'dev' }}
       ZAI_BASE_URL: ${{ vars.ZAI_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4' }}
       ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-5.1' }}
     steps:
@@ -35,24 +36,28 @@ jobs:
           fetch-depth: 0
 
       - name: Collect update context
-        env:
-          EVENT_BEFORE_SHA: ${{ github.event.before || '' }}
         run: |
           set -euo pipefail
 
           head_sha="${GITHUB_SHA}"
-          before_sha="${EVENT_BEFORE_SHA}"
 
-          if [ -z "$before_sha" ] || [ "$before_sha" = "0000000000000000000000000000000000000000" ]; then
-            if git rev-parse "${head_sha}^" >/dev/null 2>&1; then
-              base_sha="$(git rev-parse "${head_sha}^")"
-            else
-              base_sha="$(git rev-list --max-parents=0 "$head_sha")"
-            fi
-          elif git cat-file -e "${before_sha}^{commit}" 2>/dev/null; then
-            base_sha="$before_sha"
+          if git show-ref --verify --quiet "refs/remotes/origin/${AI_SUMMARY_BASE_BRANCH}"; then
+            base_ref="origin/${AI_SUMMARY_BASE_BRANCH}"
+          elif git show-ref --verify --quiet "refs/heads/${AI_SUMMARY_BASE_BRANCH}"; then
+            base_ref="${AI_SUMMARY_BASE_BRANCH}"
+          else
+            base_ref=""
+          fi
+
+          if [ -n "$base_ref" ]; then
+            base_sha="$(git merge-base "$base_ref" "$head_sha")"
+            compare_label="${base_ref}...${head_sha}"
+          elif git rev-parse "${head_sha}^" >/dev/null 2>&1; then
+            base_sha="$(git rev-parse "${head_sha}^")"
+            compare_label="${base_sha}..${head_sha}"
           else
             base_sha="$(git rev-list --max-parents=0 "$head_sha")"
+            compare_label="${base_sha}..${head_sha}"
           fi
 
           {
@@ -61,6 +66,7 @@ jobs:
             echo "- Repository: ${GITHUB_REPOSITORY}"
             echo "- Branch: ${GITHUB_REF_NAME}"
             echo "- Actor: ${GITHUB_ACTOR}"
+            echo "- Compare: ${compare_label}"
             echo "- Base: ${base_sha}"
             echo "- Head: ${head_sha}"
             echo
