@@ -83,7 +83,8 @@ AI 更新摘要工作流定义在 `.github/workflows/ai-summary.yml`。
 
 常见范式：
 
-- 功能分支 push 后自动收集 commit、变更文件、diff stat 和截断后的 diff。
+- 功能分支 push 后自动查找当前分支的 open PR；如果存在 PR，则相对 PR 的 base 分支收集 commit、变更文件、diff stat 和截断后的 diff。
+- 如果当前分支还没有 open PR，则临时回退到 `dev...HEAD`，保证 PR 创建前也能生成摘要。
 - 使用 GitHub Actions repository secret `ZAI_API_KEY` 调用智谱 AI 的 OpenAI 兼容接口生成中文摘要。
 - 将摘要写入 GitHub Actions 的 job summary，作为非阻塞型辅助信息。
 - 如果没有配置 `ZAI_API_KEY`、接口无响应、返回错误或响应无法解析，工作流不会失败，只会在 summary 中说明已跳过。
@@ -97,7 +98,7 @@ AI 更新摘要工作流定义在 `.github/workflows/ai-summary.yml`。
 - 风险和注意事项。
 - 建议验证。
 
-该工作流只授予 `contents: read` 权限，不写评论、不修改代码、不作为合并门禁。
+该工作流只授予 `contents: read` 和 `pull-requests: read` 权限，不写评论、不修改代码、不作为合并门禁。
 
 最小痕迹验证方式：
 

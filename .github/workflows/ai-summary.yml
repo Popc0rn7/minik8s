@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -36,23 +37,42 @@ jobs:
 
       - name: Collect update context
         env:
-          EVENT_BEFORE_SHA: ${{ github.event.before || '' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           head_sha="${GITHUB_SHA}"
-          before_sha="${EVENT_BEFORE_SHA}"
+          pr_base_branch="$(gh pr list \
+            --head "${GITHUB_REF_NAME}" \
+            --state open \
+            --json baseRefName \
+            --jq '.[0].baseRefName // ""' 2>/dev/null || true)"
 
-          if [ -z "$before_sha" ] || [ "$before_sha" = "0000000000000000000000000000000000000000" ]; then
-            if git rev-parse "${head_sha}^" >/dev/null 2>&1; then
-              base_sha="$(git rev-parse "${head_sha}^")"
-            else
-              base_sha="$(git rev-list --max-parents=0 "$head_sha")"
-            fi
-          elif git cat-file -e "${before_sha}^{commit}" 2>/dev/null; then
-            base_sha="$before_sha"
+          if [ -n "$pr_base_branch" ]; then
+            target_branch="$pr_base_branch"
+            target_source="open PR base"
+          else
+            target_branch="dev"
+            target_source="fallback"
+          fi
+
+          if git show-ref --verify --quiet "refs/remotes/origin/${target_branch}"; then
+            base_ref="origin/${target_branch}"
+          elif git show-ref --verify --quiet "refs/heads/${target_branch}"; then
+            base_ref="${target_branch}"
+          else
+            base_ref=""
+          fi
+
+          if [ -n "$base_ref" ]; then
+            base_sha="$(git merge-base "$base_ref" "$head_sha")"
+            compare_label="${base_ref}...${head_sha}"
+          elif git rev-parse "${head_sha}^" >/dev/null 2>&1; then
+            base_sha="$(git rev-parse "${head_sha}^")"
+            compare_label="${base_sha}..${head_sha}"
           else
             base_sha="$(git rev-list --max-parents=0 "$head_sha")"
+            compare_label="${base_sha}..${head_sha}"
           fi
 
           {
@@ -61,6 +81,8 @@ jobs:
             echo "- Repository: ${GITHUB_REPOSITORY}"
             echo "- Branch: ${GITHUB_REF_NAME}"
             echo "- Actor: ${GITHUB_ACTOR}"
+            echo "- Target branch: ${target_branch} (${target_source})"
+            echo "- Compare: ${compare_label}"
             echo "- Base: ${base_sha}"
             echo "- Head: ${head_sha}"
             echo
