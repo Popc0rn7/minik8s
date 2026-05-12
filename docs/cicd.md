@@ -79,6 +79,7 @@ AI 更新摘要工作流定义在 `.github/workflows/ai-summary.yml`。
 触发条件：
 
 - 任意非 `main`、非 `dev`、非 `dependabot/**` 分支收到 push。
+- 在 GitHub Actions 页面手动触发 `AI Change Summary`。
 
 常见范式：
 
@@ -97,6 +98,15 @@ AI 更新摘要工作流定义在 `.github/workflows/ai-summary.yml`。
 - 建议验证。
 
 该工作流只授予 `contents: read` 权限，不写评论、不修改代码、不作为合并门禁。
+
+最小痕迹验证方式：
+
+1. 合入 workflow 后，进入 GitHub Actions 页面。
+2. 选择 `AI Change Summary`。
+3. 点击 `Run workflow`，选择任意功能分支。
+4. 第一次验证可勾选 `dry_run=true`，只验证上下文收集和 summary 写入，不调用智谱接口。
+5. 需要验证真实调用时，先配置 repository secret `ZAI_API_KEY`，再用 `dry_run=false` 手动运行。
+6. 手动运行只会留下一个 Actions run，不会产生新 commit、PR 或评论；如需进一步减少痕迹，可在 Actions 页面删除该 run。
 
 ## 常用操作
 

@@ -1,6 +1,13 @@
 name: AI Change Summary
 
 on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Collect update context and skip the ZhipuAI API call."
+        required: false
+        default: false
+        type: boolean
   push:
     branches-ignore:
       - main
@@ -28,16 +35,24 @@ jobs:
           fetch-depth: 0
 
       - name: Collect update context
+        env:
+          EVENT_BEFORE_SHA: ${{ github.event.before || '' }}
         run: |
           set -euo pipefail
 
           head_sha="${GITHUB_SHA}"
-          before_sha="${{ github.event.before }}"
+          before_sha="${EVENT_BEFORE_SHA}"
 
-          if [ "$before_sha" = "0000000000000000000000000000000000000000" ]; then
-            base_sha="$(git rev-list --max-parents=0 "$head_sha")"
-          else
+          if [ -z "$before_sha" ] || [ "$before_sha" = "0000000000000000000000000000000000000000" ]; then
+            if git rev-parse "${head_sha}^" >/dev/null 2>&1; then
+              base_sha="$(git rev-parse "${head_sha}^")"
+            else
+              base_sha="$(git rev-list --max-parents=0 "$head_sha")"
+            fi
+          elif git cat-file -e "${before_sha}^{commit}" 2>/dev/null; then
             base_sha="$before_sha"
+          else
+            base_sha="$(git rev-list --max-parents=0 "$head_sha")"
           fi
 
           {
@@ -68,8 +83,20 @@ jobs:
       - name: Generate AI summary
         env:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
           set -euo pipefail
+
+          if [ "$DRY_RUN" = "true" ]; then
+            {
+              echo "## AI Change Summary"
+              echo
+              echo "Dry run completed. ZhipuAI API call was skipped."
+              echo
+              echo "- Context lines: $(wc -l < /tmp/ai-summary-input.md)"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
           if [ -z "${ZAI_API_KEY:-}" ]; then
             {
