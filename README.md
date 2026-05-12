@@ -14,7 +14,10 @@ on Docker, behind `pkg/runtime.ContainerRuntime` for future containerd support.
 - List Pod name, status, IP, uptime, namespace, and labels.
 - Delete Pods and clean up Docker containers.
 - Restart crashed containers according to `restartPolicy`.
-- Logs use `[Minik8s|time] stage=...`; image pull falls back to `docker pull`.
+- CLI logs use Nerd Font status icons and tree guides, for example
+  `22:38:02 INFO  󰋽  cli-delete: start pod=default/nginx-pod`.
+  Set `MINIK8S_PLAIN=1` for ASCII output, or `NO_COLOR=1` to keep icons
+  while disabling ANSI color. Image pull falls back to `docker pull`.
 
 ```bash
 go build -o minik8s ./cmd/minik8s

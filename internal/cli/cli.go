@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"minik8s/internal/cliui"
 	"minik8s/internal/cni"
 	"minik8s/internal/controller"
 	"minik8s/internal/minilog"
@@ -96,11 +97,15 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := writef(out, "pod/%s created (%s)\n", updated.Name, updated.Status.Phase); err != nil {
+	if updated.Status.Phase == pod.PodFailed {
+		if err := writes(out, cliui.WarnLine("pod/%s created (%s)", updated.Name, updated.Status.Phase)); err != nil {
+			return err
+		}
+	} else if err := writes(out, cliui.SuccessLine("pod/%s created (%s)", updated.Name, updated.Status.Phase)); err != nil {
 		return err
 	}
 	if updated.Status.Phase == pod.PodFailed && updated.Status.Reason != "" {
-		return writef(out, "reason: %s\n", updated.Status.Reason)
+		return writes(out, cliui.WarnLine("reason: %s", updated.Status.Reason))
 	}
 	return nil
 }
@@ -120,16 +125,25 @@ func (a *App) get(ctx context.Context, args []string, out io.Writer) error {
 	sort.Slice(pods, func(i, j int) bool {
 		return pods[i].Name < pods[j].Name
 	})
-	if err := writef(out, "%-28s %-18s %-15s %-10s %-14s %s\n", "NAME", "STATUS", "IP", "UPTIME", "NAMESPACE", "LABELS"); err != nil {
+	if err := writef(out, "%s %s %s %s %s %s\n",
+		cliui.PadRight("POD", 31),
+		cliui.PadRight("STATUS", 18),
+		cliui.PadRight("IP", 15),
+		cliui.PadRight("UPTIME", 10),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
 		return err
 	}
 	for _, p := range pods {
-		if err := writef(out, "%-28s %-18s %-15s %-10s %-14s %s\n",
-			p.Name,
-			p.Status.Phase,
+		podName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconPod, "[pod]"), p.Name)
+		status := fmt.Sprintf("%s %s", cliui.StatusIcon(p.Status.Phase), p.Status.Phase)
+		if err := writef(out, "%s %s %s %s %s %s\n",
+			cliui.PadRight(podName, 31),
+			cliui.PadRight(status, 18),
 			formatPodIP(p.Status.PodIP),
-			formatUptime(p.Status),
-			p.Namespace,
+			cliui.PadRight(formatUptime(p.Status), 10),
+			cliui.PadRight(p.Namespace, 14),
 			formatLabels(p.Labels),
 		); err != nil {
 			return err
@@ -149,7 +163,7 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 	if err := ctrl.DeletePod(ctx, name, namespace); err != nil {
 		return err
 	}
-	return writef(out, "pod/%s deleted\n", name)
+	return writes(out, cliui.SuccessLine("pod/%s deleted", name))
 }
 
 func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
@@ -168,23 +182,23 @@ func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 	if host == "" {
 		host = "docker default"
 	}
-	if err := writef(out, "host: %s\n", host); err != nil {
+	if err := writes(out, cliui.InfoLine("host: %s", host)); err != nil {
 		return err
 	}
-	if err := writef(out, "source: %s\n", endpoint.Source); err != nil {
+	if err := writes(out, cliui.InfoLine("source: %s", endpoint.Source)); err != nil {
 		return err
 	}
 	if endpoint.Context != "" {
-		if err := writef(out, "context: %s\n", endpoint.Context); err != nil {
+		if err := writes(out, cliui.InfoLine("context: %s", endpoint.Context)); err != nil {
 			return err
 		}
 	}
 	if a.runtime.IsHealthy(ctx) {
-		if err := writef(out, "ping: ok\n"); err != nil {
+		if err := writef(out, "%s  ping: ok\n", cliui.Icon(cliui.IconSuccess, "[ok]")); err != nil {
 			return err
 		}
 	} else {
-		if err := writef(out, "ping: failed\n"); err != nil {
+		if err := writes(out, cliui.WarnLine("ping: failed")); err != nil {
 			return err
 		}
 	}
@@ -192,38 +206,38 @@ func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 		imageName := args[2]
 		minilog.Info("doctor-docker-pull", "image=%s", imageName)
 		if err := a.runtime.PullImage(ctx, imageName); err != nil {
-			return writef(out, "pull: failed %v\n", err)
+			return writes(out, cliui.WarnLine("pull: failed %v", err))
 		}
-		return writef(out, "pull: ok image=%s\n", imageName)
+		return writes(out, cliui.SuccessLine("pull: ok image=%s", imageName))
 	}
 	return nil
 }
 
 func (a *App) doctorNetwork(out io.Writer) error {
-	if err := writef(out, "confDir: %s\n", DefaultCNIConfDir()); err != nil {
+	if err := writes(out, cliui.InfoLine("confDir: %s", DefaultCNIConfDir())); err != nil {
 		return err
 	}
-	if err := writef(out, "binDir: %s\n", DefaultCNIBinDir()); err != nil {
+	if err := writes(out, cliui.InfoLine("binDir: %s", DefaultCNIBinDir())); err != nil {
 		return err
 	}
-	if err := writef(out, "plugin: minik8s-bridge\n"); err != nil {
+	if err := writes(out, cliui.InfoLine("plugin: minik8s-bridge")); err != nil {
 		return err
 	}
 	if _, err := os.Stat(DefaultCNIConfDir()); err == nil {
-		if err := writef(out, "config: present\n"); err != nil {
+		if err := writes(out, cliui.InfoLine("config: present")); err != nil {
 			return err
 		}
 	} else if os.IsNotExist(err) {
-		if err := writef(out, "config: missing\n"); err != nil {
+		if err := writes(out, cliui.WarnLine("config: missing")); err != nil {
 			return err
 		}
 	} else {
 		return err
 	}
 	if _, err := os.Stat(filepath.Join(DefaultCNIBinDir(), "minik8s-bridge")); err == nil {
-		return writef(out, "minik8s-bridge: present\n")
+		return writes(out, cliui.InfoLine("minik8s-bridge: present"))
 	} else if os.IsNotExist(err) {
-		return writef(out, "minik8s-bridge: missing\n")
+		return writes(out, cliui.WarnLine("minik8s-bridge: missing"))
 	} else {
 		return err
 	}
@@ -256,11 +270,11 @@ func (a *App) cni(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	_ = ctx
-	return writef(out, "cni config initialized at %s\n", configPath)
+	return writes(out, cliui.SuccessLine("cni config initialized at %s", configPath))
 }
 
 func (a *App) usage(out io.Writer) error {
-	_, err := fmt.Fprintln(out, "usage: minik8s apply -f <pod.yaml> | get pods | delete pod <name> | doctor docker|network | cni init")
+	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s apply -f <pod.yaml> | get pods | delete pod <name> | doctor docker|network | cni init"))
 	return err
 }
 
@@ -327,6 +341,11 @@ func formatLabels(labels map[string]string) string {
 
 func writef(out io.Writer, format string, args ...interface{}) error {
 	_, err := fmt.Fprintf(out, format, args...)
+	return err
+}
+
+func writes(out io.Writer, s string) error {
+	_, err := io.WriteString(out, s)
 	return err
 }
 

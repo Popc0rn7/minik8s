@@ -355,9 +355,11 @@ func (pc *PodController) handleTerminalPod(ctx context.Context, p *pod.Pod) erro
 
 	// Delete containers
 	for _, containerStatus := range p.Status.Containers {
+		minilog.Step("docker-runtime", "stop container=%s pod=%s/%s", containerStatus.ContainerID, p.Namespace, p.Name)
 		if err := pc.runtime.StopContainer(ctx, containerStatus.ContainerID, DefaultTimeout); err != nil {
 			return fmt.Errorf("stopping container %s: %w", containerStatus.ContainerID, err)
 		}
+		minilog.Step("docker-runtime", "remove container=%s pod=%s/%s", containerStatus.ContainerID, p.Namespace, p.Name)
 		if err := pc.runtime.RemoveContainer(ctx, containerStatus.ContainerID); err != nil {
 			return fmt.Errorf("removing container %s: %w", containerStatus.ContainerID, err)
 		}
@@ -365,6 +367,7 @@ func (pc *PodController) handleTerminalPod(ctx context.Context, p *pod.Pod) erro
 
 	// Delete sandbox
 	if pc.network != nil && sandboxID != "" {
+		minilog.Step("pod-delete", "teardown network sandbox=%s pod=%s/%s", sandboxID, p.Namespace, p.Name)
 		if err := pc.network.Del(ctx, PodNetworkRequest{
 			Pod:       p,
 			SandboxID: sandboxID,
@@ -373,9 +376,11 @@ func (pc *PodController) handleTerminalPod(ctx context.Context, p *pod.Pod) erro
 			return fmt.Errorf("tearing down pod network: %w", err)
 		}
 	}
+	minilog.Step("docker-runtime", "stop sandbox=%s pod=%s/%s", sandboxID, p.Namespace, p.Name)
 	if err := pc.runtime.StopSandbox(ctx, sandboxID, DefaultTimeout); err != nil {
 		return fmt.Errorf("stopping sandbox %s: %w", sandboxID, err)
 	}
+	minilog.Step("docker-runtime", "remove sandbox=%s pod=%s/%s", sandboxID, p.Namespace, p.Name)
 	if err := pc.runtime.RemoveSandbox(ctx, sandboxID); err != nil {
 		return fmt.Errorf("removing sandbox %s: %w", sandboxID, err)
 	}
@@ -413,7 +418,7 @@ func (pc *PodController) cleanupNetwork(ctx context.Context, p *pod.Pod, sandbox
 
 // DeletePod stops runtime resources and removes the Pod from the store.
 func (pc *PodController) DeletePod(ctx context.Context, name, namespace string) error {
-	minilog.Info("pod-delete", "pod=%s/%s", namespace, name)
+	minilog.Info("pod-delete", "start pod=%s/%s", namespace, name)
 	p, err := pc.store.Get(name, namespace)
 	if err != nil {
 		return err
@@ -421,9 +426,11 @@ func (pc *PodController) DeletePod(ctx context.Context, name, namespace string) 
 	if err := pc.handleTerminalPod(ctx, p); err != nil {
 		return err
 	}
+	minilog.LastStep("pod-delete", "remove stored pod=%s/%s", namespace, name)
 	if err := pc.store.Delete(name, namespace); err != nil {
 		return fmt.Errorf("deleting pod from store: %w", err)
 	}
+	minilog.Success("pod-delete", "removed pod=%s/%s", namespace, name)
 	return nil
 }
 
