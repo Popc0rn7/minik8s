@@ -14,6 +14,23 @@ import (
 	"minik8s/test/mock"
 )
 
+type mockPodNetwork struct {
+	setupCalls    []string
+	teardownCalls []string
+	setupIP       string
+	setupErr      error
+}
+
+func (m *mockPodNetwork) Add(ctx context.Context, req PodNetworkRequest) (PodNetworkResult, error) {
+	m.setupCalls = append(m.setupCalls, req.SandboxID+"|"+req.NetNSPath)
+	return PodNetworkResult{PodIP: m.setupIP}, m.setupErr
+}
+
+func (m *mockPodNetwork) Del(ctx context.Context, req PodNetworkRequest) error {
+	m.teardownCalls = append(m.teardownCalls, req.SandboxID+"|"+req.NetNSPath)
+	return nil
+}
+
 // MockPodStore is a simple in-memory store for testing
 type MockPodStore struct {
 	pods map[string]*pod.Pod
@@ -87,6 +104,7 @@ func newTestPod(name, namespace string, restartPolicy pod.RestartPolicy) *pod.Po
 
 func TestPodController_StartStop(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
+	mockRuntime.NetNSPath = "/proc/101/ns/net"
 	podStore := NewMockPodStore()
 	controller := NewPodController(mockRuntime, podStore)
 
@@ -103,6 +121,7 @@ func TestPodController_StartStop(t *testing.T) {
 
 func TestPodController_StartTwice(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
+	mockRuntime.NetNSPath = "/proc/101/ns/net"
 	podStore := NewMockPodStore()
 	controller := NewPodController(mockRuntime, podStore)
 
@@ -120,8 +139,10 @@ func TestPodController_StartTwice(t *testing.T) {
 
 func TestPodController_ReconcilePendingPod(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
+	mockRuntime.NetNSPath = "/proc/101/ns/net"
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	podNetwork := &mockPodNetwork{setupIP: "10.244.0.2"}
+	controller := NewPodControllerWithNetwork(mockRuntime, podStore, podNetwork)
 
 	// Create a pending pod
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
@@ -139,14 +160,34 @@ func TestPodController_ReconcilePendingPod(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, pod.PodRunning, updatedPod.Status.Phase)
 	assert.NotZero(t, updatedPod.Status.StartTime)
+	assert.Equal(t, "10.244.0.2", updatedPod.Status.PodIP)
+	assert.Equal(t, "/proc/101/ns/net", updatedPod.Status.NetNSPath)
 
 	// Verify sandbox was created
 	assert.NotEmpty(t, mockRuntime.CreateSandboxCalls)
 	assert.NotEmpty(t, mockRuntime.StartSandboxCalls)
+	assert.Equal(t, []string{"sandbox-1|/proc/101/ns/net"}, podNetwork.setupCalls)
 
 	// Verify container was created and started
 	assert.NotEmpty(t, mockRuntime.CreateContainerCalls)
 	assert.NotEmpty(t, mockRuntime.StartContainerCalls)
+}
+
+func TestPodController_DeletePodTearsDownNetworkBeforeRemovingSandbox(t *testing.T) {
+	mockRuntime := mock.NewMockRuntime()
+	mockRuntime.NetNSPath = "/proc/101/ns/net"
+	podStore := NewMockPodStore()
+	podNetwork := &mockPodNetwork{setupIP: "10.244.0.2"}
+	controller := NewPodControllerWithNetwork(mockRuntime, podStore, podNetwork)
+
+	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
+	require.NoError(t, podStore.Create(testPod))
+	require.NoError(t, controller.reconcilePod(context.Background(), testPod))
+
+	require.NoError(t, controller.DeletePod(context.Background(), "test-pod", "default"))
+
+	assert.Equal(t, []string{"sandbox-1|/proc/101/ns/net"}, podNetwork.teardownCalls)
+	assert.NotEmpty(t, mockRuntime.RemoveSandboxCalls)
 }
 
 func TestPodController_ReconcilePendingPod_SandboxCreationFailure(t *testing.T) {

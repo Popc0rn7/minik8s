@@ -21,11 +21,12 @@ type ContainerConfig struct {
 
 // SandboxConfig contains configuration for creating a Pod sandbox
 type SandboxConfig struct {
-	ID        string
-	Name      string
-	Namespace string
-	Labels    map[string]string
-	Ports     []ContainerPort
+	ID          string
+	Name        string
+	Namespace   string
+	Labels      map[string]string
+	Ports       []ContainerPort
+	NetworkMode string
 }
 
 // ContainerPort describes a port exposed by a container.
@@ -117,4 +118,10 @@ type ContainerRuntime interface {
 
 	// Health check
 	IsHealthy(ctx context.Context) bool
+}
+
+// SandboxNetNSProvider is implemented by runtimes that can expose a sandbox
+// network namespace path for CNI plugins.
+type SandboxNetNSProvider interface {
+	GetSandboxNetNSPath(ctx context.Context, sandboxID string) (string, error)
 }

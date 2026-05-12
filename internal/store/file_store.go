@@ -107,12 +107,9 @@ func (s *FilePodStore) List(namespace string, selector *pod.LabelSelector) ([]*p
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if namespace == "" {
-		namespace = "default"
-	}
 	result := make([]*pod.Pod, 0)
 	for _, p := range s.pods {
-		if p.Namespace != namespace {
+		if namespace != "" && p.Namespace != namespace {
 			continue
 		}
 		if selector == nil || selector.Matches(p.Labels) {

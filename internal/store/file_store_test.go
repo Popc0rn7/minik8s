@@ -55,3 +55,17 @@ func TestFilePodStoreDeletePersists(t *testing.T) {
 	_, err = store2.Get("nginx", "default")
 	require.ErrorIs(t, err, ErrPodNotFound)
 }
+
+func TestFilePodStoreListEmptyNamespaceReturnsAllNamespaces(t *testing.T) {
+	path := t.TempDir() + "/pods.json"
+	store1, err := NewFilePodStore(path)
+	require.NoError(t, err)
+
+	require.NoError(t, store1.Create(&pod.Pod{ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default"}}))
+	require.NoError(t, store1.Create(&pod.Pod{ObjectMeta: pod.ObjectMeta{Name: "worker", Namespace: "demo"}}))
+
+	pods, err := store1.List("", nil)
+	require.NoError(t, err)
+
+	assert.Len(t, pods, 2)
+}
