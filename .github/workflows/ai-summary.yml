@@ -1,0 +1,125 @@
+name: AI Change Summary
+
+on:
+  push:
+    branches-ignore:
+      - main
+      - dev
+      - "dependabot/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  summarize:
+    name: Summarize Branch Update
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5-mini' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Collect update context
+        run: |
+          set -euo pipefail
+
+          head_sha="${GITHUB_SHA}"
+          before_sha="${{ github.event.before }}"
+
+          if [ "$before_sha" = "0000000000000000000000000000000000000000" ]; then
+            base_sha="$(git rev-list --max-parents=0 "$head_sha")"
+          else
+            base_sha="$before_sha"
+          fi
+
+          {
+            echo "# Branch update context"
+            echo
+            echo "- Repository: ${GITHUB_REPOSITORY}"
+            echo "- Branch: ${GITHUB_REF_NAME}"
+            echo "- Actor: ${GITHUB_ACTOR}"
+            echo "- Base: ${base_sha}"
+            echo "- Head: ${head_sha}"
+            echo
+            echo "## Commits"
+            git log --no-merges --pretty=format:'- %h %s (%an)' "${base_sha}..${head_sha}" || true
+            echo
+            echo
+            echo "## Changed files"
+            git diff --name-status "${base_sha}" "${head_sha}" || true
+            echo
+            echo
+            echo "## Diff stat"
+            git diff --stat "${base_sha}" "${head_sha}" || true
+            echo
+            echo
+            echo "## Diff"
+            git diff --unified=2 "${base_sha}" "${head_sha}" | head -c 60000 || true
+          } > /tmp/ai-summary-input.md
+
+      - name: Generate AI summary
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            {
+              echo "## AI Change Summary"
+              echo
+              echo "AI summary skipped because repository secret \`OPENAI_API_KEY\` is not configured."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          jq -n --rawfile input /tmp/ai-summary-input.md \
+            --arg model "$OPENAI_MODEL" \
+            '{
+              model: $model,
+              instructions: "你是一个资深 Go 项目维护者。请根据分支 push 的 commit 和 diff，总结本次更新。用中文输出，结构固定为：1. 更新概览；2. 关键文件；3. 风险和注意事项；4. 建议验证。保持简洁，避免编造 diff 中不存在的内容。",
+              input: $input,
+              reasoning: { effort: "low" },
+              text: { verbosity: "low" }
+            }' > /tmp/ai-summary-request.json
+
+          status="$(curl -sS -w "%{http_code}" -o /tmp/ai-summary-response.json \
+            https://api.openai.com/v1/responses \
+            -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/ai-summary-request.json)"
+
+          {
+            echo "## AI Change Summary"
+            echo
+            echo "- Model: \`${OPENAI_MODEL}\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            {
+              echo "OpenAI API returned HTTP ${status}; summary generation was skipped."
+              echo
+              jq -r '.error.message // empty' /tmp/ai-summary-response.json
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          summary="$(jq -r '
+            .output_text //
+            ([.output[]?.content[]? | select(.type == "output_text") | .text] | join("\n")) //
+            empty
+          ' /tmp/ai-summary-response.json)"
+
+          if [ -z "$summary" ]; then
+            echo "OpenAI API returned an empty summary." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "$summary" >> "$GITHUB_STEP_SUMMARY"

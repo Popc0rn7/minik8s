@@ -69,9 +69,34 @@ Dependabot 配置定义在 `.github/dependabot.yml`。
 自动更新范围：
 
 - GitHub Actions 依赖，每周检查一次。
-- Go modules 依赖，每周检查一次。
 
-Dependabot 提交的更新也会经过同一套 CI 门禁，避免依赖升级破坏构建、测试或发布流程。
+Go module 依赖不启用自动升级。Docker SDK 一类依赖和运行时代码耦合较强，自动升级可能引入 API 废弃、编译不兼容或间接依赖冲突；这类升级应通过专门分支手动处理，并经过本地验证和 CI 门禁。
+
+## AI 更新摘要
+
+AI 更新摘要工作流定义在 `.github/workflows/ai-summary.yml`。
+
+触发条件：
+
+- 任意非 `main`、非 `dev`、非 `dependabot/**` 分支收到 push。
+
+常见范式：
+
+- 功能分支 push 后自动收集 commit、变更文件、diff stat 和截断后的 diff。
+- 使用仓库 secret `OPENAI_API_KEY` 调用 OpenAI Responses API 生成中文摘要。
+- 将摘要写入 GitHub Actions 的 job summary，作为非阻塞型辅助信息。
+- 如果没有配置 `OPENAI_API_KEY`，工作流不会失败，只会在 summary 中说明已跳过。
+
+默认模型为 `gpt-5-mini`。如需更换模型，可在 GitHub 仓库的 Variables 中设置 `OPENAI_MODEL`。
+
+摘要内容包括：
+
+- 更新概览。
+- 关键文件。
+- 风险和注意事项。
+- 建议验证。
+
+该工作流只授予 `contents: read` 权限，不写评论、不修改代码、不作为合并门禁。
 
 ## 常用操作
 
@@ -84,6 +109,14 @@ go vet ./...
 go test -race -covermode=atomic -coverprofile=coverage.out ./...
 go build ./...
 go build -trimpath -ldflags="-s -w" -o dist/minik8s ./cmd/minik8s
+```
+
+配置 AI 摘要：
+
+```bash
+# GitHub Repository Settings -> Secrets and variables -> Actions
+# Secret: OPENAI_API_KEY
+# Optional variable: OPENAI_MODEL
 ```
 
 创建版本发布：
