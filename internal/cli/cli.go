@@ -331,13 +331,16 @@ func (a *App) controlPlaneClient() (*controlPlaneClient, error) {
 
 func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minik8s doctor docker|network")
+		return fmt.Errorf("usage: minik8s doctor docker|network|etcd")
 	}
 	if args[0] == "network" {
 		return a.doctorNetwork(out)
 	}
+	if args[0] == "etcd" {
+		return a.doctorEtcd(ctx, out)
+	}
 	if args[0] != "docker" {
-		return fmt.Errorf("usage: minik8s doctor docker|network")
+		return fmt.Errorf("usage: minik8s doctor docker|network|etcd")
 	}
 	minilog.Info("doctor-docker", "start args=%v", args)
 	endpoint := dockerruntime.ResolveDockerEndpoint()
@@ -374,6 +377,22 @@ func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("pull: ok image=%s", imageName))
 	}
 	return nil
+}
+
+func (a *App) doctorEtcd(ctx context.Context, out io.Writer) error {
+	endpoints := store.ParseEndpoints(os.Getenv("MINIK8S_ETCD_ENDPOINTS"))
+	if len(endpoints) == 0 {
+		return writes(out, cliui.WarnLine("etcd: MINIK8S_ETCD_ENDPOINTS is not set; using local JSON file store"))
+	}
+	if err := writes(out, cliui.InfoLine("endpoints: %s", strings.Join(endpoints, ","))); err != nil {
+		return err
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := store.Probe(probeCtx, endpoints); err != nil {
+		return writes(out, cliui.WarnLine("etcd: failed %v", err))
+	}
+	return writes(out, cliui.SuccessLine("etcd: ok"))
 }
 
 func (a *App) doctorNetwork(out io.Writer) error {

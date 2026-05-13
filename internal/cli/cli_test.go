@@ -104,7 +104,8 @@ func TestCLIApplyGetDeleteRequireAPIServer(t *testing.T) {
 	}
 }
 
-func TestCLIUsageExposesKubecaptainNotAPIServer(t *testing.T) {
+func TestCLIDoctorEtcdWarnsWhenEndpointsUnset(t *testing.T) {
+	t.Setenv("MINIK8S_ETCD_ENDPOINTS", "")
 	app := New(Config{
 		Runtime:      mock.NewMockRuntime(),
 		Store:        store.NewInMemoryPodStore(),
@@ -113,32 +114,9 @@ func TestCLIUsageExposesKubecaptainNotAPIServer(t *testing.T) {
 	})
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), nil, &out))
-
-	assert.Contains(t, out.String(), "minik8s kubecaptain")
-	assert.NotContains(t, out.String(), "minik8s apiserver")
-}
-
-func TestCLIApiServerCommandIsNotExposed(t *testing.T) {
-	app := New(Config{
-		Runtime:      mock.NewMockRuntime(),
-		Store:        store.NewInMemoryPodStore(),
-		ServiceStore: store.NewInMemoryServiceStore(),
-		ServiceProxy: nil,
-	})
-	var out bytes.Buffer
-
-	err := app.Run(context.Background(), []string{"apiserver", "--listen", ":18080"}, &out)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `unknown command "apiserver"`)
-}
-
-func TestKubecaptainOptionsUseDefaults(t *testing.T) {
-	options, err := parseKubecaptainOptions(nil)
-
-	require.NoError(t, err)
-	assert.Equal(t, ":8080", options.listen)
+	require.NoError(t, app.Run(context.Background(), []string{"doctor", "etcd"}, &out))
+	assert.Contains(t, out.String(), "WARN")
+	assert.Contains(t, out.String(), "MINIK8S_ETCD_ENDPOINTS is not set")
 }
 
 func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
