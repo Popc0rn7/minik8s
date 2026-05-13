@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,28 @@ import (
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 )
+
+type mockServiceProxy struct {
+	synced  []*service.Service
+	deleted []*service.Service
+}
+
+func (m *mockServiceProxy) SyncService(_ context.Context, svc *service.Service) error {
+	m.synced = append(m.synced, svc.DeepCopy())
+	return nil
+}
+
+func (m *mockServiceProxy) SyncAll(_ context.Context, services []*service.Service) error {
+	for _, svc := range services {
+		m.synced = append(m.synced, svc.DeepCopy())
+	}
+	return nil
+}
+
+func (m *mockServiceProxy) DeleteService(_ context.Context, svc *service.Service) error {
+	m.deleted = append(m.deleted, svc.DeepCopy())
+	return nil
+}
 
 func newTestServer() *Server {
 	return New(Config{
@@ -127,6 +150,43 @@ func TestAPIServerServiceCRUD(t *testing.T) {
 	assert.Contains(t, logs.String(), "service-create: service=default/nginx-service")
 	assert.Contains(t, logs.String(), "service-update: service=default/nginx-service")
 	assert.Contains(t, logs.String(), "service-delete: service=default/nginx-service")
+}
+
+func TestAPIServerServiceCRUDAppliesServiceProxy(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	serviceStore := store.NewInMemoryServiceStore()
+	proxy := &mockServiceProxy{}
+	srv := New(Config{
+		PodStore:     podStore,
+		ServiceStore: serviceStore,
+		ServiceProxy: proxy,
+	})
+	require.NoError(t, podStore.Create(&pod.Pod{
+		TypeMeta:   pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default", Labels: map[string]string{"app": "nginx"}},
+		Status: pod.PodStatus{
+			Phase: pod.PodRunning,
+			PodIP: "10.244.0.2",
+		},
+	}))
+	body := `{
+		"kind":"Service",
+		"apiVersion":"v1",
+		"metadata":{"name":"nginx-service","namespace":"default"},
+		"spec":{"type":"ClusterIP","selector":{"matchLabels":{"app":"nginx"}},"ports":[{"port":80,"targetPort":8080,"protocol":"TCP"}]}
+	}`
+
+	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/services", body)
+	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
+	require.Len(t, proxy.synced, 1)
+	assert.Equal(t, "nginx-service", proxy.synced[0].Name)
+	require.Len(t, proxy.synced[0].Status.Endpoints, 1)
+	assert.Equal(t, int32(8080), proxy.synced[0].Status.Endpoints[0].TargetPort)
+
+	del := serve(t, srv, http.MethodDelete, "/api/v1/namespaces/default/services/nginx-service", "")
+	require.Equal(t, http.StatusOK, del.Code, del.Body.String())
+	require.Len(t, proxy.deleted, 1)
+	assert.Equal(t, "nginx-service", proxy.deleted[0].Name)
 }
 
 func TestAPIServerNodePodsEndpointFiltersByNodeName(t *testing.T) {

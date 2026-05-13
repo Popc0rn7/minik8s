@@ -65,6 +65,7 @@ func (k *Kubecaptain) Handler() http.Handler {
 		ServiceStore: k.serviceStore,
 		NodeStore:    k.nodeStore,
 		Scheduler:    k.scheduler,
+		ServiceProxy: k.serviceProxy,
 		NodeTTL:      k.nodeTTL,
 	})
 }

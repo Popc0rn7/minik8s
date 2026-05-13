@@ -17,6 +17,7 @@ import (
 	"minik8s/internal/kubecaptain/controller"
 	store "minik8s/internal/kubecaptain/etcd"
 	"minik8s/internal/kubecaptain/scheduler"
+	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
@@ -29,6 +30,7 @@ type Config struct {
 	ServiceStore store.ServiceStore
 	NodeStore    store.NodeStore
 	Scheduler    scheduler.Scheduler
+	ServiceProxy kubeproxy.Proxy
 	NodeTTL      time.Duration
 }
 
@@ -37,6 +39,7 @@ type Server struct {
 	services  store.ServiceStore
 	nodes     store.NodeStore
 	scheduler scheduler.Scheduler
+	proxy     kubeproxy.Proxy
 	nodeTTL   time.Duration
 }
 
@@ -61,7 +64,14 @@ func New(config Config) *Server {
 	if nodeTTL == 0 {
 		nodeTTL = scheduler.DefaultNodeTTL
 	}
-	return &Server{pods: podStore, services: serviceStore, nodes: nodeStore, scheduler: podScheduler, nodeTTL: nodeTTL}
+	return &Server{
+		pods:      podStore,
+		services:  serviceStore,
+		nodes:     nodeStore,
+		scheduler: podScheduler,
+		proxy:     config.ServiceProxy,
+		nodeTTL:   nodeTTL,
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -366,7 +376,8 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request, namespac
 			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target a service")
 			return
 		}
-		if err := s.services.Delete(name, namespace); err != nil {
+		ctrl := controller.NewServiceController(s.pods, s.services, s.proxy)
+		if err := ctrl.DeleteService(r.Context(), name, namespace); err != nil {
 			writeStoreError(w, err, "services", name)
 			return
 		}
@@ -419,7 +430,7 @@ func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (
 }
 
 func (s *Server) syncServices(ctx context.Context) error {
-	ctrl := controller.NewServiceController(s.pods, s.services, nil)
+	ctrl := controller.NewServiceController(s.pods, s.services, s.proxy)
 	return ctrl.Sync(ctx)
 }
 

@@ -1,6 +1,6 @@
 # Etcd 控制面状态存储测试用例
 
-本文档验证 Minik8s 在设置 `MINIK8S_ETCD_ENDPOINTS` 后使用真实 etcd 作为控制面状态源，并能在 API Server 重启后恢复 Pod 和 Service 对象。
+本文档验证 Minik8s 在设置 `MINIK8S_ETCD_ENDPOINTS` 后使用真实 etcd 作为控制面状态源，并能在 kubecaptain 重启后恢复 Pod 和 Service 对象。
 
 ## 0. 前置准备
 
@@ -14,7 +14,7 @@ export MINIK8S_PLAIN=1
 export NO_COLOR=1
 ```
 
-本 case 固定使用 controller 机器上的本地 etcd 服务，不使用 Docker etcd。单 controller 模式下，API Server 和 etcd 在同一台机器上运行，etcd 只监听 `127.0.0.1` 即可。
+本 case 固定使用 controller 机器上的本地 etcd 服务，不使用 Docker etcd。单 controller 模式下，kubecaptain 和 etcd 在同一台机器上运行，etcd 只监听 `127.0.0.1` 即可。
 
 ## 1. Controller 机器 etcd 配置
 
@@ -69,7 +69,7 @@ quota-backend-bytes: 8589934592
 EOF
 ```
 
-说明：这里选择只监听 `127.0.0.1`，因为 Minik8s API Server 也部署在 controller 本机。Worker 节点不需要直接访问 etcd，它们只访问 API Server。
+说明：这里选择只监听 `127.0.0.1`，因为 Minik8s kubecaptain 也部署在 controller 本机。Worker 节点不需要直接访问 etcd，它们只访问 kubecaptain。
 
 ### 1.3 创建 systemd 服务
 
@@ -136,10 +136,10 @@ etcdctl --endpoints="$MINIK8S_ETCD_ENDPOINTS" del --prefix /registry
 
 ## 2. 启动控制面并检查 etcd
 
-在一个终端启动 API Server：
+在一个终端启动 kubecaptain：
 
 ```bash
-./minik8s apiserver --listen :18080
+./minik8s kubecaptain --listen :18080
 ```
 
 在另一个终端检查 etcd：
@@ -174,12 +174,12 @@ etcdctl --endpoints="$MINIK8S_ETCD_ENDPOINTS" get --prefix /registry
 - 存在 `/registry/services/default/nginx-service`。
 - `get pods` 和 `get services` 能看到刚创建的对象。
 
-## 4. 重启 API Server 后恢复状态
+## 4. 重启 kubecaptain 后恢复状态
 
-停止 `./minik8s apiserver` 进程，然后使用同样环境变量重新启动：
+停止 `./minik8s kubecaptain` 进程，然后使用同样环境变量重新启动：
 
 ```bash
-./minik8s apiserver --listen :18080
+./minik8s kubecaptain --listen :18080
 ```
 
 再次执行：
@@ -193,7 +193,7 @@ etcdctl --endpoints="$MINIK8S_ETCD_ENDPOINTS" get --prefix /registry
 
 - Pod 列表仍包含 `nginx-pod`。
 - Service 列表仍包含 `nginx-service` 和原 ClusterIP。
-- 说明控制面状态来自 etcd，而不是 API Server 进程内存。
+- 说明控制面状态来自 etcd，而不是 kubecaptain 进程内存。
 
 ## 5. 删除对象并验证 key 清理
 
@@ -228,7 +228,7 @@ etcdctl --endpoints="$MINIK8S_ETCD_ENDPOINTS" watch --prefix /registry
 
 ## 7. 实现映射
 
-- `MINIK8S_ETCD_ENDPOINTS` 非空时，`cmd/minik8s/main.go` 创建真实 etcd client，并把 `EtcdPodStore`、`EtcdServiceStore` 注入 API Server。
+- `MINIK8S_ETCD_ENDPOINTS` 非空时，`cmd/minik8s/main.go` 创建真实 etcd client，并把 `EtcdPodStore`、`EtcdServiceStore` 注入 kubecaptain。
 - 未设置 `MINIK8S_ETCD_ENDPOINTS` 时，Minik8s 继续使用 `.minik8s/state/pods.json` 和 `.minik8s/state/services.json`，保持本地开发模式。
 - Pod key 格式为 `/registry/pods/{namespace}/{name}`。
 - Service key 格式为 `/registry/services/{namespace}/{name}`。

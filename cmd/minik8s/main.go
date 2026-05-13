@@ -18,6 +18,7 @@ func main() {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening stores: %v", err))
 		os.Exit(1)
 	}
+	defer closeStores()
 	nodeStore, err := store.NewFileNodeStore(cli.DefaultNodeStatePath())
 	if err != nil {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening node store: %v", err))
