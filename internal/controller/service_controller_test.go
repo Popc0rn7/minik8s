@@ -17,9 +17,17 @@ type mockServiceProxy struct {
 	deleted []*service.Service
 }
 
-func (m *mockServiceProxy) ApplyService(ctx context.Context, svc *service.Service) error {
+func (m *mockServiceProxy) SyncService(ctx context.Context, svc *service.Service) error {
 	_ = ctx
 	m.applied = append(m.applied, svc.DeepCopy())
+	return nil
+}
+
+func (m *mockServiceProxy) SyncAll(ctx context.Context, services []*service.Service) error {
+	_ = ctx
+	for _, svc := range services {
+		m.applied = append(m.applied, svc.DeepCopy())
+	}
 	return nil
 }
 
