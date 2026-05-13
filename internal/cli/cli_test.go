@@ -3,8 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,6 +89,126 @@ func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
 	require.NoError(t, app.Run(context.Background(), []string{"doctor", "network"}, &out))
 	assert.Contains(t, out.String(), "󰋽  config: present")
 	assert.Contains(t, out.String(), "󱈸  minik8s-bridge: missing")
+}
+
+func TestCLICNIInitWritesDefaultSingleNodeConfig(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
+	app := New(Config{
+		Runtime: mock.NewMockRuntime(),
+		Store:   store.NewInMemoryPodStore(),
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"cni", "init"}, &out))
+
+	data, err := os.ReadFile(filepath.Join(root, "net.d", "10-minik8s.conf"))
+	require.NoError(t, err)
+	var conf struct {
+		PodCIDR string `json:"podCIDR"`
+		Gateway string `json:"gateway"`
+		Routes  []struct {
+			Dst string `json:"dst"`
+			GW  string `json:"gw"`
+		} `json:"routes"`
+	}
+	require.NoError(t, json.Unmarshal(data, &conf))
+	assert.Equal(t, "10.244.0.0/24", conf.PodCIDR)
+	assert.Equal(t, "10.244.0.1", conf.Gateway)
+	assert.Empty(t, conf.Routes)
+}
+
+func TestCLICNIInitWritesCrossNodeConfig(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
+	app := New(Config{
+		Runtime: mock.NewMockRuntime(),
+		Store:   store.NewInMemoryPodStore(),
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{
+		"cni", "init",
+		"--pod-cidr", "10.244.1.0/24",
+		"--gateway", "10.244.1.1",
+		"--route", "10.244.0.0/24=192.168.1.10",
+	}, &out))
+
+	data, err := os.ReadFile(filepath.Join(root, "net.d", "10-minik8s.conf"))
+	require.NoError(t, err)
+	var conf struct {
+		PodCIDR string `json:"podCIDR"`
+		Gateway string `json:"gateway"`
+		Routes  []struct {
+			Dst string `json:"dst"`
+			GW  string `json:"gw"`
+		} `json:"routes"`
+	}
+	require.NoError(t, json.Unmarshal(data, &conf))
+	assert.Equal(t, "10.244.1.0/24", conf.PodCIDR)
+	assert.Equal(t, "10.244.1.1", conf.Gateway)
+	require.Len(t, conf.Routes, 1)
+	assert.Equal(t, "10.244.0.0/24", conf.Routes[0].Dst)
+	assert.Equal(t, "192.168.1.10", conf.Routes[0].GW)
+}
+
+func TestCLICNIInitRejectsInvalidRouteSyntax(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
+	app := New(Config{
+		Runtime: mock.NewMockRuntime(),
+		Store:   store.NewInMemoryPodStore(),
+	})
+	var out bytes.Buffer
+
+	err := app.Run(context.Background(), []string{
+		"cni", "init",
+		"--route", "10.244.0.0/24",
+	}, &out)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "route must use <remote-cidr>=<node-ip>")
+}
+
+func TestNetDOptionsParseDynamicHostGWConfig(t *testing.T) {
+	options, err := parseNetDOptions([]string{
+		"--node-name", "node-a",
+		"--node-ip", "192.168.1.10",
+		"--pod-cidr", "10.244.0.0/24",
+		"--registry", "http://192.168.1.100:8088",
+		"--interval", "2s",
+		"--once",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "node-a", options.nodeName)
+	assert.Equal(t, "192.168.1.10", options.nodeIP)
+	assert.Equal(t, "10.244.0.0/24", options.podCIDR)
+	assert.Equal(t, "http://192.168.1.100:8088", options.registryURL)
+	assert.Equal(t, 2*time.Second, options.interval)
+	assert.True(t, options.once)
+}
+
+func TestNetDOptionsRequireNodeName(t *testing.T) {
+	_, err := parseNetDOptions([]string{
+		"--node-ip", "192.168.1.10",
+		"--pod-cidr", "10.244.0.0/24",
+		"--registry", "http://192.168.1.100:8088",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--node-name is required")
+}
+
+func TestNetRegistryOptionsUseDefaults(t *testing.T) {
+	options, err := parseNetRegistryOptions(nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, ":8088", options.listen)
+	assert.Equal(t, time.Minute, options.leaseTTL)
 }
 
 func TestCLIDoctorDockerShowsEndpointAndHealth(t *testing.T) {

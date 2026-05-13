@@ -85,6 +85,11 @@ func add(conf BridgeConfig, env CNIEnv) (map[string]any, error) {
 	if err := validateEnv(env); err != nil {
 		return nil, err
 	}
+	routes, err := validHostGWRoutes(conf)
+	if err != nil {
+		return nil, err
+	}
+	conf.Routes = routes
 	ipam := NewIPAM(conf.IPAM.StatePath, conf.PodCIDR, conf.Gateway)
 	key := allocationKey(env)
 	ip, err := ipam.Allocate(key)
@@ -165,12 +170,7 @@ func configurePodNetwork(conf BridgeConfig, env CNIEnv, ip net.IP, prefix int) e
 	if err := run("nsenter", "--net="+env.NetNS, "ip", "route", "add", "default", "via", conf.Gateway); err != nil {
 		return err
 	}
-	for _, route := range conf.Routes {
-		if route.Dst != "" && route.GW != "" {
-			_ = run("ip", "route", "replace", route.Dst, "via", route.GW)
-		}
-	}
-	return nil
+	return applyHostGWRoutes(conf, run)
 }
 
 func ensureBridge(conf BridgeConfig, prefix int) error {
@@ -186,9 +186,72 @@ func ensureBridge(conf BridgeConfig, prefix int) error {
 		return err
 	}
 	_ = run("sysctl", "-w", "net.ipv4.ip_forward=1")
-	_ = run("iptables", "-t", "nat", "-C", "POSTROUTING", "-s", conf.PodCIDR, "!", "-o", conf.Bridge, "-j", "MASQUERADE")
-	_ = run("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", conf.PodCIDR, "!", "-o", conf.Bridge, "-j", "MASQUERADE")
+	return configureMasquerade(conf, run)
+}
+
+type commandRunner func(name string, args ...string) error
+
+func validHostGWRoutes(conf BridgeConfig) ([]HostGWRoute, error) {
+	_, local, err := net.ParseCIDR(conf.PodCIDR)
+	if err != nil {
+		return nil, fmt.Errorf("invalid podCIDR %q: %w", conf.PodCIDR, err)
+	}
+	routes := make([]HostGWRoute, 0, len(conf.Routes))
+	for _, route := range conf.Routes {
+		_, dst, err := net.ParseCIDR(route.Dst)
+		if err != nil {
+			return nil, fmt.Errorf("invalid route dst %q: %w", route.Dst, err)
+		}
+		gateway := net.ParseIP(route.GW)
+		if gateway == nil {
+			return nil, fmt.Errorf("invalid route gw %q", route.GW)
+		}
+		if dst.String() == local.String() {
+			continue
+		}
+		routes = append(routes, HostGWRoute{
+			Dst: dst.String(),
+			GW:  gateway.String(),
+		})
+	}
+	return routes, nil
+}
+
+func applyHostGWRoutes(conf BridgeConfig, runner commandRunner) error {
+	routes, err := validHostGWRoutes(conf)
+	if err != nil {
+		return err
+	}
+	for _, route := range routes {
+		if err := runner("ip", "route", "replace", route.Dst, "via", route.GW); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func configureMasquerade(conf BridgeConfig, runner commandRunner) error {
+	routes, err := validHostGWRoutes(conf)
+	if err != nil {
+		return err
+	}
+	for _, route := range routes {
+		if err := ensureIptablesRule(runner, "-I", []string{"1"}, "-s", conf.PodCIDR, "-d", route.Dst, "-j", "ACCEPT"); err != nil {
+			return err
+		}
+	}
+	return ensureIptablesRule(runner, "-A", nil, "-s", conf.PodCIDR, "!", "-o", conf.Bridge, "-j", "MASQUERADE")
+}
+
+func ensureIptablesRule(runner commandRunner, mode string, extra []string, rule ...string) error {
+	checkArgs := append([]string{"-t", "nat", "-C", "POSTROUTING"}, rule...)
+	if err := runner("iptables", checkArgs...); err == nil {
+		return nil
+	}
+	args := []string{"-t", "nat", mode, "POSTROUTING"}
+	args = append(args, extra...)
+	args = append(args, rule...)
+	return runner("iptables", args...)
 }
 
 func cniEnv(environ []string) CNIEnv {

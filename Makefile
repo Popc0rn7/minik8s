@@ -2,7 +2,7 @@ MINIK8S ?= ./minik8s
 CNI_PLUGIN ?= .minik8s/cni/bin/minik8s-bridge
 RUN ?= sudo $(MINIK8S)
 
-.PHONY: build test cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
+.PHONY: build test cni-init net-registry netd-once doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
 
 build:
 	go build -o $(MINIK8S) ./cmd/minik8s
@@ -13,6 +13,12 @@ test:
 
 cni-init: build
 	$(RUN) cni init
+
+net-registry: build
+	$(MINIK8S) net-registry --listen :8088
+
+netd-once: build
+	$(RUN) netd --once --node-name $(NODE_NAME) --node-ip $(NODE_IP) --pod-cidr $(POD_CIDR) --registry $(REGISTRY)
 
 doctor:
 	$(RUN) doctor network
