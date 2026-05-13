@@ -1,4 +1,4 @@
-package apiserver
+package kubeharbor
 
 import (
 	"bytes"
@@ -14,9 +14,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"minik8s/internal/kubecaptain/controller"
-	store "minik8s/internal/kubecaptain/etcd"
-	"minik8s/internal/kubecaptain/scheduler"
+	store "minik8s/internal/kubebridge/etcd"
+	"minik8s/internal/kubebridge/kubecaptain"
+	"minik8s/internal/kubebridge/kubenavigator"
 	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/node"
@@ -26,21 +26,21 @@ import (
 )
 
 type Config struct {
-	PodStore     store.PodStore
-	ServiceStore store.ServiceStore
-	NodeStore    store.NodeStore
-	Scheduler    scheduler.Scheduler
-	ServiceProxy kubeproxy.Proxy
-	NodeTTL      time.Duration
+	PodStore      store.PodStore
+	ServiceStore  store.ServiceStore
+	NodeStore     store.NodeStore
+	Kubenavigator kubenavigator.Kubenavigator
+	ServiceProxy  kubeproxy.Proxy
+	NodeTTL       time.Duration
 }
 
 type Server struct {
-	pods      store.PodStore
-	services  store.ServiceStore
-	nodes     store.NodeStore
-	scheduler scheduler.Scheduler
-	proxy     kubeproxy.Proxy
-	nodeTTL   time.Duration
+	pods          store.PodStore
+	services      store.ServiceStore
+	nodes         store.NodeStore
+	kubenavigator kubenavigator.Kubenavigator
+	proxy         kubeproxy.Proxy
+	nodeTTL       time.Duration
 }
 
 func New(config Config) *Server {
@@ -56,21 +56,21 @@ func New(config Config) *Server {
 	if nodeStore == nil {
 		nodeStore = store.NewInMemoryNodeStore()
 	}
-	podScheduler := config.Scheduler
-	if podScheduler == nil {
-		podScheduler = scheduler.NewNaiveScheduler()
+	podKubenavigator := config.Kubenavigator
+	if podKubenavigator == nil {
+		podKubenavigator = kubenavigator.NewNaiveKubenavigator()
 	}
 	nodeTTL := config.NodeTTL
 	if nodeTTL == 0 {
-		nodeTTL = scheduler.DefaultNodeTTL
+		nodeTTL = kubenavigator.DefaultNodeTTL
 	}
 	return &Server{
-		pods:      podStore,
-		services:  serviceStore,
-		nodes:     nodeStore,
-		scheduler: podScheduler,
-		proxy:     config.ServiceProxy,
-		nodeTTL:   nodeTTL,
+		pods:          podStore,
+		services:      serviceStore,
+		nodes:         nodeStore,
+		kubenavigator: podKubenavigator,
+		proxy:         config.ServiceProxy,
+		nodeTTL:       nodeTTL,
 	}
 }
 
@@ -376,7 +376,7 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request, namespac
 			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target a service")
 			return
 		}
-		ctrl := controller.NewServiceController(s.pods, s.services, s.proxy)
+		ctrl := kubecaptain.NewServiceKubecaptain(s.pods, s.services, s.proxy)
 		if err := ctrl.DeleteService(r.Context(), name, namespace); err != nil {
 			writeStoreError(w, err, "services", name)
 			return
@@ -430,7 +430,7 @@ func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (
 }
 
 func (s *Server) syncServices(ctx context.Context) error {
-	ctrl := controller.NewServiceController(s.pods, s.services, s.proxy)
+	ctrl := kubecaptain.NewServiceKubecaptain(s.pods, s.services, s.proxy)
 	return ctrl.Sync(ctx)
 }
 
@@ -442,7 +442,7 @@ func (s *Server) schedulePodIfPossible(p *pod.Pod) error {
 	if err != nil {
 		return fmt.Errorf("listing ready nodes: %w", err)
 	}
-	if err := s.scheduler.Schedule(p, nodes); err != nil {
+	if err := s.kubenavigator.Schedule(p, nodes); err != nil {
 		return fmt.Errorf("scheduling pod: %w", err)
 	}
 	return nil
@@ -461,7 +461,7 @@ func (s *Server) scheduleUnassignedPods() error {
 		if p.Spec.NodeName != "" {
 			continue
 		}
-		if err := s.scheduler.Schedule(p, nodes); err != nil {
+		if err := s.kubenavigator.Schedule(p, nodes); err != nil {
 			return fmt.Errorf("scheduling pod %s/%s: %w", p.Namespace, p.Name, err)
 		}
 		if p.Spec.NodeName == "" {

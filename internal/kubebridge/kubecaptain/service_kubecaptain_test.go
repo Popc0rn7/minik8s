@@ -1,4 +1,4 @@
-package controller
+package kubecaptain
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	store "minik8s/internal/kubecaptain/etcd"
+	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 )
@@ -37,7 +37,7 @@ func (m *mockServiceProxy) DeleteService(ctx context.Context, svc *service.Servi
 	return nil
 }
 
-func TestServiceControllerBuildsEndpointsAndAppliesProxy(t *testing.T) {
+func TestServiceKubecaptainBuildsEndpointsAndAppliesProxy(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
 	proxy := &mockServiceProxy{}
@@ -60,7 +60,7 @@ func TestServiceControllerBuildsEndpointsAndAppliesProxy(t *testing.T) {
 		Status: service.ServiceStatus{ClusterIP: "10.96.0.1"},
 	}))
 
-	ctrl := NewServiceController(podStore, serviceStore, proxy)
+	ctrl := NewServiceKubecaptain(podStore, serviceStore, proxy)
 	require.NoError(t, ctrl.Sync(context.Background()))
 
 	updated, err := serviceStore.Get("nginx-service", "default")
@@ -72,7 +72,7 @@ func TestServiceControllerBuildsEndpointsAndAppliesProxy(t *testing.T) {
 	assert.Equal(t, updated.Status.Endpoints, proxy.applied[0].Status.Endpoints)
 }
 
-func TestServiceControllerUpdatesEndpointsWhenPodChanges(t *testing.T) {
+func TestServiceKubecaptainUpdatesEndpointsWhenPodChanges(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
 	proxy := &mockServiceProxy{}
@@ -90,7 +90,7 @@ func TestServiceControllerUpdatesEndpointsWhenPodChanges(t *testing.T) {
 		Status: service.ServiceStatus{ClusterIP: "10.96.0.1"},
 	}))
 
-	ctrl := NewServiceController(podStore, serviceStore, proxy)
+	ctrl := NewServiceKubecaptain(podStore, serviceStore, proxy)
 	require.NoError(t, ctrl.Sync(context.Background()))
 	require.NoError(t, podStore.Create(&pod.Pod{
 		ObjectMeta: pod.ObjectMeta{Name: "nginx-b", Namespace: "default", Labels: map[string]string{"app": "nginx"}},
@@ -106,7 +106,7 @@ func TestServiceControllerUpdatesEndpointsWhenPodChanges(t *testing.T) {
 	assert.Len(t, proxy.applied, 2)
 }
 
-func TestServiceControllerDeleteCleansProxyAndStore(t *testing.T) {
+func TestServiceKubecaptainDeleteCleansProxyAndStore(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
 	proxy := &mockServiceProxy{}
@@ -115,7 +115,7 @@ func TestServiceControllerDeleteCleansProxyAndStore(t *testing.T) {
 		Status:     service.ServiceStatus{ClusterIP: "10.96.0.1"},
 	}))
 
-	ctrl := NewServiceController(podStore, serviceStore, proxy)
+	ctrl := NewServiceKubecaptain(podStore, serviceStore, proxy)
 	require.NoError(t, ctrl.DeleteService(context.Background(), "nginx-service", "default"))
 
 	_, err := serviceStore.Get("nginx-service", "default")

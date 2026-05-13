@@ -1,10 +1,10 @@
 MINIK8S ?= ./minik8s
 CNI_PLUGIN ?= .minik8s/cni/bin/minik8s-bridge
-APISERVER ?= http://127.0.0.1:18080
-CTL ?= env MINIK8S_APISERVER=$(APISERVER) $(MINIK8S)
+KUBEHARBOR ?= http://127.0.0.1:18080
+CTL ?= env MINIK8S_KUBEHARBOR=$(KUBEHARBOR) $(MINIK8S)
 RUN ?= sudo $(MINIK8S)
 
-.PHONY: build test kubecaptain kubelet-once kubelet cni-init net-registry netd-once doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
+.PHONY: build test kubebridge kubesailer-once kubesailer cni-init net-registry netd-once doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
 
 build:
 	go build -o $(MINIK8S) ./cmd/minik8s
@@ -13,14 +13,14 @@ build:
 test:
 	go test ./...
 
-kubecaptain: build
-	$(MINIK8S) kubecaptain --listen :18080
+kubebridge: build
+	$(MINIK8S) kubebridge --listen :18080
 
-kubelet-once: build
-	$(RUN) kubelet --node-name $(or $(NODE_NAME),node-a) --apiserver $(APISERVER) --once
+kubesailer-once: build
+	$(RUN) kubesailer --node-name $(or $(NODE_NAME),node-a) --kubeharbor $(KUBEHARBOR) --once
 
-kubelet: build
-	$(RUN) kubelet --node-name $(or $(NODE_NAME),node-a) --apiserver $(APISERVER)
+kubesailer: build
+	$(RUN) kubesailer --node-name $(or $(NODE_NAME),node-a) --kubeharbor $(KUBEHARBOR)
 
 cni-init: build
 	$(RUN) cni init

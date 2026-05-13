@@ -1,4 +1,4 @@
-package kubelet
+package kubesailer
 
 import (
 	"bytes"
@@ -36,7 +36,7 @@ func (f *fakePodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {
 	return nil
 }
 
-func TestKubeletSyncOnceRunsOnlyAssignedPods(t *testing.T) {
+func TestKubesailerSyncOnceRunsOnlyAssignedPods(t *testing.T) {
 	var logs bytes.Buffer
 	restore := minilog.SetOutput(&logs)
 	defer restore()
@@ -56,11 +56,11 @@ func TestKubeletSyncOnceRunsOnlyAssignedPods(t *testing.T) {
 	require.Len(t, client.updates, 1)
 	assert.Equal(t, "nginx", client.updates[0].Name)
 	assert.Equal(t, pod.PodRunning, client.updates[0].Status.Phase)
-	assert.Contains(t, logs.String(), "kubelet-sync: node=node-a assigned=1")
-	assert.Contains(t, logs.String(), "kubelet-pod-assigned: pod=default/nginx phase=Pending")
+	assert.Contains(t, logs.String(), "kubesailer-sync: node=node-a assigned=1")
+	assert.Contains(t, logs.String(), "kubesailer-pod-assigned: pod=default/nginx phase=Pending")
 }
 
-func TestKubeletSyncOnceCleansRemovedAssignedPods(t *testing.T) {
+func TestKubesailerSyncOnceCleansRemovedAssignedPods(t *testing.T) {
 	var logs bytes.Buffer
 	restore := minilog.SetOutput(&logs)
 	defer restore()
@@ -75,7 +75,7 @@ func TestKubeletSyncOnceCleansRemovedAssignedPods(t *testing.T) {
 
 	assert.NotEmpty(t, rt.RemoveSandboxCalls)
 	assert.NotEmpty(t, rt.RemoveContainerCalls)
-	assert.Contains(t, logs.String(), "kubelet-pod-removed: pod=default/nginx")
+	assert.Contains(t, logs.String(), "kubesailer-pod-removed: pod=default/nginx")
 }
 
 func testPod(name, nodeName string) *pod.Pod {

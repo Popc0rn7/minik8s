@@ -7,8 +7,8 @@ import (
 
 	"minik8s/internal/cli"
 	"minik8s/internal/cliui"
-	kubecaptain "minik8s/internal/kubecaptain"
-	store "minik8s/internal/kubecaptain/etcd"
+	kubebridge "minik8s/internal/kubebridge"
+	store "minik8s/internal/kubebridge/etcd"
 	dockerruntime "minik8s/internal/runtime/docker"
 )
 
@@ -24,7 +24,7 @@ func main() {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening node store: %v", err))
 		os.Exit(1)
 	}
-	captain := kubecaptain.New(kubecaptain.Config{
+	bridge := kubebridge.New(kubebridge.Config{
 		PodStore:     podStore,
 		ServiceStore: serviceStore,
 		NodeStore:    nodeStore,
@@ -34,7 +34,7 @@ func main() {
 		Store:        podStore,
 		ServiceStore: serviceStore,
 		NodeStore:    nodeStore,
-		Captain:      captain,
+		Bridge:       bridge,
 	}
 	if needsDockerRuntime(os.Args[1:]) {
 		runtime, err := dockerruntime.NewDockerRuntime()
@@ -61,7 +61,7 @@ func needsDockerRuntime(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	if args[0] == "kubelet" {
+	if args[0] == "kubesailer" {
 		return true
 	}
 	if args[0] == "doctor" && len(args) > 1 && args[1] == "docker" {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/bubbletea"
-	store "minik8s/internal/kubecaptain/etcd"
+	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/pod"
 )
 

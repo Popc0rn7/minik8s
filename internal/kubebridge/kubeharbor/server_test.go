@@ -1,4 +1,4 @@
-package apiserver
+package kubeharbor
 
 import (
 	"bytes"
@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	store "minik8s/internal/kubecaptain/etcd"
+	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
@@ -56,7 +56,7 @@ func serve(t *testing.T, handler http.Handler, method, path, body string) *httpt
 	return rec
 }
 
-func TestAPIServerPodCRUDDoesNotRunRuntime(t *testing.T) {
+func TestKubeharborPodCRUDDoesNotRunRuntime(t *testing.T) {
 	srv := newTestServer()
 	body := `{
 		"kind":"Pod",
@@ -83,7 +83,7 @@ func TestAPIServerPodCRUDDoesNotRunRuntime(t *testing.T) {
 	assert.Contains(t, del.Body.String(), `"status":"Success"`)
 }
 
-func TestAPIServerDiscoveryIncludesServices(t *testing.T) {
+func TestKubeharborDiscoveryIncludesServices(t *testing.T) {
 	rec := serve(t, newTestServer(), http.MethodGet, "/api/v1", "")
 
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -92,7 +92,7 @@ func TestAPIServerDiscoveryIncludesServices(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"name":"nodes"`)
 }
 
-func TestAPIServerPodCRUDLogsControlPlaneEvents(t *testing.T) {
+func TestKubeharborPodCRUDLogsControlPlaneEvents(t *testing.T) {
 	var logs bytes.Buffer
 	restore := minilog.SetOutput(&logs)
 	defer restore()
@@ -116,7 +116,7 @@ func TestAPIServerPodCRUDLogsControlPlaneEvents(t *testing.T) {
 	assert.Contains(t, logs.String(), "pod-delete: pod=default/nginx")
 }
 
-func TestAPIServerServiceCRUD(t *testing.T) {
+func TestKubeharborServiceCRUD(t *testing.T) {
 	var logs bytes.Buffer
 	restore := minilog.SetOutput(&logs)
 	defer restore()
@@ -152,7 +152,7 @@ func TestAPIServerServiceCRUD(t *testing.T) {
 	assert.Contains(t, logs.String(), "service-delete: service=default/nginx-service")
 }
 
-func TestAPIServerServiceCRUDAppliesServiceProxy(t *testing.T) {
+func TestKubeharborServiceCRUDAppliesServiceProxy(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
 	proxy := &mockServiceProxy{}
@@ -189,7 +189,7 @@ func TestAPIServerServiceCRUDAppliesServiceProxy(t *testing.T) {
 	assert.Equal(t, "nginx-service", proxy.deleted[0].Name)
 }
 
-func TestAPIServerNodePodsEndpointFiltersByNodeName(t *testing.T) {
+func TestKubeharborNodePodsEndpointFiltersByNodeName(t *testing.T) {
 	srv := newTestServer()
 	for _, item := range []struct {
 		name string
@@ -210,7 +210,7 @@ func TestAPIServerNodePodsEndpointFiltersByNodeName(t *testing.T) {
 	assert.NotContains(t, rec.Body.String(), `"name":"b"`)
 }
 
-func TestAPIServerNodePodsEndpointRegistersHeartbeat(t *testing.T) {
+func TestKubeharborNodePodsEndpointRegistersHeartbeat(t *testing.T) {
 	srv := newTestServer()
 
 	rec := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
@@ -223,7 +223,7 @@ func TestAPIServerNodePodsEndpointRegistersHeartbeat(t *testing.T) {
 	assert.Contains(t, nodes.Body.String(), `"status":"Ready"`)
 }
 
-func TestAPIServerSchedulesUnassignedPodOnHeartbeat(t *testing.T) {
+func TestKubeharborSchedulesUnassignedPodOnHeartbeat(t *testing.T) {
 	srv := newTestServer()
 	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/pods", `{
 		"kind":"Pod",
@@ -241,7 +241,7 @@ func TestAPIServerSchedulesUnassignedPodOnHeartbeat(t *testing.T) {
 	assert.Contains(t, list.Body.String(), `"nodeName":"node-a"`)
 }
 
-func TestAPIServerGetNode(t *testing.T) {
+func TestKubeharborGetNode(t *testing.T) {
 	srv := newTestServer()
 	heartbeat := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
 	require.Equal(t, http.StatusOK, heartbeat.Code, heartbeat.Body.String())
@@ -252,7 +252,7 @@ func TestAPIServerGetNode(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"name":"node-a"`)
 }
 
-func TestAPIServerLogsNodePollAndPodStatusUpdate(t *testing.T) {
+func TestKubeharborLogsNodePollAndPodStatusUpdate(t *testing.T) {
 	var logs bytes.Buffer
 	restore := minilog.SetOutput(&logs)
 	defer restore()
@@ -277,7 +277,7 @@ func TestAPIServerLogsNodePollAndPodStatusUpdate(t *testing.T) {
 	assert.Contains(t, logs.String(), "pod-status-update: node=node-a pod=default/nginx phase=Running")
 }
 
-func TestAPIServerPodStatusEndpointUpdatesOnlyStatus(t *testing.T) {
+func TestKubeharborPodStatusEndpointUpdatesOnlyStatus(t *testing.T) {
 	srv := newTestServer()
 	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/pods", `{
 		"kind":"Pod",
@@ -297,7 +297,7 @@ func TestAPIServerPodStatusEndpointUpdatesOnlyStatus(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"nodeName":"node-a"`)
 }
 
-func TestAPIServerPodStatusUpdateRefreshesServiceEndpoints(t *testing.T) {
+func TestKubeharborPodStatusUpdateRefreshesServiceEndpoints(t *testing.T) {
 	srv := newTestServer()
 	createPod := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/pods", `{
 		"kind":"Pod",
@@ -329,14 +329,14 @@ func TestAPIServerPodStatusUpdateRefreshesServiceEndpoints(t *testing.T) {
 	assert.Equal(t, "10.244.0.2", svc.Status.Endpoints[0].IP)
 }
 
-func TestAPIServerRejectsUnsupportedResourceWithStatus(t *testing.T) {
+func TestKubeharborRejectsUnsupportedResourceWithStatus(t *testing.T) {
 	rec := serve(t, newTestServer(), http.MethodGet, "/api/v1/namespaces/default/configmaps", "")
 
 	require.Equal(t, http.StatusNotFound, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"kind":"Status"`)
 }
 
-func TestAPIServerDecodesYAMLManifest(t *testing.T) {
+func TestKubeharborDecodesYAMLManifest(t *testing.T) {
 	srv := newTestServer()
 	body := bytes.NewBufferString(`
 kind: Pod

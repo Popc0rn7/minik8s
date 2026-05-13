@@ -1,4 +1,4 @@
-package scheduler
+package kubenavigator
 
 import (
 	"fmt"
@@ -12,20 +12,20 @@ import (
 
 const DefaultNodeTTL = 30 * time.Second
 
-type Scheduler interface {
+type Kubenavigator interface {
 	Schedule(p *pod.Pod, nodes []node.Node) error
 }
 
-type NaiveScheduler struct {
+type NaiveKubenavigator struct {
 	mu   sync.Mutex
 	next int
 }
 
-func NewNaiveScheduler() *NaiveScheduler {
-	return &NaiveScheduler{}
+func NewNaiveKubenavigator() *NaiveKubenavigator {
+	return &NaiveKubenavigator{}
 }
 
-func (s *NaiveScheduler) Schedule(p *pod.Pod, nodes []node.Node) error {
+func (s *NaiveKubenavigator) Schedule(p *pod.Pod, nodes []node.Node) error {
 	if p == nil {
 		return fmt.Errorf("pod is required")
 	}

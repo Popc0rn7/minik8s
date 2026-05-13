@@ -74,7 +74,7 @@
 | 任务 | 说明 | 负责 |
 |------|------|------|
 | Node 抽象 | 控制面/数据面分离、Node 注册 | popc0rn |
-| Scheduler | Pod 调度策略（RR/随机） | popc0rn |
+| Kubenavigator | Pod 调度策略（RR/随机） | popc0rn |
 | HeartBeat | 控制面-数据面心跳检测 | popc0rn |
 | Serverless 平台 | Function 抽象、Http/Event Trigger | popc0rn |
 | Serverless Workflow | 函数链、DAG 分支执行 | popc0rn |
@@ -131,7 +131,7 @@
 ```
 minik8s/
 ├── cmd/           # 主程序入口
-├── internal/      # 内部包（apiserver, kubelet, scheduler, etc.）
+├── internal/      # 内部包（kubeharbor, kubesailer, kubenavigator, etc.）
 ├── pkg/           # 公共库
 ├── api/           # Protobuf 定义
 ├── configs/       # 配置文件模板

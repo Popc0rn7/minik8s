@@ -1,4 +1,4 @@
-package controller
+package kubecaptain
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	store "minik8s/internal/kubecaptain/etcd"
+	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
@@ -19,21 +19,21 @@ func NewIPTablesServiceProxy() *kubeproxy.IPTablesProxy {
 	return kubeproxy.NewIPTablesProxy(nil)
 }
 
-type ServiceController struct {
+type ServiceKubecaptain struct {
 	podStore     store.PodStore
 	serviceStore store.ServiceStore
 	proxy        ServiceProxy
 }
 
-func NewServiceController(podStore store.PodStore, serviceStore store.ServiceStore, proxy ServiceProxy) *ServiceController {
-	return &ServiceController{
+func NewServiceKubecaptain(podStore store.PodStore, serviceStore store.ServiceStore, proxy ServiceProxy) *ServiceKubecaptain {
+	return &ServiceKubecaptain{
 		podStore:     podStore,
 		serviceStore: serviceStore,
 		proxy:        proxy,
 	}
 }
 
-func (c *ServiceController) Sync(ctx context.Context) error {
+func (c *ServiceKubecaptain) Sync(ctx context.Context) error {
 	services, err := c.serviceStore.List("", nil)
 	if err != nil {
 		return fmt.Errorf("listing services: %w", err)
@@ -52,7 +52,7 @@ func (c *ServiceController) Sync(ctx context.Context) error {
 	return nil
 }
 
-func (c *ServiceController) DeleteService(ctx context.Context, name, namespace string) error {
+func (c *ServiceKubecaptain) DeleteService(ctx context.Context, name, namespace string) error {
 	svc, err := c.serviceStore.Get(name, namespace)
 	if err != nil {
 		return err
@@ -65,7 +65,7 @@ func (c *ServiceController) DeleteService(ctx context.Context, name, namespace s
 	return c.serviceStore.Delete(name, namespace)
 }
 
-func (c *ServiceController) reconcileService(ctx context.Context, svc *service.Service) error {
+func (c *ServiceKubecaptain) reconcileService(ctx context.Context, svc *service.Service) error {
 	pods, err := c.podStore.List(svc.Namespace, &svc.Spec.Selector)
 	if err != nil {
 		return fmt.Errorf("listing selected pods: %w", err)

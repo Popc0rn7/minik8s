@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"minik8s/internal/kubecaptain/apiserver"
-	store "minik8s/internal/kubecaptain/etcd"
+	store "minik8s/internal/kubebridge/etcd"
+	"minik8s/internal/kubebridge/kubeharbor"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 	"minik8s/test/mock"
@@ -49,7 +49,7 @@ func (m *mockServiceProxy) DeleteService(ctx context.Context, svc *service.Servi
 func TestCLIApplyGetDeletePod(t *testing.T) {
 	serverStore := store.NewInMemoryPodStore()
 	localStore := store.NewInMemoryPodStore()
-	app := newHTTPTestApp(t, apiserver.New(apiserver.Config{PodStore: serverStore, NodeStore: store.NewInMemoryNodeStore()}), localStore, store.NewInMemoryServiceStore())
+	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{PodStore: serverStore, NodeStore: store.NewInMemoryNodeStore()}), localStore, store.NewInMemoryServiceStore())
 
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")
 	var out bytes.Buffer
@@ -80,7 +80,7 @@ func TestCLIApplyGetDeletePod(t *testing.T) {
 	assert.Contains(t, out.String(), "pod/nginx-pod deleted")
 }
 
-func TestCLIApplyGetDeleteRequireAPIServer(t *testing.T) {
+func TestCLIApplyGetDeleteRequireKubeharbor(t *testing.T) {
 	app := New(Config{
 		Runtime:      mock.NewMockRuntime(),
 		Store:        store.NewInMemoryPodStore(),
@@ -100,7 +100,7 @@ func TestCLIApplyGetDeleteRequireAPIServer(t *testing.T) {
 	} {
 		err := app.Run(context.Background(), args, &out)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "MINIK8S_APISERVER is required for apply/get/delete")
+		assert.Contains(t, err.Error(), "MINIK8S_KUBEHARBOR is required for apply/get/delete")
 	}
 }
 
@@ -296,7 +296,7 @@ func TestCLIDoctorDockerPullsImage(t *testing.T) {
 
 func TestCLIGetPodsShowsPodIP(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
-	app := newHTTPTestApp(t, apiserver.New(apiserver.Config{PodStore: podStore, NodeStore: store.NewInMemoryNodeStore()}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{PodStore: podStore, NodeStore: store.NewInMemoryNodeStore()}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")
 	var out bytes.Buffer
 
@@ -318,7 +318,7 @@ func TestCLIGetNodesShowsHeartbeatNodes(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	nodeStore := store.NewInMemoryNodeStore()
 	require.NoError(t, nodeStore.UpsertHeartbeat("node-a"))
-	app := newHTTPTestApp(t, apiserver.New(apiserver.Config{
+	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{
 		PodStore:  store.NewInMemoryPodStore(),
 		NodeStore: nodeStore,
 	}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
@@ -355,7 +355,7 @@ func TestCLIApplyStoresPendingPodWithoutRuntimeSync(t *testing.T) {
 	runtime := mock.NewMockRuntime()
 	runtime.ShouldFailCreateSandbox = true
 	podStore := store.NewInMemoryPodStore()
-	app := newHTTPTestApp(t, apiserver.New(apiserver.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")
 	var out bytes.Buffer
 
@@ -393,7 +393,7 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	serviceStore := store.NewInMemoryServiceStore()
 	localServiceStore := store.NewInMemoryServiceStore()
 	proxy := &mockServiceProxy{}
-	server := apiserver.New(apiserver.Config{PodStore: podStore, ServiceStore: serviceStore})
+	server := kubeharbor.New(kubeharbor.Config{PodStore: podStore, ServiceStore: serviceStore})
 	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), localServiceStore)
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "service_clusterip_nginx.yaml")
 	var out bytes.Buffer
@@ -419,7 +419,7 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 
 func newHTTPTestApp(t *testing.T, handler http.Handler, podStore store.PodStore, serviceStore store.ServiceStore) *App {
 	t.Helper()
-	t.Setenv("MINIK8S_APISERVER", "http://minik8s.test")
+	t.Setenv("MINIK8S_KUBEHARBOR", "http://minik8s.test")
 	return New(Config{
 		Runtime:      mock.NewMockRuntime(),
 		Store:        podStore,

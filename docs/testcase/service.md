@@ -14,8 +14,8 @@ unset MINIK8S_CNI_DISABLED
 ./minik8s cni init
 go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
 ./minik8s doctor network
-./minik8s kubecaptain --listen :8080
-sudo ./minik8s kubelet --node-name node-a --apiserver http://127.0.0.1:8080
+./minik8s kubebridge --listen :8080
+sudo ./minik8s kubesailer --node-name node-a --kubeharbor http://127.0.0.1:8080
 ```
 
 如需隔离本次 case 的状态：
@@ -35,7 +35,7 @@ iptables-save -t nat | grep MK8S-SVC || true
 
 | kubeproxy 能力 | 验证 case | 层级 | 主要命令 | 通过标准 |
 | --- | --- | --- | --- | --- |
-| ServiceController 生成期望状态并调用 kubeproxy | KP-01 | 控制面 | `go test`、`get services` | endpoints 与 matching Running Pod 一致 |
+| ServiceKubecaptain 生成期望状态并调用 kubeproxy | KP-01 | 控制面 | `go test`、`get services` | endpoints 与 matching Running Pod 一致 |
 | ClusterIP 入口规则 | KP-02 | iptables 规则面 | `iptables-save -t nat` | PREROUTING/OUTPUT 指向 `MK8S-SVC-*` |
 | ClusterIP 数据面转发 | KP-03 | 数据面 | client Pod 内 `wget 10.96.0.1:80` | 返回 nginx 页面 |
 | NodePort 入口规则和宿主机访问 | KP-04 | 规则面 + 数据面 | `curl 127.0.0.1:30080` | 返回 nginx 页面 |
@@ -46,12 +46,12 @@ iptables-save -t nat | grep MK8S-SVC || true
 
 ## 2. Case KP-01：控制器生成 Service 期望状态
 
-目标：验证 kubelet 将分配给本节点的 Pod 运行起来后，ServiceController 能从 Service selector 和 Running Pod 生成 endpoints，并把更新后的 Service 交给 kubeproxy 抽象。
+目标：验证 kubesailer 将分配给本节点的 Pod 运行起来后，ServiceKubecaptain 能从 Service selector 和 Running Pod 生成 endpoints，并把更新后的 Service 交给 kubeproxy 抽象。
 
 自动化测试：
 
 ```bash
-go test ./internal/kubecaptain/controller -run 'TestServiceController(BuildsEndpointsAndAppliesProxy|UpdatesEndpointsWhenPodChanges|DeleteCleansProxyAndStore)' -count=1
+go test ./internal/kubebridge/kubecaptain -run 'TestServiceKubecaptain(BuildsEndpointsAndAppliesProxy|UpdatesEndpointsWhenPodChanges|DeleteCleansProxyAndStore)' -count=1
 ```
 
 CLI 验证：
@@ -272,7 +272,7 @@ iptables-save -t nat | grep MK8S-SVC || true
 
 ```bash
 go test ./internal/kubeproxy -count=1
-go test ./internal/service ./internal/kubecaptain/controller ./internal/cli -count=1
+go test ./internal/service ./internal/kubebridge/kubecaptain ./internal/cli -count=1
 ```
 
 期望：
@@ -280,7 +280,7 @@ go test ./internal/service ./internal/kubecaptain/controller ./internal/cli -cou
 - `TestIPTablesProxySyncServiceProgramsClusterIPAndNodePort` 验证 ClusterIP、NodePort 和多 endpoint DNAT 命令。
 - `TestIPTablesProxySyncAllReconcilesEveryService` 验证 kubeproxy 抽象支持全量同步入口。
 - `TestIPTablesProxyDeleteServiceIgnoresMissingRules` 验证删除时缺失旧规则不阻塞清理。
-- ServiceController/CLI 测试仍通过，说明控制面只依赖 `kubeproxy.Proxy`，不依赖具体 iptables 实现。
+- ServiceKubecaptain/CLI 测试仍通过，说明控制面只依赖 `kubeproxy.Proxy`，不依赖具体 iptables 实现。
 
 ## 10. 实现设计映射
 
@@ -290,11 +290,11 @@ ClusterIP 分配：`internal/service/clusterip.go` 定义默认 ClusterIP 和分
 
 YAML 解析：`pkg/yaml/service.go` 和 `pkg/yaml/defaults.go` 读取并校验 Service manifest，默认 `namespace=default`、`type=ClusterIP`、`protocol=TCP`。
 
-状态持久化：`internal/kubecaptain/etcd/service_store.go` 提供文件和内存两种 ServiceStore。默认文件为 `.minik8s/state/services.json`，也可通过 `MINIK8S_STATE_DIR` 隔离。
+状态持久化：`internal/kubebridge/etcd/service_store.go` 提供文件和内存两种 ServiceStore。默认文件为 `.minik8s/state/services.json`，也可通过 `MINIK8S_STATE_DIR` 隔离。
 
-期望状态生成：`internal/kubecaptain/controller/service_controller.go` 读取 Service 和 Running Pod，按 selector 匹配同 namespace Pod，并将 `PodIP:targetPort` 写入 endpoints。
+期望状态生成：`internal/kubebridge/kubecaptain/service_kubecaptain.go` 读取 Service 和 Running Pod，按 selector 匹配同 namespace Pod，并将 `PodIP:targetPort` 写入 endpoints。
 
-kubeproxy 抽象：`internal/kubeproxy/proxy.go` 定义 `SyncService`、`SyncAll`、`DeleteService`。ServiceController 和 CLI 面向该接口，backend 可替换。
+kubeproxy 抽象：`internal/kubeproxy/proxy.go` 定义 `SyncService`、`SyncAll`、`DeleteService`。ServiceKubecaptain 和 CLI 面向该接口，backend 可替换。
 
 iptables backend：`internal/kubeproxy/iptables.go` 的 `IPTablesProxy` 使用 iptables `nat` 表维护 `MK8S-SVC-*` chain。ClusterIP 和 NodePort 入口规则挂到 `PREROUTING` 和 `OUTPUT`；endpoint 规则用 DNAT 转发到 Pod IP；多个 endpoint 通过 `statistic --mode random` 分摊。
 

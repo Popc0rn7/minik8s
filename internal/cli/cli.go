@@ -15,11 +15,11 @@ import (
 
 	"minik8s/internal/cliui"
 	"minik8s/internal/cni"
-	kubecaptain "minik8s/internal/kubecaptain"
-	"minik8s/internal/kubecaptain/controller"
-	store "minik8s/internal/kubecaptain/etcd"
-	"minik8s/internal/kubelet"
+	kubebridge "minik8s/internal/kubebridge"
+	store "minik8s/internal/kubebridge/etcd"
+	"minik8s/internal/kubebridge/kubecaptain"
 	"minik8s/internal/kubeproxy"
+	"minik8s/internal/kubesailer"
 	"minik8s/internal/minilog"
 	"minik8s/internal/netagent"
 	"minik8s/internal/netregistry"
@@ -37,8 +37,8 @@ type Config struct {
 	Store        store.PodStore
 	ServiceStore store.ServiceStore
 	NodeStore    store.NodeStore
-	Captain      *kubecaptain.Kubecaptain
-	Network      controller.PodNetworkManager
+	Bridge       *kubebridge.Kubebridge
+	Network      kubecaptain.PodNetworkManager
 	ServiceProxy kubeproxy.Proxy
 	HTTPClient   *http.Client
 }
@@ -49,8 +49,8 @@ type App struct {
 	store        store.PodStore
 	serviceStore store.ServiceStore
 	nodeStore    store.NodeStore
-	captain      *kubecaptain.Kubecaptain
-	network      controller.PodNetworkManager
+	bridge       *kubebridge.Kubebridge
+	network      kubecaptain.PodNetworkManager
 	serviceProxy kubeproxy.Proxy
 	httpClient   *http.Client
 }
@@ -73,9 +73,9 @@ func New(config Config) *App {
 	if serviceProxy == nil && os.Getenv("MINIK8S_SERVICE_PROXY_DISABLED") != "1" {
 		serviceProxy = kubeproxy.NewIPTablesProxy(nil)
 	}
-	captain := config.Captain
-	if captain == nil {
-		captain = kubecaptain.New(kubecaptain.Config{
+	bridge := config.Bridge
+	if bridge == nil {
+		bridge = kubebridge.New(kubebridge.Config{
 			PodStore:     config.Store,
 			ServiceStore: serviceStore,
 			NodeStore:    nodeStore,
@@ -87,7 +87,7 @@ func New(config Config) *App {
 		store:        config.Store,
 		serviceStore: serviceStore,
 		nodeStore:    nodeStore,
-		captain:      captain,
+		bridge:       bridge,
 		network:      network,
 		serviceProxy: serviceProxy,
 		httpClient:   config.HTTPClient,
@@ -117,10 +117,10 @@ func (a *App) Run(ctx context.Context, args []string, out io.Writer) error {
 		return a.netRegistry(ctx, args[1:], out)
 	case "netd":
 		return a.netd(ctx, args[1:], out)
-	case "kubecaptain":
-		return a.kubecaptain(ctx, args[1:], out)
-	case "kubelet":
-		return a.kubelet(ctx, args[1:], out)
+	case "kubebridge":
+		return a.kubebridge(ctx, args[1:], out)
+	case "kubesailer":
+		return a.kubesailer(ctx, args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -132,7 +132,7 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	minilog.Info("cli-apply", "apiserver=%s", client.baseURL)
+	minilog.Info("cli-apply", "kubeharbor=%s", client.baseURL)
 	path, err := valueFlag(args, "-f")
 	if err != nil {
 		return err
@@ -326,7 +326,7 @@ func (a *App) getNodes(ctx context.Context, client *controlPlaneClient, out io.W
 }
 
 func (a *App) controlPlaneClient() (*controlPlaneClient, error) {
-	return newControlPlaneClient(os.Getenv("MINIK8S_APISERVER"), a.httpClient)
+	return newControlPlaneClient(os.Getenv("MINIK8S_KUBEHARBOR"), a.httpClient)
 }
 
 func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
@@ -700,24 +700,24 @@ func parseNetDOptions(args []string) (netDOptions, error) {
 	return options, nil
 }
 
-type kubecaptainOptions struct {
+type kubebridgeOptions struct {
 	listen string
 }
 
-func (a *App) kubecaptain(ctx context.Context, args []string, out io.Writer) error {
-	options, err := parseKubecaptainOptions(args)
+func (a *App) kubebridge(ctx context.Context, args []string, out io.Writer) error {
+	options, err := parseKubebridgeOptions(args)
 	if err != nil {
 		return err
 	}
 	server := &http.Server{
 		Addr:    options.listen,
-		Handler: a.captain.Handler(),
+		Handler: a.bridge.Handler(),
 	}
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- server.ListenAndServe()
 	}()
-	if err := writes(out, cliui.InfoLine("kubecaptain listening on %s", options.listen)); err != nil {
+	if err := writes(out, cliui.InfoLine("kubebridge listening on %s", options.listen)); err != nil {
 		return err
 	}
 	select {
@@ -736,8 +736,8 @@ func (a *App) kubecaptain(ctx context.Context, args []string, out io.Writer) err
 	}
 }
 
-func parseKubecaptainOptions(args []string) (kubecaptainOptions, error) {
-	options := kubecaptainOptions{listen: ":8080"}
+func parseKubebridgeOptions(args []string) (kubebridgeOptions, error) {
+	options := kubebridgeOptions{listen: ":8080"}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -747,45 +747,45 @@ func parseKubecaptainOptions(args []string) (kubecaptainOptions, error) {
 			}
 			options.listen = args[i]
 		default:
-			return options, fmt.Errorf("unknown kubecaptain flag %q", args[i])
+			return options, fmt.Errorf("unknown kubebridge flag %q", args[i])
 		}
 	}
 	return options, nil
 }
 
-type kubeletOptions struct {
-	nodeName  string
-	apiserver string
-	interval  time.Duration
-	once      bool
+type kubesailerOptions struct {
+	nodeName   string
+	kubeharbor string
+	interval   time.Duration
+	once       bool
 }
 
-func (a *App) kubelet(ctx context.Context, args []string, out io.Writer) error {
-	options, err := parseKubeletOptions(args)
+func (a *App) kubesailer(ctx context.Context, args []string, out io.Writer) error {
+	options, err := parseKubesailerOptions(args)
 	if err != nil {
 		return err
 	}
-	k := kubelet.New(kubelet.Config{
+	k := kubesailer.New(kubesailer.Config{
 		NodeName: options.nodeName,
 		Runtime:  a.runtime,
 		Network:  a.network,
-		Client:   kubelet.NewHTTPPodClient(options.apiserver, nil),
+		Client:   kubesailer.NewHTTPPodClient(options.kubeharbor, nil),
 		Interval: options.interval,
 	})
 	if options.once {
 		if err := k.SyncOnce(ctx); err != nil {
 			return err
 		}
-		return writes(out, cliui.SuccessLine("kubelet synced node=%s", options.nodeName))
+		return writes(out, cliui.SuccessLine("kubesailer synced node=%s", options.nodeName))
 	}
-	if err := writes(out, cliui.InfoLine("kubelet started node=%s apiserver=%s", options.nodeName, options.apiserver)); err != nil {
+	if err := writes(out, cliui.InfoLine("kubesailer started node=%s kubeharbor=%s", options.nodeName, options.kubeharbor)); err != nil {
 		return err
 	}
 	return k.Run(ctx)
 }
 
-func parseKubeletOptions(args []string) (kubeletOptions, error) {
-	options := kubeletOptions{interval: 5 * time.Second}
+func parseKubesailerOptions(args []string) (kubesailerOptions, error) {
+	options := kubesailerOptions{interval: 5 * time.Second}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--node-name":
@@ -794,12 +794,12 @@ func parseKubeletOptions(args []string) (kubeletOptions, error) {
 				return options, fmt.Errorf("missing value for --node-name")
 			}
 			options.nodeName = args[i]
-		case "--apiserver":
+		case "--kubeharbor":
 			i++
 			if i >= len(args) {
-				return options, fmt.Errorf("missing value for --apiserver")
+				return options, fmt.Errorf("missing value for --kubeharbor")
 			}
-			options.apiserver = args[i]
+			options.kubeharbor = args[i]
 		case "--interval":
 			i++
 			if i >= len(args) {
@@ -813,20 +813,20 @@ func parseKubeletOptions(args []string) (kubeletOptions, error) {
 		case "--once":
 			options.once = true
 		default:
-			return options, fmt.Errorf("unknown kubelet flag %q", args[i])
+			return options, fmt.Errorf("unknown kubesailer flag %q", args[i])
 		}
 	}
 	if options.nodeName == "" {
 		return options, fmt.Errorf("--node-name is required")
 	}
-	if options.apiserver == "" {
-		return options, fmt.Errorf("--apiserver is required")
+	if options.kubeharbor == "" {
+		return options, fmt.Errorf("--kubeharbor is required")
 	}
 	return options, nil
 }
 
 func (a *App) usage(out io.Writer) error {
-	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s kubecaptain [--listen :18080] | kubelet --node-name <node> --apiserver <url> | apply -f <manifest.yaml> | get pods|services|nodes | delete pod|service <name> | doctor docker|network | cni init (set MINIK8S_APISERVER for apply/get/delete)"))
+	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s kubebridge [--listen :18080] | kubesailer --node-name <node> --kubeharbor <url> | apply -f <manifest.yaml> | get pods|services|nodes | delete pod|service <name> | doctor docker|network | cni init (set MINIK8S_KUBEHARBOR for apply/get/delete)"))
 	return err
 }
 
@@ -987,7 +987,7 @@ type cniNetworkManager struct {
 	runner *cni.Runner
 }
 
-func (m cniNetworkManager) Add(ctx context.Context, req controller.PodNetworkRequest) (controller.PodNetworkResult, error) {
+func (m cniNetworkManager) Add(ctx context.Context, req kubecaptain.PodNetworkRequest) (kubecaptain.PodNetworkResult, error) {
 	result, err := m.runner.Add(ctx, cni.PodNetwork{
 		ContainerID: req.SandboxID,
 		NetNS:       req.NetNSPath,
@@ -996,12 +996,12 @@ func (m cniNetworkManager) Add(ctx context.Context, req controller.PodNetworkReq
 		Namespace:   req.Pod.Namespace,
 	})
 	if err != nil {
-		return controller.PodNetworkResult{}, err
+		return kubecaptain.PodNetworkResult{}, err
 	}
-	return controller.PodNetworkResult{PodIP: result.PodIP, CNIResult: result.Raw}, nil
+	return kubecaptain.PodNetworkResult{PodIP: result.PodIP, CNIResult: result.Raw}, nil
 }
 
-func (m cniNetworkManager) Del(ctx context.Context, req controller.PodNetworkRequest) error {
+func (m cniNetworkManager) Del(ctx context.Context, req kubecaptain.PodNetworkRequest) error {
 	return m.runner.Del(ctx, cni.PodNetwork{
 		ContainerID: req.SandboxID,
 		NetNS:       req.NetNSPath,
@@ -1011,7 +1011,7 @@ func (m cniNetworkManager) Del(ctx context.Context, req controller.PodNetworkReq
 	})
 }
 
-func defaultNetworkManager() controller.PodNetworkManager {
+func defaultNetworkManager() kubecaptain.PodNetworkManager {
 	if os.Getenv("MINIK8S_CNI_DISABLED") == "1" {
 		return nil
 	}

@@ -12,8 +12,8 @@ unset MINIK8S_CNI_DISABLED
 ./minik8s cni init
 go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
 ./minik8s doctor network
-./minik8s kubecaptain --listen :8080
-sudo ./minik8s kubelet --node-name node-a --apiserver http://127.0.0.1:8080
+./minik8s kubebridge --listen :8080
+sudo ./minik8s kubesailer --node-name node-a --kubeharbor http://127.0.0.1:8080
 ```
 
 期望 `doctor network` 输出：
@@ -33,7 +33,7 @@ rm -rf .minik8s/testcase-state .minik8s/state/cni-ipam.json
 
 | Handout 要求 | 验证 case | Manifest | 主要命令 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| Pod 启动时分配独立内网 IP | CNI-01 | `pod_nginx.yaml`、`pod_busybox_client.yaml` | `apply`、`kubelet`、`get pods` | 已实现，可验证 |
+| Pod 启动时分配独立内网 IP | CNI-01 | `pod_nginx.yaml`、`pod_busybox_client.yaml` | `apply`、`kubesailer`、`get pods` | 已实现，可验证 |
 | Pod IP 写入可视化输出 | CNI-01 | 同上 | `get pods` | 已实现，可验证 |
 | 同节点 Pod 通过 CNI IP 直接通信 | CNI-02 | 同上 | client Pod 内 `wget serverIP` | 已实现，需 root/网络环境 |
 | 删除 Pod 时释放 CNI 状态 | CNI-03 | 同上 | `delete pod`、检查 IPAM 状态 | 已实现，可验证 |
@@ -63,7 +63,7 @@ cat .minik8s/state/cni-ipam.json
 期望：
 
 - `doctor network` 显示配置和插件均存在。
-- `apply` 后两个 Pod 进入 `Pending`，kubelet 同步后均为 `Running`。
+- `apply` 后两个 Pod 进入 `Pending`，kubesailer 同步后均为 `Running`。
 - `get pods` 的 `IP` 列中，`nginx-pod` 和 `busybox-client` 均显示 `10.244.0.0/24` 内的不同 IP，通常从 `10.244.0.2` 开始。
 - `.minik8s/state/cni-ipam.json` 中有 `default/nginx-pod` 和 `default/busybox-client` 两个 allocation。
 
@@ -110,7 +110,7 @@ head -n 1 /tmp/minik8s-cni-response.html
 
 ## 4. Case CNI-03：验证 Pod 删除时释放 CNI 状态
 
-目标：验证删除 Pod 时 controller 调用 CNI `DEL`，释放 IPAM 分配并清理 runtime 资源。
+目标：验证删除 Pod 时 kubecaptain 调用 CNI `DEL`，释放 IPAM 分配并清理 runtime 资源。
 
 流程：
 
@@ -144,7 +144,7 @@ Handout 要求 “同节点或跨节点” Pod 都能通过 CNI 直接通信。�
 
 - `minik8s cni init` 只生成单节点默认配置：`podCIDR=10.244.0.0/24`、`gateway=10.244.0.1`。
 - 代码中还没有 Node 抽象、节点 PodCIDR 分配、跨节点 route 自动下发流程。
-- 因此跨节点通信无法仅通过当前 CLI 完整复现，需要后续多机 Node/Scheduler 功能补齐后再沉淀自动化 case。
+- 因此跨节点通信无法仅通过当前 CLI 完整复现，需要后续多机 Node/Kubenavigator 功能补齐后再沉淀自动化 case。
 
 建议的后续验收 case：
 
@@ -167,10 +167,10 @@ CNI 发现：`defaultNetworkManager` 检测 CNI conf dir 后创建 `internal/cni
 
 CNI 调用：`internal/cni/runner.go` 读取第一个 `.conf/.conflist/.json`，解析插件 type，执行插件二进制并设置 `CNI_COMMAND`、`CNI_CONTAINERID`、`CNI_NETNS`、`CNI_IFNAME`、`K8S_POD_NAME`、`K8S_POD_NAMESPACE`。
 
-Pod 接入点：`internal/kubecaptain/controller/pod_controller.go` 创建并启动 sandbox 后，通过 runtime 获取 sandbox netns 路径，再调用 `network.Add`。成功后把 `PodIP` 和原始 CNI result 写入 Pod status。
+Pod 接入点：`internal/kubebridge/kubecaptain/pod_kubecaptain.go` 创建并启动 sandbox 后，通过 runtime 获取 sandbox netns 路径，再调用 `network.Add`。成功后把 `PodIP` 和原始 CNI result 写入 Pod status。
 
 Bridge 插件：`internal/cniplugin/bridge.go` 创建/复用 `mk8s0`，创建 veth pair，将一端放入 Pod netns，配置 Pod IP、默认路由和宿主机 NAT。
 
 IPAM：`internal/cniplugin/ipam.go` 使用 `.minik8s/state/cni-ipam.json` 持久化 Pod IP allocation；key 优先使用 `namespace/name`，保证同一 Pod 重建时可获得稳定 IP。
 
-删除路径：`delete pod` 删除控制面期望状态；下一次 kubelet 同步发现本节点 Pod 消失后调用 controller `DeletePod`，先执行 `network.Del` 删除 veth 并释放 IPAM，再停止并删除 sandbox。
+删除路径：`delete pod` 删除控制面期望状态；下一次 kubesailer 同步发现本节点 Pod 消失后调用 kubecaptain `DeletePod`，先执行 `network.Del` 删除 veth 并释放 IPAM，再停止并删除 sandbox。

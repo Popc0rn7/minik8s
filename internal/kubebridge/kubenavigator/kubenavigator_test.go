@@ -1,4 +1,4 @@
-package scheduler
+package kubenavigator
 
 import (
 	"testing"
@@ -11,12 +11,12 @@ import (
 	"minik8s/internal/pod"
 )
 
-func TestNaiveSchedulerAssignsUnscheduledPodsRoundRobin(t *testing.T) {
+func TestNaiveKubenavigatorAssignsUnscheduledPodsRoundRobin(t *testing.T) {
 	nodes := []node.Node{
 		{Name: "node-b", Status: node.NodeReady},
 		{Name: "node-a", Status: node.NodeReady},
 	}
-	s := NewNaiveScheduler()
+	s := NewNaiveKubenavigator()
 
 	first := &pod.Pod{ObjectMeta: pod.ObjectMeta{Name: "first", Namespace: "default"}}
 	second := &pod.Pod{ObjectMeta: pod.ObjectMeta{Name: "second", Namespace: "default"}}
@@ -31,8 +31,8 @@ func TestNaiveSchedulerAssignsUnscheduledPodsRoundRobin(t *testing.T) {
 	assert.Equal(t, "node-a", third.Spec.NodeName)
 }
 
-func TestNaiveSchedulerKeepsExistingNodeName(t *testing.T) {
-	s := NewNaiveScheduler()
+func TestNaiveKubenavigatorKeepsExistingNodeName(t *testing.T) {
+	s := NewNaiveKubenavigator()
 	p := &pod.Pod{
 		ObjectMeta: pod.ObjectMeta{Name: "fixed", Namespace: "default"},
 		Spec:       pod.PodSpec{NodeName: "node-z"},

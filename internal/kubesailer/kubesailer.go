@@ -1,12 +1,12 @@
-package kubelet
+package kubesailer
 
 import (
 	"context"
 	"fmt"
 	"time"
 
-	"minik8s/internal/kubecaptain/controller"
-	store "minik8s/internal/kubecaptain/etcd"
+	store "minik8s/internal/kubebridge/etcd"
+	"minik8s/internal/kubebridge/kubecaptain"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	"minik8s/pkg/runtime"
@@ -15,27 +15,27 @@ import (
 type Config struct {
 	NodeName string
 	Runtime  runtime.ContainerRuntime
-	Network  controller.PodNetworkManager
+	Network  kubecaptain.PodNetworkManager
 	Client   PodClient
 	Interval time.Duration
 }
 
-type Kubelet struct {
+type Kubesailer struct {
 	nodeName string
 	runtime  runtime.ContainerRuntime
-	network  controller.PodNetworkManager
+	network  kubecaptain.PodNetworkManager
 	client   PodClient
 	interval time.Duration
 	local    store.PodStore
 	known    map[string]*pod.Pod
 }
 
-func New(config Config) *Kubelet {
+func New(config Config) *Kubesailer {
 	interval := config.Interval
 	if interval == 0 {
 		interval = 5 * time.Second
 	}
-	return &Kubelet{
+	return &Kubesailer{
 		nodeName: config.NodeName,
 		runtime:  config.Runtime,
 		network:  config.Network,
@@ -46,7 +46,7 @@ func New(config Config) *Kubelet {
 	}
 }
 
-func (k *Kubelet) Run(ctx context.Context) error {
+func (k *Kubesailer) Run(ctx context.Context) error {
 	if err := k.validate(); err != nil {
 		return err
 	}
@@ -67,7 +67,7 @@ func (k *Kubelet) Run(ctx context.Context) error {
 	}
 }
 
-func (k *Kubelet) SyncOnce(ctx context.Context) error {
+func (k *Kubesailer) SyncOnce(ctx context.Context) error {
 	if err := k.validate(); err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ func (k *Kubelet) SyncOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	minilog.Info("kubelet-sync", "node=%s assigned=%d", k.nodeName, len(desired))
+	minilog.Info("kubesailer-sync", "node=%s assigned=%d", k.nodeName, len(desired))
 	desiredByKey := make(map[string]*pod.Pod, len(desired))
 	syncPods := make([]*pod.Pod, 0, len(desired))
 	for _, p := range desired {
@@ -85,7 +85,7 @@ func (k *Kubelet) SyncOnce(ctx context.Context) error {
 		key := podKey(p)
 		desiredByKey[key] = p.DeepCopy()
 		if _, ok := k.known[key]; !ok {
-			minilog.Info("kubelet-pod-assigned", "pod=%s/%s phase=%s", podNamespace(p.Namespace), p.Name, p.Status.Phase)
+			minilog.Info("kubesailer-pod-assigned", "pod=%s/%s phase=%s", podNamespace(p.Namespace), p.Name, p.Status.Phase)
 		}
 		if _, err := k.local.Get(p.Name, podNamespace(p.Namespace)); err == nil {
 			if err := k.local.Update(p); err != nil {
@@ -105,7 +105,7 @@ func (k *Kubelet) SyncOnce(ctx context.Context) error {
 		syncPods = append(syncPods, localPod)
 	}
 
-	ctrl := controller.NewPodControllerWithNetwork(k.runtime, k.local, k.network)
+	ctrl := kubecaptain.NewPodKubecaptainWithNetwork(k.runtime, k.local, k.network)
 	ctrl.SyncPods(ctx, syncPods)
 
 	for _, p := range syncPods {
@@ -126,13 +126,13 @@ func (k *Kubelet) SyncOnce(ctx context.Context) error {
 		if err := ctrl.DeletePod(ctx, knownPod.Name, podNamespace(knownPod.Namespace)); err != nil && err != store.ErrPodNotFound {
 			return err
 		}
-		minilog.Info("kubelet-pod-removed", "pod=%s/%s", podNamespace(knownPod.Namespace), knownPod.Name)
+		minilog.Info("kubesailer-pod-removed", "pod=%s/%s", podNamespace(knownPod.Namespace), knownPod.Name)
 		delete(k.known, key)
 	}
 	return nil
 }
 
-func (k *Kubelet) validate() error {
+func (k *Kubesailer) validate() error {
 	if k.nodeName == "" {
 		return fmt.Errorf("node name is required")
 	}

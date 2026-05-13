@@ -1,4 +1,4 @@
-package controller
+package kubecaptain
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	store "minik8s/internal/kubecaptain/etcd"
+	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	"minik8s/pkg/runtime"
@@ -20,8 +20,8 @@ const (
 	SyncInterval = 10 * time.Second
 )
 
-// PodController manages Pod lifecycle using a container runtime
-type PodController struct {
+// PodKubecaptain manages Pod lifecycle using a container runtime
+type PodKubecaptain struct {
 	runtime runtime.ContainerRuntime
 	store   store.PodStore
 	network PodNetworkManager
@@ -49,14 +49,14 @@ type PodNetworkManager interface {
 	Del(ctx context.Context, req PodNetworkRequest) error
 }
 
-// NewPodController creates a new Pod controller
-func NewPodController(r runtime.ContainerRuntime, s store.PodStore) *PodController {
-	return NewPodControllerWithNetwork(r, s, nil)
+// NewPodKubecaptain creates a new Pod kubecaptain
+func NewPodKubecaptain(r runtime.ContainerRuntime, s store.PodStore) *PodKubecaptain {
+	return NewPodKubecaptainWithNetwork(r, s, nil)
 }
 
-// NewPodControllerWithNetwork creates a Pod controller with optional CNI support.
-func NewPodControllerWithNetwork(r runtime.ContainerRuntime, s store.PodStore, network PodNetworkManager) *PodController {
-	return &PodController{
+// NewPodKubecaptainWithNetwork creates a Pod kubecaptain with optional CNI support.
+func NewPodKubecaptainWithNetwork(r runtime.ContainerRuntime, s store.PodStore, network PodNetworkManager) *PodKubecaptain {
+	return &PodKubecaptain{
 		runtime: r,
 		store:   s,
 		network: network,
@@ -65,11 +65,11 @@ func NewPodControllerWithNetwork(r runtime.ContainerRuntime, s store.PodStore, n
 }
 
 // Start begins the reconciliation loop
-func (pc *PodController) Start(ctx context.Context) error {
+func (pc *PodKubecaptain) Start(ctx context.Context) error {
 	pc.mu.Lock()
 	if pc.running {
 		pc.mu.Unlock()
-		return fmt.Errorf("controller already running")
+		return fmt.Errorf("kubecaptain already running")
 	}
 	pc.running = true
 	pc.mu.Unlock()
@@ -79,7 +79,7 @@ func (pc *PodController) Start(ctx context.Context) error {
 }
 
 // Stop stops the reconciliation loop
-func (pc *PodController) Stop() {
+func (pc *PodKubecaptain) Stop() {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	if pc.running {
@@ -88,23 +88,23 @@ func (pc *PodController) Stop() {
 	}
 }
 
-// IsRunning returns whether the controller is running
-func (pc *PodController) IsRunning() bool {
+// IsRunning returns whether the kubecaptain is running
+func (pc *PodKubecaptain) IsRunning() bool {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	return pc.running
 }
 
 // Sync triggers an immediate reconciliation of all pods
-func (pc *PodController) Sync(ctx context.Context) {
-	minilog.Info("controller-sync", "start")
+func (pc *PodKubecaptain) Sync(ctx context.Context) {
+	minilog.Info("kubecaptain-sync", "start")
 	pc.reconcile(ctx)
 }
 
-// SyncPods reconciles the provided Pods only. Kubelet uses this after fetching
+// SyncPods reconciles the provided Pods only. Kubesailer uses this after fetching
 // the set of Pods assigned to one node from the API server.
-func (pc *PodController) SyncPods(ctx context.Context, pods []*pod.Pod) {
-	minilog.Info("controller-sync-pods", "count=%d", len(pods))
+func (pc *PodKubecaptain) SyncPods(ctx context.Context, pods []*pod.Pod) {
+	minilog.Info("kubecaptain-sync-pods", "count=%d", len(pods))
 	for _, p := range pods {
 		if p == nil {
 			continue
@@ -117,19 +117,19 @@ func (pc *PodController) SyncPods(ctx context.Context, pods []*pod.Pod) {
 }
 
 // reconcileLoop runs the main reconciliation loop
-func (pc *PodController) reconcileLoop(ctx context.Context) {
+func (pc *PodKubecaptain) reconcileLoop(ctx context.Context) {
 	ticker := time.NewTicker(SyncInterval)
 	defer ticker.Stop()
 
-	minilog.Info("controller-loop", "started interval=%v", SyncInterval)
+	minilog.Info("kubecaptain-loop", "started interval=%v", SyncInterval)
 
 	for {
 		select {
 		case <-ctx.Done():
-			minilog.Info("controller-loop", "stopped reason=context-cancelled")
+			minilog.Info("kubecaptain-loop", "stopped reason=context-cancelled")
 			return
 		case <-pc.stopCh:
-			minilog.Info("controller-loop", "stopped reason=stop-signal")
+			minilog.Info("kubecaptain-loop", "stopped reason=stop-signal")
 			return
 		case <-ticker.C:
 			pc.reconcile(ctx)
@@ -138,10 +138,10 @@ func (pc *PodController) reconcileLoop(ctx context.Context) {
 }
 
 // reconcile performs one iteration of reconciliation
-func (pc *PodController) reconcile(ctx context.Context) {
+func (pc *PodKubecaptain) reconcile(ctx context.Context) {
 	pods, err := pc.store.List("", nil)
 	if err != nil {
-		minilog.Error("controller-sync", "list pods failed error=%v", err)
+		minilog.Error("kubecaptain-sync", "list pods failed error=%v", err)
 		return
 	}
 
@@ -154,7 +154,7 @@ func (pc *PodController) reconcile(ctx context.Context) {
 }
 
 // reconcilePod reconciles a single Pod's desired state with actual state
-func (pc *PodController) reconcilePod(ctx context.Context, p *pod.Pod) error {
+func (pc *PodKubecaptain) reconcilePod(ctx context.Context, p *pod.Pod) error {
 	switch p.Status.Phase {
 	case pod.PodPending:
 		return pc.handlePendingPod(ctx, p)
@@ -168,7 +168,7 @@ func (pc *PodController) reconcilePod(ctx context.Context, p *pod.Pod) error {
 }
 
 // handlePendingPod creates and starts containers for a pending Pod
-func (pc *PodController) handlePendingPod(ctx context.Context, p *pod.Pod) error {
+func (pc *PodKubecaptain) handlePendingPod(ctx context.Context, p *pod.Pod) error {
 	minilog.Info("pod-pending", "pod=%s/%s create sandbox", p.Namespace, p.Name)
 	// Create sandbox for Pod
 	sandboxID, err := pc.runtime.CreateSandbox(ctx, &runtime.SandboxConfig{
@@ -270,7 +270,7 @@ func (pc *PodController) handlePendingPod(ctx context.Context, p *pod.Pod) error
 }
 
 // handleRunningPod checks and enforces restart policy
-func (pc *PodController) handleRunningPod(ctx context.Context, p *pod.Pod) error {
+func (pc *PodKubecaptain) handleRunningPod(ctx context.Context, p *pod.Pod) error {
 	allRunning := true
 	allStopped := true
 
@@ -349,7 +349,7 @@ func (pc *PodController) handleRunningPod(ctx context.Context, p *pod.Pod) error
 }
 
 // handleTerminalPod cleans up resources for terminal Pods
-func (pc *PodController) handleTerminalPod(ctx context.Context, p *pod.Pod) error {
+func (pc *PodKubecaptain) handleTerminalPod(ctx context.Context, p *pod.Pod) error {
 	if p.Status.SandboxID == "" && len(p.Status.Containers) == 0 {
 		return nil
 	}
@@ -403,7 +403,7 @@ func (pc *PodController) handleTerminalPod(ctx context.Context, p *pod.Pod) erro
 	return nil
 }
 
-func (pc *PodController) sandboxNetNSPath(ctx context.Context, sandboxID string) (string, error) {
+func (pc *PodKubecaptain) sandboxNetNSPath(ctx context.Context, sandboxID string) (string, error) {
 	provider, ok := pc.runtime.(runtime.SandboxNetNSProvider)
 	if !ok {
 		return "", fmt.Errorf("runtime does not expose sandbox network namespace")
@@ -411,14 +411,14 @@ func (pc *PodController) sandboxNetNSPath(ctx context.Context, sandboxID string)
 	return provider.GetSandboxNetNSPath(ctx, sandboxID)
 }
 
-func (pc *PodController) sandboxNetworkMode() string {
+func (pc *PodKubecaptain) sandboxNetworkMode() string {
 	if pc.network != nil {
 		return "none"
 	}
 	return ""
 }
 
-func (pc *PodController) cleanupNetwork(ctx context.Context, p *pod.Pod, sandboxID string) {
+func (pc *PodKubecaptain) cleanupNetwork(ctx context.Context, p *pod.Pod, sandboxID string) {
 	if pc.network == nil {
 		return
 	}
@@ -432,7 +432,7 @@ func (pc *PodController) cleanupNetwork(ctx context.Context, p *pod.Pod, sandbox
 }
 
 // DeletePod stops runtime resources and removes the Pod from the store.
-func (pc *PodController) DeletePod(ctx context.Context, name, namespace string) error {
+func (pc *PodKubecaptain) DeletePod(ctx context.Context, name, namespace string) error {
 	minilog.Info("pod-delete", "start pod=%s/%s", namespace, name)
 	p, err := pc.store.Get(name, namespace)
 	if err != nil {
@@ -450,7 +450,7 @@ func (pc *PodController) DeletePod(ctx context.Context, name, namespace string) 
 }
 
 // shouldRestart determines if a container should be restarted based on restart policy
-func (pc *PodController) shouldRestart(p *pod.Pod, exitCode int32) bool {
+func (pc *PodKubecaptain) shouldRestart(p *pod.Pod, exitCode int32) bool {
 	switch p.Spec.RestartPolicy {
 	case pod.RestartPolicyAlways:
 		return true
@@ -464,7 +464,7 @@ func (pc *PodController) shouldRestart(p *pod.Pod, exitCode int32) bool {
 }
 
 // updateContainerStatus updates the status for a container
-func (pc *PodController) updateContainerStatus(p *pod.Pod, containerName, containerID string) {
+func (pc *PodKubecaptain) updateContainerStatus(p *pod.Pod, containerName, containerID string) {
 	for i := range p.Status.Containers {
 		if p.Status.Containers[i].Name == containerName {
 			p.Status.Containers[i].ContainerID = containerID
@@ -587,7 +587,7 @@ func imageWithTag(c pod.ContainerSpec) string {
 }
 
 // cleanupContainers stops and deletes all containers in a sandbox
-func (pc *PodController) cleanupContainers(ctx context.Context, sandboxID string) {
+func (pc *PodKubecaptain) cleanupContainers(ctx context.Context, sandboxID string) {
 	containers, err := pc.runtime.ListContainers(ctx, sandboxID)
 	if err != nil {
 		minilog.Warn("container-cleanup", "list sandbox=%s error=%v", sandboxID, err)

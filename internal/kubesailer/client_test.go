@@ -1,4 +1,4 @@
-package kubelet
+package kubesailer
 
 import (
 	"io"
@@ -10,13 +10,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"minik8s/internal/kubecaptain/apiserver"
-	store "minik8s/internal/kubecaptain/etcd"
+	store "minik8s/internal/kubebridge/etcd"
+	"minik8s/internal/kubebridge/kubeharbor"
 	"minik8s/internal/pod"
 )
 
 func TestHTTPPodClientListsAssignedPodsAndUpdatesStatus(t *testing.T) {
-	srv := apiserver.New(apiserver.Config{PodStore: store.NewInMemoryPodStore()})
+	srv := kubeharbor.New(kubeharbor.Config{PodStore: store.NewInMemoryPodStore()})
 	client := NewHTTPPodClient("http://minik8s.test", &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			rec := httptest.NewRecorder()
