@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"minik8s/internal/controller"
+	"minik8s/internal/kubecaptain/controller"
+	store "minik8s/internal/kubecaptain/etcd"
 	"minik8s/internal/pod"
-	"minik8s/internal/store"
 	"minik8s/pkg/yaml"
 	"minik8s/test/mock"
 )

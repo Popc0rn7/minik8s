@@ -43,7 +43,7 @@ func (c *HTTPPodClient) ListAssignedPods(ctx context.Context, nodeName string) (
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("list assigned pods: %s", resp.Status)
 	}
@@ -74,7 +74,7 @@ func (c *HTTPPodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("update pod status: %s", resp.Status)
 	}
@@ -94,7 +94,7 @@ func (c *HTTPPodClient) GetPod(ctx context.Context, name, namespace string) (*po
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("get pod: %s", resp.Status)
 	}

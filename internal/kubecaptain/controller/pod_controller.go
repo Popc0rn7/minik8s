@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
+	store "minik8s/internal/kubecaptain/etcd"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
-	"minik8s/internal/store"
 	"minik8s/pkg/runtime"
 )
 

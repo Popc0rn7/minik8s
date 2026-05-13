@@ -1,6 +1,7 @@
 package yaml
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -66,4 +67,13 @@ spec:
 
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "unknown volume") || strings.Contains(err.Error(), "missing"))
+}
+
+func TestPodVolumeResourceManifestIsAssignedToNodeA(t *testing.T) {
+	path := filepath.Join("..", "..", "manifest", "testdata", "pod_volume_resource.yaml")
+
+	p, err := LoadPodFromFile(path)
+
+	require.NoError(t, err)
+	assert.Equal(t, "node-a", p.Spec.NodeName)
 }

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,9 +14,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"minik8s/internal/kubecaptain/apiserver"
+	store "minik8s/internal/kubecaptain/etcd"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
-	"minik8s/internal/store"
 	"minik8s/test/mock"
 )
 
@@ -44,14 +47,9 @@ func (m *mockServiceProxy) DeleteService(ctx context.Context, svc *service.Servi
 }
 
 func TestCLIApplyGetDeletePod(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "pods.json")
-	podStore, err := store.NewFilePodStore(statePath)
-	require.NoError(t, err)
-	runtime := mock.NewMockRuntime()
-	app := New(Config{
-		Runtime: runtime,
-		Store:   podStore,
-	})
+	serverStore := store.NewInMemoryPodStore()
+	localStore := store.NewInMemoryPodStore()
+	app := newHTTPTestApp(t, apiserver.New(apiserver.Config{PodStore: serverStore}), localStore, store.NewInMemoryServiceStore())
 
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")
 	var out bytes.Buffer
@@ -60,7 +58,8 @@ func TestCLIApplyGetDeletePod(t *testing.T) {
 	assert.Contains(t, out.String(), "DONE")
 	assert.Contains(t, out.String(), "󰄬")
 	assert.Contains(t, out.String(), "pod/nginx-pod created")
-	assert.Empty(t, runtime.StartContainerCalls)
+	_, err := localStore.Get("nginx-pod", "default")
+	assert.ErrorIs(t, err, store.ErrPodNotFound)
 
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"get", "pods"}, &out))
@@ -71,11 +70,37 @@ func TestCLIApplyGetDeletePod(t *testing.T) {
 	assert.Contains(t, out.String(), "app=nginx")
 
 	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
+	assert.Contains(t, out.String(), "pod/nginx-pod created")
+
+	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"delete", "pod", "nginx-pod"}, &out))
 	assert.Contains(t, out.String(), "DONE")
 	assert.Contains(t, out.String(), "󰄬")
 	assert.Contains(t, out.String(), "pod/nginx-pod deleted")
-	assert.Empty(t, runtime.RemoveContainerCalls)
+}
+
+func TestCLIApplyGetDeleteRequireAPIServer(t *testing.T) {
+	app := New(Config{
+		Runtime:      mock.NewMockRuntime(),
+		Store:        store.NewInMemoryPodStore(),
+		ServiceStore: store.NewInMemoryServiceStore(),
+		ServiceProxy: nil,
+	})
+	var out bytes.Buffer
+
+	for _, args := range [][]string{
+		{"apply", "-f", filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")},
+		{"apply", "-f", filepath.Join("..", "..", "manifest", "testdata", "service_clusterip_nginx.yaml")},
+		{"get", "pods"},
+		{"delete", "pod", "nginx-pod"},
+		{"get", "services"},
+		{"delete", "service", "nginx-service"},
+	} {
+		err := app.Run(context.Background(), args, &out)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "MINIK8S_APISERVER is required for apply/get/delete")
+	}
 }
 
 func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
@@ -255,11 +280,7 @@ func TestCLIDoctorDockerPullsImage(t *testing.T) {
 
 func TestCLIGetPodsShowsPodIP(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
-	runtime := mock.NewMockRuntime()
-	app := New(Config{
-		Runtime: runtime,
-		Store:   podStore,
-	})
+	app := newHTTPTestApp(t, apiserver.New(apiserver.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")
 	var out bytes.Buffer
 
@@ -293,15 +314,10 @@ func TestCLIDoctorNetworkShowsCNIPaths(t *testing.T) {
 }
 
 func TestCLIApplyStoresPendingPodWithoutRuntimeSync(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "pods.json")
-	podStore, err := store.NewFilePodStore(statePath)
-	require.NoError(t, err)
 	runtime := mock.NewMockRuntime()
 	runtime.ShouldFailCreateSandbox = true
-	app := New(Config{
-		Runtime: runtime,
-		Store:   podStore,
-	})
+	podStore := store.NewInMemoryPodStore()
+	app := newHTTPTestApp(t, apiserver.New(apiserver.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")
 	var out bytes.Buffer
 
@@ -337,19 +353,17 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
-	runtime := mock.NewMockRuntime()
+	localServiceStore := store.NewInMemoryServiceStore()
 	proxy := &mockServiceProxy{}
-	app := New(Config{
-		Runtime:      runtime,
-		Store:        podStore,
-		ServiceStore: serviceStore,
-		ServiceProxy: proxy,
-	})
+	server := apiserver.New(apiserver.Config{PodStore: podStore, ServiceStore: serviceStore})
+	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), localServiceStore)
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "service_clusterip_nginx.yaml")
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
 	assert.Contains(t, out.String(), "service/nginx-service created")
+	_, err := localServiceStore.Get("nginx-service", "default")
+	assert.ErrorIs(t, err, store.ErrServiceNotFound)
 
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"get", "services"}, &out))
@@ -362,5 +376,64 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"delete", "service", "nginx-service"}, &out))
 	assert.Contains(t, out.String(), "service/nginx-service deleted")
-	assert.Len(t, proxy.deleted, 1)
+	assert.Empty(t, proxy.deleted)
+}
+
+func newHTTPTestApp(t *testing.T, handler http.Handler, podStore store.PodStore, serviceStore store.ServiceStore) *App {
+	t.Helper()
+	t.Setenv("MINIK8S_APISERVER", "http://minik8s.test")
+	return New(Config{
+		Runtime:      mock.NewMockRuntime(),
+		Store:        podStore,
+		ServiceStore: serviceStore,
+		ServiceProxy: nil,
+		HTTPClient: &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptestResponseRecorder(req)
+			handler.ServeHTTP(rec, req)
+			return rec.Result(), nil
+		})},
+	})
+}
+
+type cliRoundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f cliRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body == nil {
+		req.Body = io.NopCloser(bytes.NewReader(nil))
+	}
+	return f(req)
+}
+
+func httptestResponseRecorder(req *http.Request) *responseRecorder {
+	req.URL.Scheme = "http"
+	req.URL.Host = "minik8s.test"
+	return &responseRecorder{header: make(http.Header), code: http.StatusOK}
+}
+
+type responseRecorder struct {
+	header http.Header
+	body   bytes.Buffer
+	code   int
+}
+
+func (r *responseRecorder) Header() http.Header {
+	return r.header
+}
+
+func (r *responseRecorder) Write(data []byte) (int, error) {
+	return r.body.Write(data)
+}
+
+func (r *responseRecorder) WriteHeader(code int) {
+	r.code = code
+}
+
+func (r *responseRecorder) Result() *http.Response {
+	return &http.Response{
+		StatusCode: r.code,
+		Status:     http.StatusText(r.code),
+		Header:     r.header,
+		Body:       io.NopCloser(bytes.NewReader(r.body.Bytes())),
+		Request:    nil,
+	}
 }

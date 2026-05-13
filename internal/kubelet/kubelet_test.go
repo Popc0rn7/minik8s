@@ -1,12 +1,14 @@
 package kubelet
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	"minik8s/pkg/runtime"
 	"minik8s/test/mock"
@@ -35,6 +37,9 @@ func (f *fakePodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {
 }
 
 func TestKubeletSyncOnceRunsOnlyAssignedPods(t *testing.T) {
+	var logs bytes.Buffer
+	restore := minilog.SetOutput(&logs)
+	defer restore()
 	rt := mock.NewMockRuntime()
 	rt.NetNSPath = "/proc/101/ns/net"
 	client := &fakePodClient{pods: []*pod.Pod{
@@ -51,9 +56,14 @@ func TestKubeletSyncOnceRunsOnlyAssignedPods(t *testing.T) {
 	require.Len(t, client.updates, 1)
 	assert.Equal(t, "nginx", client.updates[0].Name)
 	assert.Equal(t, pod.PodRunning, client.updates[0].Status.Phase)
+	assert.Contains(t, logs.String(), "kubelet-sync: node=node-a assigned=1")
+	assert.Contains(t, logs.String(), "kubelet-pod-assigned: pod=default/nginx phase=Pending")
 }
 
 func TestKubeletSyncOnceCleansRemovedAssignedPods(t *testing.T) {
+	var logs bytes.Buffer
+	restore := minilog.SetOutput(&logs)
+	defer restore()
 	rt := mock.NewMockRuntime()
 	rt.NetNSPath = "/proc/101/ns/net"
 	client := &fakePodClient{pods: []*pod.Pod{testPod("nginx", "node-a")}}
@@ -65,6 +75,7 @@ func TestKubeletSyncOnceCleansRemovedAssignedPods(t *testing.T) {
 
 	assert.NotEmpty(t, rt.RemoveSandboxCalls)
 	assert.NotEmpty(t, rt.RemoveContainerCalls)
+	assert.Contains(t, logs.String(), "kubelet-pod-removed: pod=default/nginx")
 }
 
 func testPod(name, nodeName string) *pod.Pod {

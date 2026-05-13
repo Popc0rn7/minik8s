@@ -7,8 +7,8 @@ import (
 
 	"minik8s/internal/cli"
 	"minik8s/internal/cliui"
+	store "minik8s/internal/kubecaptain/etcd"
 	dockerruntime "minik8s/internal/runtime/docker"
-	"minik8s/internal/store"
 )
 
 func main() {

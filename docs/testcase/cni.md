@@ -167,7 +167,7 @@ CNI 发现：`defaultNetworkManager` 检测 CNI conf dir 后创建 `internal/cni
 
 CNI 调用：`internal/cni/runner.go` 读取第一个 `.conf/.conflist/.json`，解析插件 type，执行插件二进制并设置 `CNI_COMMAND`、`CNI_CONTAINERID`、`CNI_NETNS`、`CNI_IFNAME`、`K8S_POD_NAME`、`K8S_POD_NAMESPACE`。
 
-Pod 接入点：`internal/controller/pod_controller.go` 创建并启动 sandbox 后，通过 runtime 获取 sandbox netns 路径，再调用 `network.Add`。成功后把 `PodIP` 和原始 CNI result 写入 Pod status。
+Pod 接入点：`internal/kubecaptain/controller/pod_controller.go` 创建并启动 sandbox 后，通过 runtime 获取 sandbox netns 路径，再调用 `network.Add`。成功后把 `PodIP` 和原始 CNI result 写入 Pod status。
 
 Bridge 插件：`internal/cniplugin/bridge.go` 创建/复用 `mk8s0`，创建 veth pair，将一端放入 Pod netns，配置 Pod IP、默认路由和宿主机 NAT。
 

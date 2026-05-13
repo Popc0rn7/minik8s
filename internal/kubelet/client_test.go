@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"minik8s/internal/apiserver"
+	"minik8s/internal/kubecaptain/apiserver"
+	store "minik8s/internal/kubecaptain/etcd"
 	"minik8s/internal/pod"
-	"minik8s/internal/store"
 )
 
 func TestHTTPPodClientListsAssignedPodsAndUpdatesStatus(t *testing.T) {

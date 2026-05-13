@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,17 +13,22 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"minik8s/internal/kubecaptain/controller"
+	store "minik8s/internal/kubecaptain/etcd"
+	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
-	"minik8s/internal/store"
+	"minik8s/internal/service"
 	podyaml "minik8s/pkg/yaml"
 )
 
 type Config struct {
-	PodStore store.PodStore
+	PodStore     store.PodStore
+	ServiceStore store.ServiceStore
 }
 
 type Server struct {
-	pods store.PodStore
+	pods     store.PodStore
+	services store.ServiceStore
 }
 
 func New(config Config) *Server {
@@ -30,7 +36,11 @@ func New(config Config) *Server {
 	if podStore == nil {
 		podStore = store.NewInMemoryPodStore()
 	}
-	return &Server{pods: podStore}
+	serviceStore := config.ServiceStore
+	if serviceStore == nil {
+		serviceStore = store.NewInMemoryServiceStore()
+	}
+	return &Server{pods: podStore, services: serviceStore}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +58,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"namespaced": true,
 				"kind":       "Pod",
 				"verbs":      []string{"get", "list", "create", "update", "delete"},
+			}, {
+				"name":       "services",
+				"namespaced": true,
+				"kind":       "Service",
+				"verbs":      []string{"get", "list", "create", "update", "delete"},
 			}},
 		})
 	case len(parts) == 4 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes" && parts[3] != "":
@@ -56,11 +71,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleNodePods(w, r, parts[3])
 	case len(parts) >= 5 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "namespaces":
 		namespace := parts[3]
-		if parts[4] != "pods" {
+		switch parts[4] {
+		case "pods":
+			s.handlePods(w, r, namespace, parts[5:])
+		case "services":
+			s.handleServices(w, r, namespace, parts[5:])
+		default:
 			writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("resource %q not found", parts[4]))
-			return
 		}
-		s.handlePods(w, r, namespace, parts[5:])
 	default:
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("path %q not found", r.URL.Path))
 	}
@@ -95,6 +113,7 @@ func (s *Server) handlePods(w http.ResponseWriter, r *http.Request, namespace st
 			writeStoreError(w, err, "pods", p.Name)
 			return
 		}
+		minilog.Info("pod-create", "pod=%s/%s", p.Namespace, p.Name)
 		writeJSON(w, http.StatusCreated, p)
 	case http.MethodGet:
 		if name == "" {
@@ -127,6 +146,7 @@ func (s *Server) handlePods(w http.ResponseWriter, r *http.Request, namespace st
 			writeStoreError(w, err, "pods", name)
 			return
 		}
+		minilog.Info("pod-update", "pod=%s/%s", p.Namespace, p.Name)
 		writeJSON(w, http.StatusOK, p)
 	case http.MethodDelete:
 		if name == "" {
@@ -137,6 +157,7 @@ func (s *Server) handlePods(w http.ResponseWriter, r *http.Request, namespace st
 			writeStoreError(w, err, "pods", name)
 			return
 		}
+		minilog.Info("pod-delete", "pod=%s/%s", namespace, name)
 		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("pod %q deleted", name))
 	default:
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
@@ -160,6 +181,7 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 		}
 	}
 	sortPods(items)
+	minilog.Info("node-heartbeat", "node=%s assigned=%d", nodeName, len(items))
 	writeJSON(w, http.StatusOK, map[string]any{"kind": "PodList", "apiVersion": "v1", "items": items})
 }
 
@@ -183,7 +205,109 @@ func (s *Server) handlePodStatus(w http.ResponseWriter, r *http.Request, namespa
 		writeStoreError(w, err, "pods", name)
 		return
 	}
+	if err := s.syncServices(r.Context()); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	minilog.Info("pod-status-update", "node=%s pod=%s/%s phase=%s", existing.Spec.NodeName, existing.Namespace, existing.Name, existing.Status.Phase)
 	writeJSON(w, http.StatusOK, existing)
+}
+
+func (s *Server) handleServices(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
+	name := ""
+	if len(parts) > 0 {
+		name = parts[0]
+	}
+	if len(parts) > 1 {
+		writeStatus(w, http.StatusNotFound, "NotFound", "service path not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		if name != "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "create must target service collection")
+			return
+		}
+		svc, err := s.readServiceWithClusterIP(r.Body, namespace, "")
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.services.Create(svc); err != nil {
+			writeStoreError(w, err, "services", svc.Name)
+			return
+		}
+		if err := s.syncServices(r.Context()); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		updated, err := s.services.Get(svc.Name, svc.Namespace)
+		if err != nil {
+			writeStoreError(w, err, "services", svc.Name)
+			return
+		}
+		minilog.Info("service-create", "service=%s/%s", updated.Namespace, updated.Name)
+		writeJSON(w, http.StatusCreated, updated)
+	case http.MethodGet:
+		if err := s.syncServices(r.Context()); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		if name == "" {
+			services, err := s.services.List(namespace, nil)
+			if err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+				return
+			}
+			sortServices(services)
+			writeJSON(w, http.StatusOK, map[string]any{"kind": "ServiceList", "apiVersion": "v1", "items": services})
+			return
+		}
+		svc, err := s.services.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "services", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, svc)
+	case http.MethodPut:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "update must target a service")
+			return
+		}
+		svc, err := s.readServiceWithClusterIP(r.Body, namespace, name)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.services.Update(svc); err != nil {
+			writeStoreError(w, err, "services", name)
+			return
+		}
+		if err := s.syncServices(r.Context()); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		updated, err := s.services.Get(svc.Name, svc.Namespace)
+		if err != nil {
+			writeStoreError(w, err, "services", name)
+			return
+		}
+		minilog.Info("service-update", "service=%s/%s", updated.Namespace, updated.Name)
+		writeJSON(w, http.StatusOK, updated)
+	case http.MethodDelete:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target a service")
+			return
+		}
+		if err := s.services.Delete(name, namespace); err != nil {
+			writeStoreError(w, err, "services", name)
+			return
+		}
+		minilog.Info("service-delete", "service=%s/%s", namespace, name)
+		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("service %q deleted", name))
+	default:
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+	}
 }
 
 func readPod(r io.Reader, namespace, name string) (*pod.Pod, error) {
@@ -201,6 +325,35 @@ func readPod(r io.Reader, namespace, name string) (*pod.Pod, error) {
 		return nil, err
 	}
 	return &p, nil
+}
+
+func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (*service.Service, error) {
+	var svc service.Service
+	if err := decodeObject(r, &svc); err != nil {
+		return nil, err
+	}
+	if namespace != "" {
+		svc.Namespace = namespace
+	}
+	if name != "" {
+		svc.Name = name
+	}
+	if err := podyaml.DefaultAndValidateService(&svc); err != nil {
+		return nil, err
+	}
+	existing, err := s.services.List(svc.Namespace, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := service.EnsureClusterIP(&svc, existing); err != nil {
+		return nil, err
+	}
+	return &svc, nil
+}
+
+func (s *Server) syncServices(ctx context.Context) error {
+	ctrl := controller.NewServiceController(s.pods, s.services, nil)
+	return ctrl.Sync(ctx)
 }
 
 func decodeObject(r io.Reader, out any) error {
@@ -223,6 +376,15 @@ func sortPods(pods []*pod.Pod) {
 			return pods[i].Name < pods[j].Name
 		}
 		return pods[i].Namespace < pods[j].Namespace
+	})
+}
+
+func sortServices(services []*service.Service) {
+	sort.Slice(services, func(i, j int) bool {
+		if services[i].Namespace == services[j].Namespace {
+			return services[i].Name < services[j].Name
+		}
+		return services[i].Namespace < services[j].Namespace
 	})
 }
 
@@ -255,6 +417,10 @@ func writeStoreError(w http.ResponseWriter, err error, resource, name string) {
 	case errors.Is(err, store.ErrPodNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
 	case errors.Is(err, store.ErrPodAlreadyExists):
+		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
+	case errors.Is(err, store.ErrServiceNotFound):
+		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
+	case errors.Is(err, store.ErrServiceAlreadyExists):
 		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
 	default:
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())

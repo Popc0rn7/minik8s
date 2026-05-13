@@ -1,5 +1,7 @@
 MINIK8S ?= ./minik8s
 CNI_PLUGIN ?= .minik8s/cni/bin/minik8s-bridge
+APISERVER ?= http://127.0.0.1:18080
+CTL ?= env MINIK8S_APISERVER=$(APISERVER) $(MINIK8S)
 RUN ?= sudo $(MINIK8S)
 
 .PHONY: build test apiserver kubelet-once kubelet cni-init net-registry netd-once doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
@@ -12,13 +14,13 @@ test:
 	go test ./...
 
 apiserver: build
-	$(MINIK8S) apiserver --listen :8080
+	$(MINIK8S) apiserver --listen :18080
 
 kubelet-once: build
-	$(RUN) kubelet --node-name $(or $(NODE_NAME),node-a) --apiserver $(or $(APISERVER),http://127.0.0.1:8080) --once
+	$(RUN) kubelet --node-name $(or $(NODE_NAME),node-a) --apiserver $(APISERVER) --once
 
 kubelet: build
-	$(RUN) kubelet --node-name $(or $(NODE_NAME),node-a) --apiserver $(or $(APISERVER),http://127.0.0.1:8080)
+	$(RUN) kubelet --node-name $(or $(NODE_NAME),node-a) --apiserver $(APISERVER)
 
 cni-init: build
 	$(RUN) cni init
@@ -33,25 +35,25 @@ doctor:
 	$(RUN) doctor network
 
 apply-nginx:
-	$(RUN) apply -f manifest/testdata/pod_nginx.yaml
+	$(CTL) apply -f manifest/testdata/pod_nginx.yaml
 
 apply-client:
-	$(RUN) apply -f manifest/testdata/pod_busybox_client.yaml
+	$(CTL) apply -f manifest/testdata/pod_busybox_client.yaml
 
 apply-volume:
 	mkdir -p /tmp/minik8s-case-data
-	$(RUN) apply -f manifest/testdata/pod_volume_resource.yaml
+	$(CTL) apply -f manifest/testdata/pod_volume_resource.yaml
 
 ps:
-	$(RUN) get pods
+	$(CTL) get pods
 
 clean-nginx:
-	-$(RUN) delete pod nginx-pod
+	-$(CTL) delete pod nginx-pod
 
 clean-client:
-	-$(RUN) delete pod busybox-client
+	-$(CTL) delete pod busybox-client
 
 clean-volume:
-	-$(RUN) delete pod volume-resource-pod -n demo
+	-$(CTL) delete pod volume-resource-pod -n demo
 
 clean: clean-client clean-nginx clean-volume

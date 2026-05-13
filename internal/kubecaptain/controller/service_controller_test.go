@@ -7,9 +7,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	store "minik8s/internal/kubecaptain/etcd"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
-	"minik8s/internal/store"
 )
 
 type mockServiceProxy struct {

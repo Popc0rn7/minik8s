@@ -11,7 +11,7 @@ const (
 
 type Service struct {
 	pod.TypeMeta   `yaml:",inline"`
-	pod.ObjectMeta `yaml:"metadata"`
+	pod.ObjectMeta `json:"metadata" yaml:"metadata"`
 	Spec           ServiceSpec   `json:"spec" yaml:"spec"`
 	Status         ServiceStatus `json:"status,omitempty" yaml:"status,omitempty"`
 }
