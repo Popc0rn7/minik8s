@@ -16,6 +16,7 @@ import (
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	dockerruntime "minik8s/internal/runtime/docker"
+	"minik8s/internal/service"
 	"minik8s/internal/store"
 	"minik8s/pkg/runtime"
 	podyaml "minik8s/pkg/yaml"
@@ -23,16 +24,20 @@ import (
 
 // Config contains CLI dependencies.
 type Config struct {
-	Runtime runtime.ContainerRuntime
-	Store   store.PodStore
-	Network controller.PodNetworkManager
+	Runtime      runtime.ContainerRuntime
+	Store        store.PodStore
+	ServiceStore store.ServiceStore
+	Network      controller.PodNetworkManager
+	ServiceProxy controller.ServiceProxy
 }
 
 // App is the Minik8s command-line application.
 type App struct {
-	runtime runtime.ContainerRuntime
-	store   store.PodStore
-	network controller.PodNetworkManager
+	runtime      runtime.ContainerRuntime
+	store        store.PodStore
+	serviceStore store.ServiceStore
+	network      controller.PodNetworkManager
+	serviceProxy controller.ServiceProxy
 }
 
 // New creates an App.
@@ -41,10 +46,20 @@ func New(config Config) *App {
 	if network == nil {
 		network = defaultNetworkManager()
 	}
+	serviceStore := config.ServiceStore
+	if serviceStore == nil {
+		serviceStore = store.NewInMemoryServiceStore()
+	}
+	serviceProxy := config.ServiceProxy
+	if serviceProxy == nil && os.Getenv("MINIK8S_SERVICE_PROXY_DISABLED") != "1" {
+		serviceProxy = controller.NewIPTablesServiceProxy()
+	}
 	return &App{
-		runtime: config.Runtime,
-		store:   config.Store,
-		network: network,
+		runtime:      config.Runtime,
+		store:        config.Store,
+		serviceStore: serviceStore,
+		network:      network,
+		serviceProxy: serviceProxy,
 	}
 }
 
@@ -77,6 +92,16 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 	path, err := valueFlag(args, "-f")
 	if err != nil {
 		return err
+	}
+	kind, err := podyaml.LoadObjectKindFromFile(path)
+	if err != nil {
+		return err
+	}
+	if kind == "Service" {
+		return a.applyService(ctx, path, out)
+	}
+	if kind != "" && kind != "Pod" {
+		return fmt.Errorf("unsupported kind %q", kind)
 	}
 	p, err := podyaml.LoadPodFromFile(path)
 	if err != nil {
@@ -112,8 +137,14 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 
 func (a *App) get(ctx context.Context, args []string, out io.Writer) error {
 	minilog.Info("cli-get", "start args=%v", args)
-	if len(args) == 0 || args[0] != "pods" {
-		return fmt.Errorf("usage: minik8s get pods [-n namespace]")
+	if len(args) == 0 {
+		return fmt.Errorf("usage: minik8s get pods|services [-n namespace]")
+	}
+	if args[0] == "services" || args[0] == "svc" {
+		return a.getServices(ctx, args[1:], out)
+	}
+	if args[0] != "pods" {
+		return fmt.Errorf("usage: minik8s get pods|services [-n namespace]")
 	}
 	namespace := namespaceFlag(args[1:])
 	ctrl := controller.NewPodControllerWithNetwork(a.runtime, a.store, a.network)
@@ -154,8 +185,20 @@ func (a *App) get(ctx context.Context, args []string, out io.Writer) error {
 
 func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 	minilog.Info("cli-delete", "start args=%v", args)
-	if len(args) < 2 || args[0] != "pod" {
-		return fmt.Errorf("usage: minik8s delete pod <name> [-n namespace]")
+	if len(args) < 2 {
+		return fmt.Errorf("usage: minik8s delete pod|service <name> [-n namespace]")
+	}
+	if args[0] == "service" || args[0] == "svc" {
+		name := args[1]
+		namespace := namespaceFlag(args[2:])
+		ctrl := controller.NewServiceController(a.store, a.serviceStore, a.serviceProxy)
+		if err := ctrl.DeleteService(ctx, name, namespace); err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("service/%s deleted", name))
+	}
+	if args[0] != "pod" {
+		return fmt.Errorf("usage: minik8s delete pod|service <name> [-n namespace]")
 	}
 	name := args[1]
 	namespace := namespaceFlag(args[2:])
@@ -164,6 +207,104 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	return writes(out, cliui.SuccessLine("pod/%s deleted", name))
+}
+
+func (a *App) applyService(ctx context.Context, path string, out io.Writer) error {
+	svc, err := podyaml.LoadServiceFromFile(path)
+	if err != nil {
+		return err
+	}
+	if err := a.ensureServiceClusterIP(svc); err != nil {
+		return err
+	}
+	if err := a.serviceStore.Create(svc); err != nil {
+		if err != store.ErrServiceAlreadyExists {
+			return err
+		}
+		if err := a.serviceStore.Update(svc); err != nil {
+			return err
+		}
+	}
+	ctrl := controller.NewServiceController(a.store, a.serviceStore, a.serviceProxy)
+	if err := ctrl.Sync(ctx); err != nil {
+		return err
+	}
+	updated, err := a.serviceStore.Get(svc.Name, svc.Namespace)
+	if err != nil {
+		return err
+	}
+	return writes(out, cliui.SuccessLine("service/%s created (%s)", updated.Name, updated.Spec.Type))
+}
+
+func (a *App) getServices(ctx context.Context, args []string, out io.Writer) error {
+	namespace := namespaceFlag(args)
+	ctrl := controller.NewServiceController(a.store, a.serviceStore, a.serviceProxy)
+	if err := ctrl.Sync(ctx); err != nil {
+		return err
+	}
+	services, err := a.serviceStore.List(namespace, nil)
+	if err != nil {
+		return err
+	}
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].Name < services[j].Name
+	})
+	if err := writef(out, "%s %s %s %s %s %s %s\n",
+		cliui.PadRight("SERVICE", 31),
+		cliui.PadRight("TYPE", 12),
+		cliui.PadRight("CLUSTER-IP", 16),
+		cliui.PadRight("PORTS", 18),
+		cliui.PadRight("ENDPOINTS", 28),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
+		return err
+	}
+	for _, svc := range services {
+		serviceName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[svc]"), svc.Name)
+		if err := writef(out, "%s %s %s %s %s %s %s\n",
+			cliui.PadRight(serviceName, 31),
+			cliui.PadRight(string(svc.Spec.Type), 12),
+			cliui.PadRight(svc.Status.ClusterIP, 16),
+			cliui.PadRight(formatServicePorts(svc), 18),
+			cliui.PadRight(formatServiceEndpoints(svc.Status.Endpoints), 28),
+			cliui.PadRight(svc.Namespace, 14),
+			formatLabels(svc.Labels),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *App) ensureServiceClusterIP(svc *service.Service) error {
+	services, err := a.serviceStore.List(svc.Namespace, nil)
+	if err != nil {
+		return err
+	}
+	used := make(map[string]bool, len(services))
+	for _, existing := range services {
+		if existing.Name == svc.Name && existing.Namespace == svc.Namespace {
+			if existing.Status.ClusterIP != "" {
+				svc.Status.ClusterIP = existing.Status.ClusterIP
+			}
+			continue
+		}
+		if existing.Status.ClusterIP != "" {
+			used[existing.Status.ClusterIP] = true
+		}
+	}
+	if svc.Status.ClusterIP != "" && !used[svc.Status.ClusterIP] {
+		return nil
+	}
+	for i := 1; i < 255; i++ {
+		candidate := fmt.Sprintf("10.96.0.%d", i)
+		if !used[candidate] {
+			svc.Status.ClusterIP = candidate
+			return nil
+		}
+	}
+	return fmt.Errorf("no available service ClusterIP")
 }
 
 func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
@@ -274,7 +415,7 @@ func (a *App) cni(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func (a *App) usage(out io.Writer) error {
-	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s apply -f <pod.yaml> | get pods | delete pod <name> | doctor docker|network | cni init"))
+	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s apply -f <manifest.yaml> | get pods|services | delete pod|service <name> | doctor docker|network | cni init"))
 	return err
 }
 
@@ -308,6 +449,32 @@ func formatPodIP(ip string) string {
 		return "-"
 	}
 	return ip
+}
+
+func formatServicePorts(svc *service.Service) string {
+	if len(svc.Spec.Ports) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(svc.Spec.Ports))
+	for _, port := range svc.Spec.Ports {
+		part := fmt.Sprintf("%d->%d/%s", port.Port, port.TargetPort, port.Protocol)
+		if svc.Spec.Type == service.ServiceTypeNodePort && port.NodePort > 0 {
+			part = fmt.Sprintf("%s:%d", part, port.NodePort)
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ",")
+}
+
+func formatServiceEndpoints(endpoints []service.Endpoint) string {
+	if len(endpoints) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(endpoints))
+	for _, ep := range endpoints {
+		parts = append(parts, fmt.Sprintf("%s:%d", ep.IP, ep.TargetPort))
+	}
+	return strings.Join(parts, ",")
 }
 
 func shortDuration(d time.Duration) string {
@@ -355,6 +522,13 @@ func DefaultStatePath() string {
 		return filepath.Join(dir, "pods.json")
 	}
 	return filepath.Join(".minik8s", "state", "pods.json")
+}
+
+func DefaultServiceStatePath() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "services.json")
+	}
+	return filepath.Join(".minik8s", "state", "services.json")
 }
 
 // DefaultCNIBinDir returns the default CNI plugin directory.
