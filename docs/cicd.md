@@ -138,3 +138,58 @@ git push origin v0.1.0
 ```
 
 标签推送后，GitHub Actions 会自动完成验证、构建、校验和生成以及 Release 发布。
+
+## Main 分支自动部署
+
+自动部署工作流定义在 `.github/workflows/deploy.yml`。
+
+触发条件：
+
+- 向 `main` 分支推送代码。
+
+部署流程：
+
+1. 在 GitHub Actions 中检出代码并安装 Go。
+2. 执行格式检查、lint、`go vet` 和 race 测试。
+3. 构建 `linux/amd64` 静态二进制：`dist/minik8s`。
+4. 通过 SSH 将二进制和部署脚本上传到 controller 的临时目录。
+5. 在 controller 上运行 `scripts/deploy-from-controller.sh`。
+6. controller 先安装并重启本机 `minik8s` systemd 服务，再读取 `/etc/minik8s/cd-workers`，把同一份二进制分发到两台 worker 并重启服务。
+
+GitHub Actions 需要配置以下 repository secrets：
+
+| Secret | 说明 |
+|--------|------|
+| `CD_CONTROLLER_HOST` | controller 可由 GitHub Actions 访问的主机名或 IP |
+| `CD_CONTROLLER_USER` | 登录 controller 的 SSH 用户；未配置时默认 `root` |
+| `CD_CONTROLLER_PORT` | controller SSH 端口；未配置时默认 `22` |
+| `CD_CONTROLLER_SSH_KEY` | 登录 controller 的 SSH 私钥 |
+
+controller 本机需要准备 worker 列表：
+
+```bash
+sudo install -d -m 0755 /etc/minik8s
+sudo tee /etc/minik8s/cd-workers >/dev/null <<'EOF'
+node-2
+node-3
+EOF
+```
+
+`/etc/minik8s/cd-workers` 每行一个 SSH 目标，例如 `node-2`、`node-3` 或 `root@10.0.0.2`。目标会原样传给 controller 上的 `ssh` 和 `scp`，因此可以直接复用 controller 的 `~/.ssh/config`、`known_hosts` 和内网主机名。空行和以 `#` 开头的注释会被忽略。
+
+安装脚本会创建或更新 systemd 服务：
+
+- 服务名：`minik8s`
+- 二进制路径：`/usr/local/bin/minik8s`
+- 工作目录：`/var/lib/minik8s`
+- 状态目录：`/var/lib/minik8s/state`
+- 启动命令：`/usr/local/bin/minik8s controller`
+
+部署后可在 controller 和 worker 上验证：
+
+```bash
+minik8s doctor docker
+systemctl status minik8s
+journalctl -u minik8s -n 50 --no-pager
+minik8s get pods
+```

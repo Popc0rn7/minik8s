@@ -56,6 +56,8 @@ func (a *App) Run(ctx context.Context, args []string, out io.Writer) error {
 		return a.delete(ctx, args[1:], out)
 	case "doctor":
 		return a.doctor(ctx, args[1:], out)
+	case "controller":
+		return a.controller(ctx, args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -182,8 +184,24 @@ func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
+func (a *App) controller(ctx context.Context, args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: minik8s controller")
+	}
+	minilog.Info("cli-controller", "start")
+	ctrl := controller.NewPodController(a.runtime, a.store)
+	ctrl.Sync(ctx)
+	if err := ctrl.Start(ctx); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	ctrl.Stop()
+	minilog.Info("cli-controller", "stopped")
+	return nil
+}
+
 func (a *App) usage(out io.Writer) error {
-	_, err := fmt.Fprintln(out, "usage: minik8s apply -f <pod.yaml> | get pods | delete pod <name> | doctor docker [pull image]")
+	_, err := fmt.Fprintln(out, "usage: minik8s apply -f <pod.yaml> | get pods | delete pod <name> | doctor docker [pull image] | controller")
 	return err
 }
 

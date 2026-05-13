@@ -23,6 +23,11 @@ go build -o minik8s ./cmd/minik8s
 ./minik8s delete pod nginx-pod
 ```
 
+Run the local controller loop:
+```bash
+./minik8s controller
+```
+
 Docker smoke test:
 ```bash
 ./minik8s apply -f manifest/testdata/pod_nginx.yaml

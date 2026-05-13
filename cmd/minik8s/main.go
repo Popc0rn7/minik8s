@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"minik8s/internal/cli"
 	dockerruntime "minik8s/internal/runtime/docker"
@@ -32,7 +34,9 @@ func main() {
 		Runtime: runtime,
 		Store:   podStore,
 	})
-	if err := app.Run(context.Background(), os.Args[1:], os.Stdout); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := app.Run(ctx, os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "minik8s: %v\n", err)
 		os.Exit(1)
 	}

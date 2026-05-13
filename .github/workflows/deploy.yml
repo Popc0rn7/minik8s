@@ -1,0 +1,98 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - feat/cicd
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Check formatting
+        uses: golangci/golangci-lint-action@v9
+        with:
+          install-mode: goinstall
+          install-only: true
+
+      - name: Run format check
+        run: golangci-lint fmt --diff
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run tests
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Build linux amd64 binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" -o dist/minik8s ./cmd/minik8s
+
+      - name: Prepare SSH
+        env:
+          CD_CONTROLLER_HOST: ${{ secrets.CD_CONTROLLER_HOST }}
+          CD_CONTROLLER_PORT: ${{ secrets.CD_CONTROLLER_PORT || '22' }}
+          CD_CONTROLLER_SSH_KEY: ${{ secrets.CD_CONTROLLER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CD_CONTROLLER_HOST}" ]; then
+            echo "CD_CONTROLLER_HOST is required" >&2
+            exit 1
+          fi
+          if [ -z "${CD_CONTROLLER_SSH_KEY}" ]; then
+            echo "CD_CONTROLLER_SSH_KEY is required" >&2
+            exit 1
+          fi
+
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "${CD_CONTROLLER_SSH_KEY}" > ~/.ssh/minik8s_cd_key
+          chmod 0600 ~/.ssh/minik8s_cd_key
+          ssh-keyscan -p "${CD_CONTROLLER_PORT}" -H "${CD_CONTROLLER_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Deploy through controller
+        env:
+          CD_CONTROLLER_HOST: ${{ secrets.CD_CONTROLLER_HOST }}
+          CD_CONTROLLER_USER: ${{ secrets.CD_CONTROLLER_USER || 'root' }}
+          CD_CONTROLLER_PORT: ${{ secrets.CD_CONTROLLER_PORT || '22' }}
+          REMOTE_DIR: /tmp/minik8s-cd-${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          controller="${CD_CONTROLLER_USER}@${CD_CONTROLLER_HOST}"
+          ssh_opts=(-i ~/.ssh/minik8s_cd_key -p "${CD_CONTROLLER_PORT}")
+          scp_opts=(-i ~/.ssh/minik8s_cd_key -P "${CD_CONTROLLER_PORT}")
+
+          ssh "${ssh_opts[@]}" "${controller}" "rm -rf '${REMOTE_DIR}' && mkdir -p '${REMOTE_DIR}'"
+          scp "${scp_opts[@]}" dist/minik8s "${controller}:${REMOTE_DIR}/minik8s"
+          scp "${scp_opts[@]}" scripts/install-minik8s.sh "${controller}:${REMOTE_DIR}/install-minik8s.sh"
+          scp "${scp_opts[@]}" scripts/deploy-from-controller.sh "${controller}:${REMOTE_DIR}/deploy-from-controller.sh"
+          ssh "${ssh_opts[@]}" "${controller}" "bash '${REMOTE_DIR}/deploy-from-controller.sh' '${REMOTE_DIR}/minik8s' '${REMOTE_DIR}/install-minik8s.sh'"
+          ssh "${ssh_opts[@]}" "${controller}" "rm -rf '${REMOTE_DIR}'"
