@@ -53,6 +53,8 @@ type App struct {
 	network      kubecaptain.PodNetworkManager
 	serviceProxy kubeproxy.Proxy
 	httpClient   *http.Client
+	server       string
+	namespace    string
 }
 
 // New creates an App.
@@ -91,39 +93,15 @@ func New(config Config) *App {
 		network:      network,
 		serviceProxy: serviceProxy,
 		httpClient:   config.HTTPClient,
+		namespace:    "default",
 	}
 }
 
 // Run executes a minik8s command.
 func (a *App) Run(ctx context.Context, args []string, out io.Writer) error {
-	if out == nil {
-		out = io.Discard
-	}
-	if len(args) == 0 {
-		return a.usage(out)
-	}
-	switch args[0] {
-	case "apply":
-		return a.apply(ctx, args[1:], out)
-	case "get":
-		return a.get(ctx, args[1:], out)
-	case "delete":
-		return a.delete(ctx, args[1:], out)
-	case "doctor":
-		return a.doctor(ctx, args[1:], out)
-	case "cni":
-		return a.cni(ctx, args[1:], out)
-	case "net-registry":
-		return a.netRegistry(ctx, args[1:], out)
-	case "netd":
-		return a.netd(ctx, args[1:], out)
-	case "kubebridge":
-		return a.kubebridge(ctx, args[1:], out)
-	case "kubesailer":
-		return a.kubesailer(ctx, args[1:], out)
-	default:
-		return fmt.Errorf("unknown command %q", args[0])
-	}
+	cmd := NewRootCommand(a, out)
+	cmd.SetArgs(args)
+	return cmd.ExecuteContext(ctx)
 }
 
 func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
@@ -326,7 +304,11 @@ func (a *App) getNodes(ctx context.Context, client *controlPlaneClient, out io.W
 }
 
 func (a *App) controlPlaneClient() (*controlPlaneClient, error) {
-	return newControlPlaneClient(os.Getenv("MINIK8S_KUBEHARBOR"), a.httpClient)
+	server := a.server
+	if strings.TrimSpace(server) == "" {
+		server = os.Getenv("MINIK8S_KUBEHARBOR")
+	}
+	return newControlPlaneClient(server, a.httpClient)
 }
 
 func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
