@@ -51,7 +51,7 @@ iptables-save -t nat | grep MK8S-SVC || true
 自动化测试：
 
 ```bash
-go test ./internal/controller -run 'TestServiceController(BuildsEndpointsAndAppliesProxy|UpdatesEndpointsWhenPodChanges|DeleteCleansProxyAndStore)' -count=1
+go test ./internal/kubecaptain/controller -run 'TestServiceController(BuildsEndpointsAndAppliesProxy|UpdatesEndpointsWhenPodChanges|DeleteCleansProxyAndStore)' -count=1
 ```
 
 CLI 验证：
@@ -272,7 +272,7 @@ iptables-save -t nat | grep MK8S-SVC || true
 
 ```bash
 go test ./internal/kubeproxy -count=1
-go test ./internal/service ./internal/controller ./internal/cli -count=1
+go test ./internal/service ./internal/kubecaptain/controller ./internal/cli -count=1
 ```
 
 期望：
@@ -290,9 +290,9 @@ ClusterIP 分配：`internal/service/clusterip.go` 定义默认 ClusterIP 和分
 
 YAML 解析：`pkg/yaml/service.go` 和 `pkg/yaml/defaults.go` 读取并校验 Service manifest，默认 `namespace=default`、`type=ClusterIP`、`protocol=TCP`。
 
-状态持久化：`internal/store/service_store.go` 提供文件和内存两种 ServiceStore。默认文件为 `.minik8s/state/services.json`，也可通过 `MINIK8S_STATE_DIR` 隔离。
+状态持久化：`internal/kubecaptain/etcd/service_store.go` 提供文件和内存两种 ServiceStore。默认文件为 `.minik8s/state/services.json`，也可通过 `MINIK8S_STATE_DIR` 隔离。
 
-期望状态生成：`internal/controller/service_controller.go` 读取 Service 和 Running Pod，按 selector 匹配同 namespace Pod，并将 `PodIP:targetPort` 写入 endpoints。
+期望状态生成：`internal/kubecaptain/controller/service_controller.go` 读取 Service 和 Running Pod，按 selector 匹配同 namespace Pod，并将 `PodIP:targetPort` 写入 endpoints。
 
 kubeproxy 抽象：`internal/kubeproxy/proxy.go` 定义 `SyncService`、`SyncAll`、`DeleteService`。ServiceController 和 CLI 面向该接口，backend 可替换。
 

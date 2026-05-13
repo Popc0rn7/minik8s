@@ -1,7 +1,8 @@
 # Minik8s
 
-Minik8s is a small Kubernetes-like lab project. Current milestone: a control
-plane API server plus an independent node-local kubelet loop for assigned Pods.
+Minik8s is a small Kubernetes-like lab project. Current milestone: a
+kubecaptain control plane plus an independent node-local kubelet loop for
+assigned Pods.
 
 - Load `kind: Pod` YAML manifests.
 - Store Pod desired state through the control plane.
@@ -11,7 +12,8 @@ plane API server plus an independent node-local kubelet loop for assigned Pods.
 - Share one Pod network namespace across workload containers.
 - Support command, args, ports, hostPort, volumes, CPU, and memory limits.
 - Use local images when present; pull missing images and fail Pod if pull fails.
-- Persist local Pod state in `.minik8s/state/pods.json`.
+- Persist control-plane state in `.minik8s/state/pods.json` and
+  `.minik8s/state/services.json`.
 - Configure Pod sandbox networking through CNI-compatible plugins.
 - List Pod name, status, IP, uptime, namespace, and labels.
 - Delete Pod desired state from the control plane; kubelet cleans up local containers.
@@ -21,17 +23,22 @@ plane API server plus an independent node-local kubelet loop for assigned Pods.
   Set `MINIK8S_PLAIN=1` for ASCII output, or `NO_COLOR=1` to keep icons
   while disabling ANSI color. Image pull falls back to `docker pull`.
 
+Control-plane code lives under `internal/kubecaptain/`: `apiserver` exposes the
+HTTP API, `etcd` owns the local file-backed state, `controller` reconciles Pod
+and Service state, and `scheduler` is reserved for future node assignment logic.
+
 ```bash
 go build -o minik8s ./cmd/minik8s
 ./minik8s cni init
 go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
-./minik8s apiserver --listen :8080
+export MINIK8S_APISERVER=http://127.0.0.1:18080
+./minik8s apiserver --listen :18080
 ```
 
 In another shell on a worker node:
 
 ```bash
-sudo ./minik8s kubelet --node-name node-a --apiserver http://127.0.0.1:8080
+sudo ./minik8s kubelet --node-name node-a --apiserver http://127.0.0.1:18080
 ```
 
 In a third shell on the control node:
@@ -46,8 +53,9 @@ In a third shell on the control node:
 
 Docker smoke test:
 ```bash
-./minik8s apiserver --listen :8080
-sudo ./minik8s kubelet --node-name node-a --apiserver http://127.0.0.1:8080
+export MINIK8S_APISERVER=http://127.0.0.1:18080
+./minik8s apiserver --listen :18080
+sudo ./minik8s kubelet --node-name node-a --apiserver http://127.0.0.1:18080
 ./minik8s apply -f manifest/testdata/pod_nginx.yaml
 ./minik8s get pods
 docker ps --filter label=minik8s.pod.name=nginx-pod

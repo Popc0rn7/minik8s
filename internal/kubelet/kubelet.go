@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"minik8s/internal/controller"
+	"minik8s/internal/kubecaptain/controller"
+	store "minik8s/internal/kubecaptain/etcd"
+	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
-	"minik8s/internal/store"
 	"minik8s/pkg/runtime"
 )
 
@@ -74,6 +75,7 @@ func (k *Kubelet) SyncOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	minilog.Info("kubelet-sync", "node=%s assigned=%d", k.nodeName, len(desired))
 	desiredByKey := make(map[string]*pod.Pod, len(desired))
 	syncPods := make([]*pod.Pod, 0, len(desired))
 	for _, p := range desired {
@@ -82,6 +84,9 @@ func (k *Kubelet) SyncOnce(ctx context.Context) error {
 		}
 		key := podKey(p)
 		desiredByKey[key] = p.DeepCopy()
+		if _, ok := k.known[key]; !ok {
+			minilog.Info("kubelet-pod-assigned", "pod=%s/%s phase=%s", podNamespace(p.Namespace), p.Name, p.Status.Phase)
+		}
 		if _, err := k.local.Get(p.Name, podNamespace(p.Namespace)); err == nil {
 			if err := k.local.Update(p); err != nil {
 				return err
@@ -121,6 +126,7 @@ func (k *Kubelet) SyncOnce(ctx context.Context) error {
 		if err := ctrl.DeletePod(ctx, knownPod.Name, podNamespace(knownPod.Namespace)); err != nil && err != store.ErrPodNotFound {
 			return err
 		}
+		minilog.Info("kubelet-pod-removed", "pod=%s/%s", podNamespace(knownPod.Namespace), knownPod.Name)
 		delete(k.known, key)
 	}
 	return nil

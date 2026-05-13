@@ -6,11 +6,11 @@ import (
 	"sort"
 	"strings"
 
+	store "minik8s/internal/kubecaptain/etcd"
 	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
-	"minik8s/internal/store"
 )
 
 type ServiceProxy = kubeproxy.Proxy

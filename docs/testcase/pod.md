@@ -7,27 +7,34 @@
 在仓库根目录执行：
 
 ```bash
-go build -o minik8s ./cmd/minik8s
+make build
+export MINIK8S_STATE_DIR=.minik8s/testcase-state
+rm -rf .minik8s/testcase-state
 export MINIK8S_PLAIN=1
 export NO_COLOR=1
 export MINIK8S_CNI_DISABLED=1
-./minik8s apiserver --listen :8080
+export MINIK8S_APISERVER=http://127.0.0.1:18080
+./minik8s apiserver --listen :18080
 ```
 
 在另一个终端启动本节点 kubelet：
 
 ```bash
-sudo ./minik8s kubelet --node-name node-a --apiserver http://127.0.0.1:8080
+sudo env MINIK8S_PLAIN=1 \
+  NO_COLOR=1 \
+  MINIK8S_CNI_DISABLED=1 \
+  ./minik8s kubelet --node-name node-a --apiserver http://127.0.0.1:18080
 ```
 
-如需隔离本次 case 的本地状态：
+在运行 `apply/get/delete` 的 CLI 终端导出：
 
 ```bash
-export MINIK8S_STATE_DIR=.minik8s/testcase-state
-rm -rf .minik8s/testcase-state
+export MINIK8S_APISERVER=http://127.0.0.1:18080
+export MINIK8S_PLAIN=1
+export NO_COLOR=1
 ```
 
-`MINIK8S_PLAIN=1` 让 CLI 输出退回 ASCII，方便在报告和自动化断言中匹配 `DONE`、`WARN`、`[ok]` 等文本。Pod 基础 case 关注生命周期、端口、volume 和资源映射，因此设置 `MINIK8S_CNI_DISABLED=1`，避免已有 CNI 配置影响 hostPort 行为。`apply` 只写入控制面期望状态，真正创建/重启/删除容器由独立 kubelet 完成。
+`MINIK8S_APISERVER` 让 CLI 通过控制面 HTTP API 执行 `apply/get/delete`；未设置时这些命令会直接报错，避免绕过 API Server 读写状态。`MINIK8S_STATE_DIR` 是 API Server 的本地持久化目录，普通 CLI 客户端不直接读写该目录。`MINIK8S_PLAIN=1` 让 CLI 输出退回 ASCII，方便在报告和自动化断言中匹配 `DONE`、`WARN`、`[ok]` 等文本。Pod 基础 case 关注生命周期、端口、volume 和资源映射，因此设置 `MINIK8S_CNI_DISABLED=1`，避免已有 CNI 配置影响 hostPort 行为。`apply` 只向控制面提交期望状态，真正创建/重启/删除容器由独立 kubelet 完成。kubelet 需要 `sudo` 时要用 `sudo env ...` 传递输出和 CNI 相关环境变量。API Server 使用 `:18080` 是为了避开 POD-01 中 nginx 的 `hostPort: 8080`。
 
 ## 1. 需求追踪矩阵
 
@@ -134,7 +141,7 @@ docker inspect "$CID" --format '{{.State.Status}}'
 - 再次 `docker inspect` 时同一个容器回到 `running`。
 - `get pods` 输出仍显示 Pod 为 `Running`。
 
-说明：当前实现通过 `internal/controller/pod_controller.go` 的 `handleRunningPod` 检查 runtime 状态，并在 `shouldRestart` 为 true 时调用 `StartContainer`。该逻辑已由独立 `minik8s kubelet` 调用，CLI `apply/get/delete` 不再直接操作 Docker runtime。
+说明：当前实现通过 `internal/kubecaptain/controller/pod_controller.go` 的 `handleRunningPod` 检查 runtime 状态，并在 `shouldRestart` 为 true 时调用 `StartContainer`。该逻辑已由独立 `minik8s kubelet` 调用，CLI `apply/get/delete` 不再直接操作 Docker runtime。
 
 清理：
 
@@ -149,7 +156,7 @@ docker inspect "$CID" --format '{{.State.Status}}'
 流程：
 
 ```bash
-go test ./internal/controller ./internal/kubelet -run 'SandboxCreationFailure|SyncOnce' -v
+go test ./internal/kubecaptain/controller ./internal/kubelet -run 'SandboxCreationFailure|SyncOnce' -v
 ```
 
 期望：
@@ -157,19 +164,19 @@ go test ./internal/controller ./internal/kubelet -run 'SandboxCreationFailure|Sy
 - controller 测试断言 Pod 进入 `Failed`。
 - kubelet 测试断言只处理分配给本节点的 Pod，并把 status 回写给 API Server。
 
-关联代码：`internal/controller/pod_controller_test.go` 通过 mock runtime 稳定模拟 sandbox 创建失败；`internal/kubelet/kubelet_test.go` 覆盖独立 kubelet 同步。
+关联代码：`internal/kubecaptain/controller/pod_controller_test.go` 通过 mock runtime 稳定模拟 sandbox 创建失败；`internal/kubelet/kubelet_test.go` 覆盖独立 kubelet 同步。
 
 ## 6. 实现设计映射
 
-进程入口：`cmd/minik8s/main.go` 根据子命令延迟初始化 Docker runtime。`apiserver` 只打开 store 并提供 HTTP API；`kubelet` 才初始化 Docker runtime 和 CNI。
+进程入口：`cmd/minik8s/main.go` 根据子命令延迟初始化 Docker runtime。kubecaptain 控制面位于 `internal/kubecaptain/`：`apiserver` 提供 HTTP API，`etcd` 拥有本地 file-backed store，`controller` 负责 Pod/Service 状态协调，`scheduler` 预留给后续节点分配逻辑。`kubelet` 才初始化 Docker runtime 和 CNI。
 
 YAML 解析：`pkg/yaml/pod.go` 读取 YAML；`pkg/yaml/defaults.go` 校验 `kind`、`metadata.name`、container image、volume 引用，并默认 `namespace=default`、`restartPolicy=Always`。
 
-生命周期管理：`internal/cli/cli.go` 的 `apply` 将 Pod 写入控制面 store，初始状态为 `Pending`；`internal/kubelet` 通过 API Server 拉取 `spec.nodeName` 等于本节点的 Pod，复用 `PodController` 创建/重启/删除容器，并通过 status API 回写状态。
+生命周期管理：`internal/cli/cli.go` 的 `apply` 通过 `MINIK8S_APISERVER` 向控制面提交 Pod，API Server 将初始状态写为 `Pending`；`internal/kubelet` 通过 API Server 拉取 `spec.nodeName` 等于本节点的 Pod，复用 `PodController` 创建/重启/删除容器，并通过 status API 回写状态。
 
 运行时抽象：`pkg/runtime/runtime.go` 定义 sandbox、container、image、inspect、health 接口；`internal/runtime/docker/runtime.go` 使用 pause 容器作为 Pod sandbox，workload 容器共享 sandbox network namespace。
 
-资源、端口、volume 映射：`internal/controller/pod_controller.go` 将 Pod spec 转成 runtime config；Docker runtime 将 ports 绑定到 sandbox，将 mounts 和 CPU/memory limits 应用到 workload 容器。
+资源、端口、volume 映射：`internal/kubecaptain/controller/pod_controller.go` 将 Pod spec 转成 runtime config；Docker runtime 将 ports 绑定到 sandbox，将 mounts 和 CPU/memory limits 应用到 workload 容器。
 
 状态展示：`internal/cli/cli.go` 的 `get pods` 输出 `POD`、`STATUS`、`IP`、`UPTIME`、`NAMESPACE`、`LABELS`。`formatUptime` 只在 kubelet 回写 `Running` 且有 `StartTime` 时显示运行时长。
 

@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	store "minik8s/internal/kubecaptain/etcd"
 	"minik8s/internal/pod"
-	"minik8s/internal/store"
 	"minik8s/pkg/runtime"
 	"minik8s/test/mock"
 )
