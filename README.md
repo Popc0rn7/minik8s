@@ -23,16 +23,16 @@ assigned Pods.
   Set `MINIK8S_PLAIN=1` for ASCII output, or `NO_COLOR=1` to keep icons
   while disabling ANSI color. Image pull falls back to `docker pull`.
 
-Control-plane code lives under `internal/kubecaptain/`: `apiserver` exposes the
-HTTP API, `etcd` owns the local file-backed state, `controller` reconciles Pod
-and Service state, and `scheduler` is reserved for future node assignment logic.
+Control-plane code lives under `internal/kubecaptain/`: the exported
+Kubecaptain kernel owns the long-running control-plane service, with APIServer,
+file-backed state, controllers, and scheduler kept as internal components.
 
 ```bash
 go build -o minik8s ./cmd/minik8s
 ./minik8s cni init
 go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
 export MINIK8S_APISERVER=http://127.0.0.1:18080
-./minik8s apiserver --listen :18080
+./minik8s kubecaptain --listen :18080
 ```
 
 In another shell on a worker node:
@@ -54,7 +54,7 @@ In a third shell on the control node:
 Docker smoke test:
 ```bash
 export MINIK8S_APISERVER=http://127.0.0.1:18080
-./minik8s apiserver --listen :18080
+./minik8s kubecaptain --listen :18080
 sudo ./minik8s kubelet --node-name node-a --apiserver http://127.0.0.1:18080
 ./minik8s apply -f manifest/testdata/pod_nginx.yaml
 ./minik8s get pods

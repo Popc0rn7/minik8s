@@ -4,7 +4,7 @@ APISERVER ?= http://127.0.0.1:18080
 CTL ?= env MINIK8S_APISERVER=$(APISERVER) $(MINIK8S)
 RUN ?= sudo $(MINIK8S)
 
-.PHONY: build test apiserver kubelet-once kubelet cni-init net-registry netd-once doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
+.PHONY: build test kubecaptain kubelet-once kubelet cni-init net-registry netd-once doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
 
 build:
 	go build -o $(MINIK8S) ./cmd/minik8s
@@ -13,8 +13,8 @@ build:
 test:
 	go test ./...
 
-apiserver: build
-	$(MINIK8S) apiserver --listen :18080
+kubecaptain: build
+	$(MINIK8S) kubecaptain --listen :18080
 
 kubelet-once: build
 	$(RUN) kubelet --node-name $(or $(NODE_NAME),node-a) --apiserver $(APISERVER) --once

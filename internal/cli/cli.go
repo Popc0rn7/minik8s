@@ -15,7 +15,7 @@ import (
 
 	"minik8s/internal/cliui"
 	"minik8s/internal/cni"
-	"minik8s/internal/kubecaptain/apiserver"
+	kubecaptain "minik8s/internal/kubecaptain"
 	"minik8s/internal/kubecaptain/controller"
 	store "minik8s/internal/kubecaptain/etcd"
 	"minik8s/internal/kubelet"
@@ -23,6 +23,7 @@ import (
 	"minik8s/internal/minilog"
 	"minik8s/internal/netagent"
 	"minik8s/internal/netregistry"
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	dockerruntime "minik8s/internal/runtime/docker"
 	"minik8s/internal/service"
@@ -35,6 +36,8 @@ type Config struct {
 	Runtime      runtime.ContainerRuntime
 	Store        store.PodStore
 	ServiceStore store.ServiceStore
+	NodeStore    store.NodeStore
+	Captain      *kubecaptain.Kubecaptain
 	Network      controller.PodNetworkManager
 	ServiceProxy kubeproxy.Proxy
 	HTTPClient   *http.Client
@@ -45,6 +48,8 @@ type App struct {
 	runtime      runtime.ContainerRuntime
 	store        store.PodStore
 	serviceStore store.ServiceStore
+	nodeStore    store.NodeStore
+	captain      *kubecaptain.Kubecaptain
 	network      controller.PodNetworkManager
 	serviceProxy kubeproxy.Proxy
 	httpClient   *http.Client
@@ -60,14 +65,29 @@ func New(config Config) *App {
 	if serviceStore == nil {
 		serviceStore = store.NewInMemoryServiceStore()
 	}
+	nodeStore := config.NodeStore
+	if nodeStore == nil {
+		nodeStore = store.NewInMemoryNodeStore()
+	}
 	serviceProxy := config.ServiceProxy
 	if serviceProxy == nil && os.Getenv("MINIK8S_SERVICE_PROXY_DISABLED") != "1" {
 		serviceProxy = kubeproxy.NewIPTablesProxy(nil)
+	}
+	captain := config.Captain
+	if captain == nil {
+		captain = kubecaptain.New(kubecaptain.Config{
+			PodStore:     config.Store,
+			ServiceStore: serviceStore,
+			NodeStore:    nodeStore,
+			ServiceProxy: serviceProxy,
+		})
 	}
 	return &App{
 		runtime:      config.Runtime,
 		store:        config.Store,
 		serviceStore: serviceStore,
+		nodeStore:    nodeStore,
+		captain:      captain,
 		network:      network,
 		serviceProxy: serviceProxy,
 		httpClient:   config.HTTPClient,
@@ -97,8 +117,8 @@ func (a *App) Run(ctx context.Context, args []string, out io.Writer) error {
 		return a.netRegistry(ctx, args[1:], out)
 	case "netd":
 		return a.netd(ctx, args[1:], out)
-	case "apiserver":
-		return a.apiserver(ctx, args[1:], out)
+	case "kubecaptain":
+		return a.kubecaptain(ctx, args[1:], out)
 	case "kubelet":
 		return a.kubelet(ctx, args[1:], out)
 	default:
@@ -164,13 +184,16 @@ func (a *App) get(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minik8s get pods|services [-n namespace]")
+		return fmt.Errorf("usage: minik8s get pods|services|nodes [-n namespace]")
 	}
 	if args[0] == "services" || args[0] == "svc" {
 		return a.getServices(ctx, client, args[1:], out)
 	}
+	if args[0] == "nodes" || args[0] == "node" {
+		return a.getNodes(ctx, client, out)
+	}
 	if args[0] != "pods" {
-		return fmt.Errorf("usage: minik8s get pods|services [-n namespace]")
+		return fmt.Errorf("usage: minik8s get pods|services|nodes [-n namespace]")
 	}
 	namespace := namespaceFlag(args[1:])
 	pods, err := client.ListPods(ctx, namespace)
@@ -235,33 +258,6 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 	return writes(out, cliui.SuccessLine("pod/%s deleted", name))
 }
 
-func (a *App) applyService(ctx context.Context, path string, out io.Writer) error {
-	svc, err := podyaml.LoadServiceFromFile(path)
-	if err != nil {
-		return err
-	}
-	if err := a.ensureServiceClusterIP(svc); err != nil {
-		return err
-	}
-	if err := a.serviceStore.Create(svc); err != nil {
-		if err != store.ErrServiceAlreadyExists {
-			return err
-		}
-		if err := a.serviceStore.Update(svc); err != nil {
-			return err
-		}
-	}
-	ctrl := controller.NewServiceController(a.store, a.serviceStore, a.serviceProxy)
-	if err := ctrl.Sync(ctx); err != nil {
-		return err
-	}
-	updated, err := a.serviceStore.Get(svc.Name, svc.Namespace)
-	if err != nil {
-		return err
-	}
-	return writes(out, cliui.SuccessLine("service/%s created (%s)", updated.Name, updated.Spec.Type))
-}
-
 func (a *App) getServices(ctx context.Context, client *controlPlaneClient, args []string, out io.Writer) error {
 	namespace := namespaceFlag(args)
 	services, err := client.ListServices(ctx, namespace)
@@ -299,16 +295,38 @@ func (a *App) getServices(ctx context.Context, client *controlPlaneClient, args 
 	return nil
 }
 
-func (a *App) controlPlaneClient() (*controlPlaneClient, error) {
-	return newControlPlaneClient(os.Getenv("MINIK8S_APISERVER"), a.httpClient)
-}
-
-func (a *App) ensureServiceClusterIP(svc *service.Service) error {
-	services, err := a.serviceStore.List(svc.Namespace, nil)
+func (a *App) getNodes(ctx context.Context, client *controlPlaneClient, out io.Writer) error {
+	nodes, err := client.ListNodes(ctx)
 	if err != nil {
 		return err
 	}
-	return service.EnsureClusterIP(svc, services)
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].Name < nodes[j].Name
+	})
+	if err := writef(out, "%s %s %s %s\n",
+		cliui.PadRight("NODE", 31),
+		cliui.PadRight("ROLE", 14),
+		cliui.PadRight("STATUS", 14),
+		"AGE",
+	); err != nil {
+		return err
+	}
+	for _, n := range nodes {
+		nodeName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[node]"), n.Name)
+		if err := writef(out, "%s %s %s %s\n",
+			cliui.PadRight(nodeName, 31),
+			cliui.PadRight(string(n.Role), 14),
+			cliui.PadRight(formatNodeStatus(n.Status), 14),
+			formatNodeAge(n),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *App) controlPlaneClient() (*controlPlaneClient, error) {
+	return newControlPlaneClient(os.Getenv("MINIK8S_APISERVER"), a.httpClient)
 }
 
 func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
@@ -663,24 +681,24 @@ func parseNetDOptions(args []string) (netDOptions, error) {
 	return options, nil
 }
 
-type apiServerOptions struct {
+type kubecaptainOptions struct {
 	listen string
 }
 
-func (a *App) apiserver(ctx context.Context, args []string, out io.Writer) error {
-	options, err := parseAPIServerOptions(args)
+func (a *App) kubecaptain(ctx context.Context, args []string, out io.Writer) error {
+	options, err := parseKubecaptainOptions(args)
 	if err != nil {
 		return err
 	}
 	server := &http.Server{
 		Addr:    options.listen,
-		Handler: apiserver.New(apiserver.Config{PodStore: a.store, ServiceStore: a.serviceStore}),
+		Handler: a.captain.Handler(),
 	}
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- server.ListenAndServe()
 	}()
-	if err := writes(out, cliui.InfoLine("apiserver listening on %s", options.listen)); err != nil {
+	if err := writes(out, cliui.InfoLine("kubecaptain listening on %s", options.listen)); err != nil {
 		return err
 	}
 	select {
@@ -699,8 +717,8 @@ func (a *App) apiserver(ctx context.Context, args []string, out io.Writer) error
 	}
 }
 
-func parseAPIServerOptions(args []string) (apiServerOptions, error) {
-	options := apiServerOptions{listen: ":8080"}
+func parseKubecaptainOptions(args []string) (kubecaptainOptions, error) {
+	options := kubecaptainOptions{listen: ":8080"}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -710,7 +728,7 @@ func parseAPIServerOptions(args []string) (apiServerOptions, error) {
 			}
 			options.listen = args[i]
 		default:
-			return options, fmt.Errorf("unknown apiserver flag %q", args[i])
+			return options, fmt.Errorf("unknown kubecaptain flag %q", args[i])
 		}
 	}
 	return options, nil
@@ -789,7 +807,7 @@ func parseKubeletOptions(args []string) (kubeletOptions, error) {
 }
 
 func (a *App) usage(out io.Writer) error {
-	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s apiserver [--listen :18080] | kubelet --node-name <node> --apiserver <url> | apply -f <manifest.yaml> | get pods|services | delete pod|service <name> | doctor docker|network | cni init (set MINIK8S_APISERVER for apply/get/delete)"))
+	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s kubecaptain [--listen :18080] | kubelet --node-name <node> --apiserver <url> | apply -f <manifest.yaml> | get pods|services|nodes | delete pod|service <name> | doctor docker|network | cni init (set MINIK8S_APISERVER for apply/get/delete)"))
 	return err
 }
 
@@ -851,6 +869,24 @@ func formatServiceEndpoints(endpoints []service.Endpoint) string {
 	return strings.Join(parts, ",")
 }
 
+func formatNodeStatus(status node.NodeStatus) string {
+	icon := cliui.Icon(cliui.IconInfo, "[i]")
+	if status == node.NodeReady {
+		icon = cliui.Icon(cliui.IconSuccess, "[ok]")
+	}
+	if status == node.NodeUnknown {
+		icon = cliui.Icon(cliui.IconWarning, "[!]")
+	}
+	return fmt.Sprintf("%s %s", icon, status)
+}
+
+func formatNodeAge(n node.Node) string {
+	if n.LastHeartbeat.IsZero() {
+		return "-"
+	}
+	return shortDuration(time.Since(n.LastHeartbeat))
+}
+
 func shortDuration(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
@@ -903,6 +939,13 @@ func DefaultServiceStatePath() string {
 		return filepath.Join(dir, "services.json")
 	}
 	return filepath.Join(".minik8s", "state", "services.json")
+}
+
+func DefaultNodeStatePath() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "nodes.json")
+	}
+	return filepath.Join(".minik8s", "state", "nodes.json")
 }
 
 // DefaultCNIBinDir returns the default CNI plugin directory.
