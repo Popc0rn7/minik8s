@@ -75,7 +75,10 @@ jobs:
           install -d -m 0700 ~/.ssh
           printf '%s\n' "${CD_CONTROLLER_SSH_KEY}" > ~/.ssh/minik8s_cd_key
           chmod 0600 ~/.ssh/minik8s_cd_key
-          ssh-keyscan -p "${CD_CONTROLLER_PORT}" -H "${CD_CONTROLLER_HOST}" >> ~/.ssh/known_hosts
+          ssh-keyscan -T 10 -p "${CD_CONTROLLER_PORT}" -H "${CD_CONTROLLER_HOST}" >> ~/.ssh/known_hosts 2>/tmp/ssh-keyscan.err || {
+            echo "ssh-keyscan failed; continuing with StrictHostKeyChecking=accept-new" >&2
+            cat /tmp/ssh-keyscan.err >&2 || true
+          }
 
       - name: Deploy through controller
         env:
@@ -87,8 +90,8 @@ jobs:
           set -euo pipefail
 
           controller="${CD_CONTROLLER_USER}@${CD_CONTROLLER_HOST}"
-          ssh_opts=(-i ~/.ssh/minik8s_cd_key -p "${CD_CONTROLLER_PORT}")
-          scp_opts=(-i ~/.ssh/minik8s_cd_key -P "${CD_CONTROLLER_PORT}")
+          ssh_opts=(-i ~/.ssh/minik8s_cd_key -p "${CD_CONTROLLER_PORT}" -o StrictHostKeyChecking=accept-new)
+          scp_opts=(-i ~/.ssh/minik8s_cd_key -P "${CD_CONTROLLER_PORT}" -o StrictHostKeyChecking=accept-new)
 
           ssh "${ssh_opts[@]}" "${controller}" "rm -rf '${REMOTE_DIR}' && mkdir -p '${REMOTE_DIR}'"
           scp "${scp_opts[@]}" dist/minik8s "${controller}:${REMOTE_DIR}/minik8s"
