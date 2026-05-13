@@ -1,6 +1,7 @@
-package store
+package etcd
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -54,4 +55,39 @@ func TestFilePodStoreDeletePersists(t *testing.T) {
 
 	_, err = store2.Get("nginx", "default")
 	require.ErrorIs(t, err, ErrPodNotFound)
+}
+
+func TestFilePodStoreReloadsExternalChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pods.json")
+	store1, err := NewFilePodStore(path)
+	require.NoError(t, err)
+	store2, err := NewFilePodStore(path)
+	require.NoError(t, err)
+
+	require.NoError(t, store1.Create(&pod.Pod{
+		ObjectMeta: pod.ObjectMeta{Name: "external", Namespace: "default"},
+		Spec: pod.PodSpec{Containers: []pod.ContainerSpec{{
+			Name:  "c",
+			Image: "busybox",
+		}}},
+	}))
+
+	got, err := store2.Get("external", "default")
+
+	require.NoError(t, err)
+	assert.Equal(t, "external", got.Name)
+}
+
+func TestFilePodStoreListEmptyNamespaceReturnsAllNamespaces(t *testing.T) {
+	path := t.TempDir() + "/pods.json"
+	store1, err := NewFilePodStore(path)
+	require.NoError(t, err)
+
+	require.NoError(t, store1.Create(&pod.Pod{ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default"}}))
+	require.NoError(t, store1.Create(&pod.Pod{ObjectMeta: pod.ObjectMeta{Name: "worker", Namespace: "demo"}}))
+
+	pods, err := store1.List("", nil)
+	require.NoError(t, err)
+
+	assert.Len(t, pods, 2)
 }

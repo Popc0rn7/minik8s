@@ -1,4 +1,4 @@
-package store
+package etcd
 
 import (
 	"encoding/json"
@@ -34,6 +34,7 @@ func NewFilePodStore(path string) (*FilePodStore, error) {
 }
 
 func (s *FilePodStore) load() error {
+	s.pods = make(map[string]*pod.Pod)
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -52,6 +53,10 @@ func (s *FilePodStore) load() error {
 		s.pods[podKey(p.Name, p.Namespace)] = p.DeepCopy()
 	}
 	return nil
+}
+
+func (s *FilePodStore) reloadLocked() error {
+	return s.load()
 }
 
 func (s *FilePodStore) saveLocked() error {
@@ -80,6 +85,9 @@ func (s *FilePodStore) saveLocked() error {
 func (s *FilePodStore) Create(p *pod.Pod) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
 
 	pcopy := normalizePod(p)
 	key := podKey(pcopy.Name, pcopy.Namespace)
@@ -92,8 +100,11 @@ func (s *FilePodStore) Create(p *pod.Pod) error {
 
 // Get retrieves a Pod.
 func (s *FilePodStore) Get(name, namespace string) (*pod.Pod, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadLocked(); err != nil {
+		return nil, err
+	}
 
 	p, ok := s.pods[podKey(name, namespace)]
 	if !ok {
@@ -104,15 +115,15 @@ func (s *FilePodStore) Get(name, namespace string) (*pod.Pod, error) {
 
 // List returns Pods in a namespace matching selector.
 func (s *FilePodStore) List(namespace string, selector *pod.LabelSelector) ([]*pod.Pod, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if namespace == "" {
-		namespace = "default"
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadLocked(); err != nil {
+		return nil, err
 	}
+
 	result := make([]*pod.Pod, 0)
 	for _, p := range s.pods {
-		if p.Namespace != namespace {
+		if namespace != "" && p.Namespace != namespace {
 			continue
 		}
 		if selector == nil || selector.Matches(p.Labels) {
@@ -126,6 +137,9 @@ func (s *FilePodStore) List(namespace string, selector *pod.LabelSelector) ([]*p
 func (s *FilePodStore) Update(p *pod.Pod) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
 
 	pcopy := normalizePod(p)
 	key := podKey(pcopy.Name, pcopy.Namespace)
@@ -140,6 +154,9 @@ func (s *FilePodStore) Update(p *pod.Pod) error {
 func (s *FilePodStore) Delete(name, namespace string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
 
 	key := podKey(name, namespace)
 	if _, exists := s.pods[key]; !exists {

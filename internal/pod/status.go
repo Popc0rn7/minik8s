@@ -9,6 +9,9 @@ type PodStatus struct {
 	Containers []ContainerStatus `json:"containerStatuses,omitempty" yaml:"containerStatuses"`
 	StartTime  int64             `json:"startTime,omitempty" yaml:"startTime"`
 	SandboxID  string            `json:"sandboxID,omitempty" yaml:"sandboxID"`
+	PodIP      string            `json:"podIP,omitempty" yaml:"podIP"`
+	NetNSPath  string            `json:"netNSPath,omitempty" yaml:"netNSPath"`
+	CNIResult  string            `json:"cniResult,omitempty" yaml:"cniResult"`
 	Message    string            `json:"message,omitempty" yaml:"message"`
 	Reason     string            `json:"reason,omitempty" yaml:"reason"`
 }
@@ -95,6 +98,9 @@ func (s *PodStatus) DeepCopy() PodStatus {
 		Phase:      s.Phase,
 		StartTime:  s.StartTime,
 		SandboxID:  s.SandboxID,
+		PodIP:      s.PodIP,
+		NetNSPath:  s.NetNSPath,
+		CNIResult:  s.CNIResult,
 		Message:    s.Message,
 		Reason:     s.Reason,
 		Containers: make([]ContainerStatus, len(s.Containers)),

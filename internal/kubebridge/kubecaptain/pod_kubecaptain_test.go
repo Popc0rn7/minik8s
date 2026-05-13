@@ -1,4 +1,4 @@
-package controller
+package kubecaptain
 
 import (
 	"context"
@@ -8,11 +8,28 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/pod"
-	"minik8s/internal/store"
 	"minik8s/pkg/runtime"
 	"minik8s/test/mock"
 )
+
+type mockPodNetwork struct {
+	setupCalls    []string
+	teardownCalls []string
+	setupIP       string
+	setupErr      error
+}
+
+func (m *mockPodNetwork) Add(ctx context.Context, req PodNetworkRequest) (PodNetworkResult, error) {
+	m.setupCalls = append(m.setupCalls, req.SandboxID+"|"+req.NetNSPath)
+	return PodNetworkResult{PodIP: m.setupIP}, m.setupErr
+}
+
+func (m *mockPodNetwork) Del(ctx context.Context, req PodNetworkRequest) error {
+	m.teardownCalls = append(m.teardownCalls, req.SandboxID+"|"+req.NetNSPath)
+	return nil
+}
 
 // MockPodStore is a simple in-memory store for testing
 type MockPodStore struct {
@@ -85,43 +102,47 @@ func newTestPod(name, namespace string, restartPolicy pod.RestartPolicy) *pod.Po
 	}
 }
 
-func TestPodController_StartStop(t *testing.T) {
+func TestPodKubecaptain_StartStop(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
+	mockRuntime.NetNSPath = "/proc/101/ns/net"
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
 
-	// Start controller
+	// Start kubecaptain
 	ctx := context.Background()
-	err := controller.Start(ctx)
+	err := kubecaptain.Start(ctx)
 	require.NoError(t, err)
-	assert.True(t, controller.IsRunning())
+	assert.True(t, kubecaptain.IsRunning())
 
-	// Stop controller
-	controller.Stop()
-	assert.False(t, controller.IsRunning())
+	// Stop kubecaptain
+	kubecaptain.Stop()
+	assert.False(t, kubecaptain.IsRunning())
 }
 
-func TestPodController_StartTwice(t *testing.T) {
+func TestPodKubecaptain_StartTwice(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
+	mockRuntime.NetNSPath = "/proc/101/ns/net"
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
 
 	ctx := context.Background()
-	err := controller.Start(ctx)
+	err := kubecaptain.Start(ctx)
 	require.NoError(t, err)
 
 	// Starting again should fail
-	err = controller.Start(ctx)
+	err = kubecaptain.Start(ctx)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already running")
 
-	controller.Stop()
+	kubecaptain.Stop()
 }
 
-func TestPodController_ReconcilePendingPod(t *testing.T) {
+func TestPodKubecaptain_ReconcilePendingPod(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
+	mockRuntime.NetNSPath = "/proc/101/ns/net"
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	podNetwork := &mockPodNetwork{setupIP: "10.244.0.2"}
+	kubecaptain := NewPodKubecaptainWithNetwork(mockRuntime, podStore, podNetwork)
 
 	// Create a pending pod
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
@@ -131,7 +152,7 @@ func TestPodController_ReconcilePendingPod(t *testing.T) {
 	ctx := context.Background()
 
 	// Manually trigger reconciliation
-	err = controller.reconcilePod(ctx, testPod)
+	err = kubecaptain.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Verify pod is now running
@@ -139,28 +160,48 @@ func TestPodController_ReconcilePendingPod(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, pod.PodRunning, updatedPod.Status.Phase)
 	assert.NotZero(t, updatedPod.Status.StartTime)
+	assert.Equal(t, "10.244.0.2", updatedPod.Status.PodIP)
+	assert.Equal(t, "/proc/101/ns/net", updatedPod.Status.NetNSPath)
 
 	// Verify sandbox was created
 	assert.NotEmpty(t, mockRuntime.CreateSandboxCalls)
 	assert.NotEmpty(t, mockRuntime.StartSandboxCalls)
+	assert.Equal(t, []string{"sandbox-1|/proc/101/ns/net"}, podNetwork.setupCalls)
 
 	// Verify container was created and started
 	assert.NotEmpty(t, mockRuntime.CreateContainerCalls)
 	assert.NotEmpty(t, mockRuntime.StartContainerCalls)
 }
 
-func TestPodController_ReconcilePendingPod_SandboxCreationFailure(t *testing.T) {
+func TestPodKubecaptain_DeletePodTearsDownNetworkBeforeRemovingSandbox(t *testing.T) {
+	mockRuntime := mock.NewMockRuntime()
+	mockRuntime.NetNSPath = "/proc/101/ns/net"
+	podStore := NewMockPodStore()
+	podNetwork := &mockPodNetwork{setupIP: "10.244.0.2"}
+	kubecaptain := NewPodKubecaptainWithNetwork(mockRuntime, podStore, podNetwork)
+
+	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
+	require.NoError(t, podStore.Create(testPod))
+	require.NoError(t, kubecaptain.reconcilePod(context.Background(), testPod))
+
+	require.NoError(t, kubecaptain.DeletePod(context.Background(), "test-pod", "default"))
+
+	assert.Equal(t, []string{"sandbox-1|/proc/101/ns/net"}, podNetwork.teardownCalls)
+	assert.NotEmpty(t, mockRuntime.RemoveSandboxCalls)
+}
+
+func TestPodKubecaptain_ReconcilePendingPod_SandboxCreationFailure(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	mockRuntime.ShouldFailCreateSandbox = true
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
 
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
 	err := podStore.Create(testPod)
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	err = controller.reconcilePod(ctx, testPod)
+	err = kubecaptain.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Verify pod failed
@@ -170,18 +211,18 @@ func TestPodController_ReconcilePendingPod_SandboxCreationFailure(t *testing.T) 
 	assert.Contains(t, updatedPod.Status.Reason, "sandbox")
 }
 
-func TestPodController_ReconcilePendingPod_ContainerCreationFailure(t *testing.T) {
+func TestPodKubecaptain_ReconcilePendingPod_ContainerCreationFailure(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	mockRuntime.ShouldFailCreateContainer = true
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
 
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
 	err := podStore.Create(testPod)
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	err = controller.reconcilePod(ctx, testPod)
+	err = kubecaptain.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Verify pod failed
@@ -191,10 +232,10 @@ func TestPodController_ReconcilePendingPod_ContainerCreationFailure(t *testing.T
 	assert.Contains(t, updatedPod.Status.Reason, "container")
 }
 
-func TestPodController_ReconcileRunningPod(t *testing.T) {
+func TestPodKubecaptain_ReconcileRunningPod(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
 
 	// Create a running pod
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
@@ -215,7 +256,7 @@ func TestPodController_ReconcileRunningPod(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	err = controller.reconcilePod(ctx, testPod)
+	err = kubecaptain.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Verify pod is still running
@@ -224,10 +265,10 @@ func TestPodController_ReconcileRunningPod(t *testing.T) {
 	assert.Equal(t, pod.PodRunning, updatedPod.Status.Phase)
 }
 
-func TestPodController_ReconcileRunningPod_ContainerRestart(t *testing.T) {
+func TestPodKubecaptain_ReconcileRunningPod_ContainerRestart(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
 
 	// Create a running pod with a stopped container
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
@@ -251,17 +292,17 @@ func TestPodController_ReconcileRunningPod_ContainerRestart(t *testing.T) {
 	mockRuntime.SetContainerState("container-1", "stopped", 1)
 
 	ctx := context.Background()
-	err = controller.reconcilePod(ctx, testPod)
+	err = kubecaptain.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// With RestartPolicyAlways, container should be restarted
 	assert.Contains(t, mockRuntime.StartContainerCalls, "container-1")
 }
 
-func TestPodController_ReconcileRunningPod_NoRestartOnNever(t *testing.T) {
+func TestPodKubecaptain_ReconcileRunningPod_NoRestartOnNever(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
 
 	// Create pod with RestartPolicyNever
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyNever)
@@ -285,17 +326,17 @@ func TestPodController_ReconcileRunningPod_NoRestartOnNever(t *testing.T) {
 	mockRuntime.SetContainerState("container-1", "stopped", 1)
 
 	ctx := context.Background()
-	err = controller.reconcilePod(ctx, testPod)
+	err = kubecaptain.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Container should NOT be restarted
 	assert.NotContains(t, mockRuntime.StartContainerCalls, "container-1")
 }
 
-func TestPodController_ReconcileRunningPod_RestartOnOnFailure(t *testing.T) {
+func TestPodKubecaptain_ReconcileRunningPod_RestartOnOnFailure(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
 
 	// Create pod with RestartPolicyOnFailure
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyOnFailure)
@@ -319,17 +360,17 @@ func TestPodController_ReconcileRunningPod_RestartOnOnFailure(t *testing.T) {
 	mockRuntime.SetContainerState("container-1", "stopped", 1)
 
 	ctx := context.Background()
-	err = controller.reconcilePod(ctx, testPod)
+	err = kubecaptain.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Container SHOULD be restarted (non-zero exit with OnFailure)
 	assert.Contains(t, mockRuntime.StartContainerCalls, "container-1")
 }
 
-func TestPodController_ReconcileRunningPod_NoRestartOnOnFailure_Success(t *testing.T) {
+func TestPodKubecaptain_ReconcileRunningPod_NoRestartOnOnFailure_Success(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
 
 	// Create pod with RestartPolicyOnFailure
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyOnFailure)
@@ -353,17 +394,17 @@ func TestPodController_ReconcileRunningPod_NoRestartOnOnFailure_Success(t *testi
 	mockRuntime.SetContainerState("container-1", "stopped", 0)
 
 	ctx := context.Background()
-	err = controller.reconcilePod(ctx, testPod)
+	err = kubecaptain.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Container should NOT be restarted (zero exit with OnFailure)
 	assert.NotContains(t, mockRuntime.StartContainerCalls, "container-1")
 }
 
-func TestPodController_ReconcileTerminalPod(t *testing.T) {
+func TestPodKubecaptain_ReconcileTerminalPod(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
 
 	// Create a terminal pod
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
@@ -383,7 +424,7 @@ func TestPodController_ReconcileTerminalPod(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	err = controller.reconcilePod(ctx, testPod)
+	err = kubecaptain.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Verify containers and sandbox were cleaned up
@@ -393,7 +434,7 @@ func TestPodController_ReconcileTerminalPod(t *testing.T) {
 	assert.NotEmpty(t, mockRuntime.RemoveSandboxCalls)
 }
 
-func TestPodController_ShouldRestart(t *testing.T) {
+func TestPodKubecaptain_ShouldRestart(t *testing.T) {
 	tests := []struct {
 		name          string
 		restartPolicy pod.RestartPolicy
@@ -412,19 +453,19 @@ func TestPodController_ShouldRestart(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mockRuntime := mock.NewMockRuntime()
 			podStore := NewMockPodStore()
-			controller := NewPodController(mockRuntime, podStore)
+			kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
 
 			testPod := newTestPod("test-pod", "default", tt.restartPolicy)
-			result := controller.shouldRestart(testPod, tt.exitCode)
+			result := kubecaptain.shouldRestart(testPod, tt.exitCode)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
 
-func TestPodController_MultipleReconciliation(t *testing.T) {
+func TestPodKubecaptain_MultipleReconciliation(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	controller := NewPodController(mockRuntime, podStore)
+	kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
 
 	// Create multiple pods
 	for i := 0; i < 3; i++ {
@@ -434,7 +475,7 @@ func TestPodController_MultipleReconciliation(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	controller.reconcile(ctx)
+	kubecaptain.reconcile(ctx)
 
 	// All pods should be running
 	pods, err := podStore.List("default", nil)
@@ -449,7 +490,7 @@ func TestPodController_MultipleReconciliation(t *testing.T) {
 	assert.Len(t, mockRuntime.CreateContainerCalls, 3)
 }
 
-func TestPodController_EnvVarsToStrings(t *testing.T) {
+func TestPodKubecaptain_EnvVarsToStrings(t *testing.T) {
 	envs := []pod.EnvVar{
 		{Name: "FOO", Value: "bar"},
 		{Name: "BAZ", Value: "qux"},

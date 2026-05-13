@@ -1,0 +1,16 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  name: busybox-client
+  namespace: default
+  labels:
+    app: client
+spec:
+  nodeName: node-a
+  containers:
+  - name: client
+    image: busybox
+    imageTag: latest
+    command: ["sh", "-c"]
+    args: ["sleep 3600"]
+  restartPolicy: Always

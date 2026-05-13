@@ -5,9 +5,9 @@ import "time"
 // Pod is the top-level configuration object for a Pod
 type Pod struct {
 	TypeMeta   `yaml:",inline"`
-	ObjectMeta `yaml:"metadata"`
-	Spec       PodSpec   `yaml:"spec"`
-	Status     PodStatus `yaml:"status,omitempty"`
+	ObjectMeta `json:"metadata" yaml:"metadata"`
+	Spec       PodSpec   `json:"spec" yaml:"spec"`
+	Status     PodStatus `json:"status,omitempty" yaml:"status,omitempty"`
 }
 
 // PodSpec defines the desired state of a Pod

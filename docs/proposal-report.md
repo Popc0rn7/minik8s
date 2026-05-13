@@ -1,5 +1,7 @@
 # 开题报告：Minik8s 迷你容器编排工具
 
+> **撰写日期**：2026-04-15
+
 ## 小组成员
 
 | 姓名 | 学号 | GitHub 用户名 | 负责部分 |
@@ -19,11 +21,11 @@
 - Serverless 与 Minik8s 基础功能（Pod、Service）复用度高，可逐步迭代
 - 参考 Knative、OpenFaaS 实现方案成熟，文档丰富
 
-**个人作业**：持久化优先/GPU
+**个人作业**：持久化存储/GPU(有时间)
 
 **选择理由**：
-- 重要
-
+- 持久化存储是 Kubernetes 的核心功能之一，学习价值高
+- GPU 资源管理涉及复杂的调度和资源抽象，挑战性大
 ---
 
 ## 二、项目技术栈
@@ -32,9 +34,9 @@
 |------|----------|
 | 编程语言 | Go |
 | 容器运行时 | Docker |
-| CNI 网络 | Flannel |
-| 服务网格 | IPVS/iptables |
-| 配置存储 | Etcd |
+| CNI 网络 | 类Flannel（自实现 bridge 模式） |
+| 服务网格 | IPVS/iptables（kube-proxy） |
+| 配置存储 | Etcd + 文件存储 |
 | Serverless 参考 | Knative、OpenFaaS |
 | CI/CD | GitHub Actions |
 
@@ -42,7 +44,7 @@
 
 ## 三、迭代计划
 
-### 迭代一：基础功能实现（4.15-4.30）
+### 迭代一：基础功能实现（4.15-4.30）⏳ 已完成
 
 **目标**：完成 Minik8s 核心功能
 
@@ -56,16 +58,9 @@
 | ReplicaSet | Pod 副本管理、自动扩缩容 | popc0rn |
 | DNS 与转发 | 域名解析、路径映射 | popc0rn |
 
-**交付物**：
-- [ ] Pod 创建/删除/查看功能
-- [ ] Pod 间网络通信
-- [ ] Service 创建/删除/查看功能
-- [ ] ReplicaSet 创建/删除/自动管理
-- [ ] DNS 配置功能
-
 ---
 
-### 迭代二：多机部署与自选功能（5.1-5.15）
+### 迭代二：补全K8s框架和多机部署（5.1-5.15）🔄 进行中
 
 **目标**：完成多机部署和 Serverless 平台
 
@@ -74,22 +69,31 @@
 | 任务 | 说明 | 负责 |
 |------|------|------|
 | Node 抽象 | 控制面/数据面分离、Node 注册 | popc0rn |
-| Scheduler | Pod 调度策略（RR/随机） | popc0rn |
+| APIServer | Pod 调度策略（RR/随机） | popc0rn |
 | HeartBeat | 控制面-数据面心跳检测 | popc0rn |
-| Serverless 平台 | Function 抽象、Http/Event Trigger | popc0rn |
-| Serverless Workflow | 函数链、DAG 分支执行 | popc0rn |
-| scale-to-0 | 冷启动、实例回收、自动扩容 | popc0rn |
-
-**交付物**：
-- [ ] 三节点集群部署
-- [ ] Pod 跨节点调度
-- [ ] Serverless Function 上传/调用
-- [ ] Serverless Workflow DAG
-- [ ] scale-to-0 演示
+| Controller Manager | Service Controller | popc0rn |
+| CICD 集成 | GitHub Actions 自动测试 | popc0rn |
 
 ---
 
-### 迭代三：完善与容错（5.16-6.16）
+### 迭代三：个人作业和可选功能（5.16-6.1）
+
+**目标**：完善功能、实现容错、准备答辩
+
+**任务分解**：
+
+| 任务 | 说明 | 负责 |
+|------|------|------|
+| 持久化存储 | PV/PVC、hostPath、NFS 多机访问 | popc0rn |
+| 容错机制 | 控制面 Crash 不影响 Pod 运行 | popc0rn |
+| 状态恢复 | 重启后对象状态恢复 | popc0rn |
+| Security Context | runAsUser/runAsGroup/fsGroup | popc0rn |
+| 文档完善 | README、功能演示文档 | popc0rn |
+| 答辩准备 | 演示脚本、功能演示 | popc0rn |
+
+---
+
+### 迭代四：完善与容错（6.2-6.16）
 
 **目标**：完善功能、实现容错、准备答辩
 
@@ -103,21 +107,16 @@
 | 文档完善 | README、功能演示文档 | popc0rn |
 | 答辩准备 | 演示脚本、功能演示 | popc0rn |
 
-**交付物**：
-- [ ] 控制面容错
-- [ ] Security Context 功能
-- [ ] 完整项目文档
-- [ ] 答辩演示
-
 ---
 
 ## 四、时间线总览
 
 ```
 4.15-4.30:   迭代一（基础功能）
-5.1-5.15:   迭代二（多机部署 + Serverless）
-5.16-6.16:  迭代三（容错 + Security Context + 答辩准备）
-6.16:    最终答辩
+5.1-5.15:    迭代二（多机部署 + Serverless）
+5.16-6.1:    迭代三（个人作业 + 容错）📅 计划中
+6.2-6.16:    迭代四（完善 + 答辩准备）📅 计划中
+6.16:        最终答辩
 ```
 
 ---
@@ -130,9 +129,9 @@
 
 ```
 minik8s/
-├── cmd/           # 主程序入口
-├── internal/      # 内部包（apiserver, kubelet, scheduler, etc.）
-├── pkg/           # 公共库
+├── cmd/           # 主程序入口（minik8s, minik8s-bridge）
+├── internal/      # 内部包
+├── pkg/           # 公共库（runtime 接口, yaml 解析）
 ├── api/           # Protobuf 定义
 ├── configs/       # 配置文件模板
 ├── scripts/       # 构建脚本
@@ -146,7 +145,7 @@ minik8s/
 
 | 风险 | 影响 | 应对措施 |
 |------|------|----------|
-| 单人开发工作量巨大 | 高 | 优先保证基础功能可用，自选功能抓大放小 |
+| 单人开发工作量巨大 | 高 | 优先保证基础功能可用，Serverless 抓大放小 |
 | Serverless 实现复杂度 | 中 | 参考 Knative 设计，分模块迭代 |
 | 多机环境搭建困难 | 中 | 使用虚拟机模拟多节点 |
 

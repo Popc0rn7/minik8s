@@ -1,4 +1,4 @@
-package controller
+package kubecaptain
 
 import (
 	"context"
@@ -11,10 +11,10 @@ import (
 	"minik8s/test/mock"
 )
 
-func TestPodControllerPassesRuntimeConfigFromPodSpec(t *testing.T) {
+func TestPodKubecaptainPassesRuntimeConfigFromPodSpec(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	ctrl := NewPodController(mockRuntime, podStore)
+	ctrl := NewPodKubecaptain(mockRuntime, podStore)
 	p := &pod.Pod{
 		TypeMeta: pod.TypeMeta{Kind: "Pod"},
 		ObjectMeta: pod.ObjectMeta{
@@ -66,10 +66,10 @@ func TestPodControllerPassesRuntimeConfigFromPodSpec(t *testing.T) {
 	assert.Equal(t, "128Mi", call.Config.Resources.Limits.Memory)
 }
 
-func TestPodControllerDeletePodCleansRuntimeAndStore(t *testing.T) {
+func TestPodKubecaptainDeletePodCleansRuntimeAndStore(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	ctrl := NewPodController(mockRuntime, podStore)
+	ctrl := NewPodKubecaptain(mockRuntime, podStore)
 	p := newTestPod("delete-me", "default", pod.RestartPolicyAlways)
 	require.NoError(t, podStore.Create(p))
 
@@ -86,10 +86,10 @@ func TestPodControllerDeletePodCleansRuntimeAndStore(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestPodControllerDeleteFailedPodWithoutRuntimeState(t *testing.T) {
+func TestPodKubecaptainDeleteFailedPodWithoutRuntimeState(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	ctrl := NewPodController(mockRuntime, podStore)
+	ctrl := NewPodKubecaptain(mockRuntime, podStore)
 	p := newTestPod("failed-before-create", "default", pod.RestartPolicyAlways)
 	p.Status.Phase = pod.PodFailed
 	p.Status.Containers = nil

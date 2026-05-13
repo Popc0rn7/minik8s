@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/bubbletea"
+	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/pod"
-	"minik8s/internal/store"
 )
 
 // Model is the Bubble Tea model for the Pod TUI.
