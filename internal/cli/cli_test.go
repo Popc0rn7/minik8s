@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,18 +23,23 @@ import (
 )
 
 type mockServiceProxy struct {
+	mu      sync.Mutex
 	applied []*service.Service
 	deleted []*service.Service
 }
 
 func (m *mockServiceProxy) SyncService(ctx context.Context, svc *service.Service) error {
 	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.applied = append(m.applied, svc.DeepCopy())
 	return nil
 }
 
 func (m *mockServiceProxy) SyncAll(ctx context.Context, services []*service.Service) error {
 	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, svc := range services {
 		m.applied = append(m.applied, svc.DeepCopy())
 	}
@@ -42,8 +48,16 @@ func (m *mockServiceProxy) SyncAll(ctx context.Context, services []*service.Serv
 
 func (m *mockServiceProxy) DeleteService(ctx context.Context, svc *service.Service) error {
 	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.deleted = append(m.deleted, svc.DeepCopy())
 	return nil
+}
+
+func (m *mockServiceProxy) appliedCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.applied)
 }
 
 func TestCLIApplyGetDeletePod(t *testing.T) {
@@ -138,7 +152,67 @@ func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"doctor", "network"}, &out))
 	assert.Contains(t, out.String(), "󰋽  config: present")
+	assert.Contains(t, out.String(), "bridge: mk8s0")
+	assert.Contains(t, out.String(), "podCIDR: 10.244.0.0/24")
+	assert.Contains(t, out.String(), "gateway: 10.244.0.1")
+	assert.Contains(t, out.String(), "ipam: .minik8s/state/cni-ipam.json")
 	assert.Contains(t, out.String(), "󱈸  minik8s-bridge: missing")
+}
+
+func TestCLIDoctorNetworkShowsRoutesFromConfig(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "net.d"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "net.d", "10-minik8s.conf"), []byte(`{
+  "cniVersion": "1.0.0",
+  "name": "minik8s",
+  "type": "minik8s-bridge",
+  "bridge": "mk8s0",
+  "podCIDR": "10.244.0.0/24",
+  "gateway": "10.244.0.1",
+  "ipam": {"statePath": ".minik8s/state/cni-ipam.json"},
+  "routes": [{"dst": "10.244.1.0/24", "gw": "192.168.1.11"}]
+}`), 0o644))
+	app := New(Config{
+		Runtime: mock.NewMockRuntime(),
+		Store:   store.NewInMemoryPodStore(),
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"doctor", "network"}, &out))
+
+	assert.Contains(t, out.String(), "route: 10.244.1.0/24 via 192.168.1.11")
+	assert.Contains(t, out.String(), "route-installed:")
+}
+
+func TestCLIDoctorNetworkShowsIPAMAllocations(t *testing.T) {
+	root := t.TempDir()
+	confDir := filepath.Join(root, "net.d")
+	ipamPath := filepath.Join(root, "cni-ipam.json")
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	t.Setenv("MINIK8S_CNI_CONF_DIR", confDir)
+	require.NoError(t, os.MkdirAll(confDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(confDir, "10-minik8s.conf"), []byte(`{
+  "cniVersion": "1.0.0",
+  "name": "minik8s",
+  "type": "minik8s-bridge",
+  "bridge": "mk8s0",
+  "podCIDR": "10.244.0.0/24",
+  "gateway": "10.244.0.1",
+  "ipam": {"statePath": "`+ipamPath+`"}
+}`), 0o644))
+	require.NoError(t, os.WriteFile(ipamPath, []byte(`{"allocations":{"default/nginx":"10.244.0.2"}}`), 0o644))
+	app := New(Config{
+		Runtime: mock.NewMockRuntime(),
+		Store:   store.NewInMemoryPodStore(),
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"doctor", "network"}, &out))
+
+	assert.Contains(t, out.String(), "ipam-allocations: 1")
+	assert.Contains(t, out.String(), "allocation: default/nginx=10.244.0.2")
 }
 
 func TestCLICNIInitWritesDefaultSingleNodeConfig(t *testing.T) {
@@ -406,6 +480,7 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"get", "services"}, &out))
 	assert.Contains(t, out.String(), "SERVICE")
+	assert.Contains(t, out.String(), "SELECTOR")
 	assert.Contains(t, out.String(), "nginx-service")
 	assert.Contains(t, out.String(), "10.96.0.1")
 	assert.Contains(t, out.String(), "80->80/TCP")
@@ -415,6 +490,49 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	require.NoError(t, app.Run(context.Background(), []string{"delete", "service", "nginx-service"}, &out))
 	assert.Contains(t, out.String(), "service/nginx-service deleted")
 	assert.Empty(t, proxy.deleted)
+}
+
+func TestParseKubebridgeOptionsServiceSyncInterval(t *testing.T) {
+	defaults, err := parseKubebridgeOptions(nil)
+	require.NoError(t, err)
+	assert.Equal(t, ":8080", defaults.listen)
+	assert.Equal(t, 5*time.Second, defaults.serviceSyncInterval)
+
+	disabled, err := parseKubebridgeOptions([]string{"--service-sync-interval", "0"})
+	require.NoError(t, err)
+	assert.Equal(t, time.Duration(0), disabled.serviceSyncInterval)
+
+	_, err = parseKubebridgeOptions([]string{"--service-sync-interval", "nope"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --service-sync-interval")
+}
+
+func TestServiceSyncLoopRunsPeriodically(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	serviceStore := store.NewInMemoryServiceStore()
+	proxy := &mockServiceProxy{}
+	require.NoError(t, serviceStore.Create(&service.Service{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx-service", Namespace: "default"},
+		Spec: service.ServiceSpec{
+			Selector: pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}},
+			Ports:    []service.ServicePort{{Port: 80, TargetPort: 80, Protocol: "TCP"}},
+		},
+		Status: service.ServiceStatus{ClusterIP: "10.96.0.1"},
+	}))
+	app := New(Config{
+		Runtime:      mock.NewMockRuntime(),
+		Store:        podStore,
+		ServiceStore: serviceStore,
+		ServiceProxy: proxy,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go app.runServiceSyncLoop(ctx, 10*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		return proxy.appliedCount() > 0
+	}, time.Second, 10*time.Millisecond)
+	cancel()
 }
 
 func TestCLICobraResourceAliasesAndNamedGet(t *testing.T) {

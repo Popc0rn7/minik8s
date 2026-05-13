@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -245,12 +246,13 @@ func (a *App) getServices(ctx context.Context, client *controlPlaneClient, args 
 	sort.Slice(services, func(i, j int) bool {
 		return services[i].Name < services[j].Name
 	})
-	if err := writef(out, "%s %s %s %s %s %s %s\n",
+	if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 		cliui.PadRight("SERVICE", 31),
 		cliui.PadRight("TYPE", 12),
 		cliui.PadRight("CLUSTER-IP", 16),
 		cliui.PadRight("PORTS", 18),
 		cliui.PadRight("ENDPOINTS", 28),
+		cliui.PadRight("SELECTOR", 22),
 		cliui.PadRight("NAMESPACE", 14),
 		"LABELS",
 	); err != nil {
@@ -258,12 +260,13 @@ func (a *App) getServices(ctx context.Context, client *controlPlaneClient, args 
 	}
 	for _, svc := range services {
 		serviceName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[svc]"), svc.Name)
-		if err := writef(out, "%s %s %s %s %s %s %s\n",
+		if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 			cliui.PadRight(serviceName, 31),
 			cliui.PadRight(string(svc.Spec.Type), 12),
 			cliui.PadRight(svc.Status.ClusterIP, 16),
 			cliui.PadRight(formatServicePorts(svc), 18),
 			cliui.PadRight(formatServiceEndpoints(svc.Status.Endpoints), 28),
+			cliui.PadRight(formatServiceSelector(svc.Spec.Selector), 22),
 			cliui.PadRight(svc.Namespace, 14),
 			formatLabels(svc.Labels),
 		); err != nil {
@@ -387,7 +390,9 @@ func (a *App) doctorNetwork(out io.Writer) error {
 	if err := writes(out, cliui.InfoLine("plugin: minik8s-bridge")); err != nil {
 		return err
 	}
+	configPresent := false
 	if _, err := os.Stat(DefaultCNIConfDir()); err == nil {
+		configPresent = true
 		if err := writes(out, cliui.InfoLine("config: present")); err != nil {
 			return err
 		}
@@ -398,6 +403,11 @@ func (a *App) doctorNetwork(out io.Writer) error {
 	} else {
 		return err
 	}
+	if configPresent {
+		if err := a.writeCNIDiagnostics(out); err != nil {
+			return err
+		}
+	}
 	if _, err := os.Stat(filepath.Join(DefaultCNIBinDir(), "minik8s-bridge")); err == nil {
 		return writes(out, cliui.InfoLine("minik8s-bridge: present"))
 	} else if os.IsNotExist(err) {
@@ -405,6 +415,115 @@ func (a *App) doctorNetwork(out io.Writer) error {
 	} else {
 		return err
 	}
+}
+
+type cniDoctorRoute struct {
+	Dst string `json:"dst"`
+	GW  string `json:"gw"`
+}
+
+type cniDoctorConfig struct {
+	Bridge  string `json:"bridge"`
+	PodCIDR string `json:"podCIDR"`
+	Gateway string `json:"gateway"`
+	IPAM    struct {
+		StatePath string `json:"statePath"`
+	} `json:"ipam"`
+	Routes []cniDoctorRoute `json:"routes"`
+}
+
+type cniDoctorIPAMState struct {
+	Allocations map[string]string `json:"allocations"`
+}
+
+func (a *App) writeCNIDiagnostics(out io.Writer) error {
+	data, err := os.ReadFile(filepath.Join(DefaultCNIConfDir(), "10-minik8s.conf"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return writes(out, cliui.WarnLine("config-file: missing"))
+		}
+		return err
+	}
+	var conf cniDoctorConfig
+	if err := json.Unmarshal(data, &conf); err != nil {
+		return writes(out, cliui.WarnLine("config-parse: failed %v", err))
+	}
+	if conf.Bridge != "" {
+		if err := writes(out, cliui.InfoLine("bridge: %s", conf.Bridge)); err != nil {
+			return err
+		}
+	}
+	if conf.PodCIDR != "" {
+		if err := writes(out, cliui.InfoLine("podCIDR: %s", conf.PodCIDR)); err != nil {
+			return err
+		}
+	}
+	if conf.Gateway != "" {
+		if err := writes(out, cliui.InfoLine("gateway: %s", conf.Gateway)); err != nil {
+			return err
+		}
+	}
+	if conf.IPAM.StatePath != "" {
+		if err := writes(out, cliui.InfoLine("ipam: %s", conf.IPAM.StatePath)); err != nil {
+			return err
+		}
+		if err := writeIPAMDiagnostics(out, conf.IPAM.StatePath); err != nil {
+			return err
+		}
+	}
+	for _, route := range conf.Routes {
+		if route.Dst == "" || route.GW == "" {
+			continue
+		}
+		if err := writes(out, cliui.InfoLine("route: %s via %s", route.Dst, route.GW)); err != nil {
+			return err
+		}
+		if routeInstalled(route.Dst, route.GW) {
+			if err := writes(out, cliui.SuccessLine("route-installed: ok %s", route.Dst)); err != nil {
+				return err
+			}
+		} else if err := writes(out, cliui.WarnLine("route-installed: missing %s", route.Dst)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeIPAMDiagnostics(out io.Writer, statePath string) error {
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var state cniDoctorIPAMState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return writes(out, cliui.WarnLine("ipam-parse: failed %v", err))
+	}
+	keys := make([]string, 0, len(state.Allocations))
+	for key := range state.Allocations {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if err := writes(out, cliui.InfoLine("ipam-allocations: %d", len(keys))); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if err := writes(out, cliui.InfoLine("allocation: %s=%s", key, state.Allocations[key])); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func routeInstalled(dst, gw string) bool {
+	out, err := exec.Command("ip", "route", "show", dst).CombinedOutput()
+	if err != nil {
+		return false
+	}
+	text := string(out)
+	return strings.Contains(text, dst) && strings.Contains(text, gw)
 }
 
 func (a *App) cni(ctx context.Context, args []string, out io.Writer) error {
@@ -683,7 +802,8 @@ func parseNetDOptions(args []string) (netDOptions, error) {
 }
 
 type kubebridgeOptions struct {
-	listen string
+	listen              string
+	serviceSyncInterval time.Duration
 }
 
 func (a *App) kubebridge(ctx context.Context, args []string, out io.Writer) error {
@@ -699,6 +819,9 @@ func (a *App) kubebridge(ctx context.Context, args []string, out io.Writer) erro
 	go func() {
 		errCh <- server.ListenAndServe()
 	}()
+	if options.serviceSyncInterval > 0 {
+		go a.runServiceSyncLoop(ctx, options.serviceSyncInterval)
+	}
 	if err := writes(out, cliui.InfoLine("kubebridge listening on %s", options.listen)); err != nil {
 		return err
 	}
@@ -719,7 +842,7 @@ func (a *App) kubebridge(ctx context.Context, args []string, out io.Writer) erro
 }
 
 func parseKubebridgeOptions(args []string) (kubebridgeOptions, error) {
-	options := kubebridgeOptions{listen: ":8080"}
+	options := kubebridgeOptions{listen: ":8080", serviceSyncInterval: 5 * time.Second}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -728,11 +851,41 @@ func parseKubebridgeOptions(args []string) (kubebridgeOptions, error) {
 				return options, fmt.Errorf("missing value for --listen")
 			}
 			options.listen = args[i]
+		case "--service-sync-interval":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --service-sync-interval")
+			}
+			interval, err := time.ParseDuration(args[i])
+			if err != nil {
+				return options, fmt.Errorf("invalid --service-sync-interval %q: %w", args[i], err)
+			}
+			options.serviceSyncInterval = interval
 		default:
 			return options, fmt.Errorf("unknown kubebridge flag %q", args[i])
 		}
 	}
 	return options, nil
+}
+
+func (a *App) runServiceSyncLoop(ctx context.Context, interval time.Duration) {
+	syncOnce := func() {
+		ctrl := kubecaptain.NewServiceKubecaptain(a.bridge.PodStore(), a.bridge.ServiceStore(), a.bridge.ServiceProxy())
+		if err := ctrl.Sync(ctx); err != nil {
+			minilog.Warn("service-periodic-sync", "error=%v", err)
+		}
+	}
+	syncOnce()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncOnce()
+		}
+	}
 }
 
 type kubesailerOptions struct {
@@ -808,7 +961,7 @@ func parseKubesailerOptions(args []string) (kubesailerOptions, error) {
 }
 
 func (a *App) usage(out io.Writer) error {
-	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s kubebridge [--listen :18080] | kubesailer --node-name <node> --kubeharbor <url> | apply -f <manifest.yaml> | get pods|services|nodes | delete pod|service <name> | doctor docker|network | cni init (set MINIK8S_KUBEHARBOR for apply/get/delete)"))
+	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s kubebridge [--listen :18080] [--service-sync-interval 5s] | kubesailer --node-name <node> --kubeharbor <url> | apply -f <manifest.yaml> | get pods|services|nodes | delete pod|service <name> | doctor docker|network | cni init (set MINIK8S_KUBEHARBOR for apply/get/delete)"))
 	return err
 }
 
@@ -868,6 +1021,17 @@ func formatServiceEndpoints(endpoints []service.Endpoint) string {
 		parts = append(parts, fmt.Sprintf("%s:%d", ep.IP, ep.TargetPort))
 	}
 	return strings.Join(parts, ",")
+}
+
+func formatServiceSelector(selector pod.LabelSelector) string {
+	if len(selector.MatchLabels) == 0 {
+		return "-"
+	}
+	labels := make(map[string]string, len(selector.MatchLabels))
+	for key, value := range selector.MatchLabels {
+		labels[key] = value
+	}
+	return formatLabels(labels)
 }
 
 func formatNodeStatus(status node.NodeStatus) string {
