@@ -10,12 +10,15 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"minik8s/internal/kubecaptain/controller"
 	store "minik8s/internal/kubecaptain/etcd"
+	"minik8s/internal/kubecaptain/scheduler"
 	"minik8s/internal/minilog"
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 	podyaml "minik8s/pkg/yaml"
@@ -24,11 +27,17 @@ import (
 type Config struct {
 	PodStore     store.PodStore
 	ServiceStore store.ServiceStore
+	NodeStore    store.NodeStore
+	Scheduler    scheduler.Scheduler
+	NodeTTL      time.Duration
 }
 
 type Server struct {
-	pods     store.PodStore
-	services store.ServiceStore
+	pods      store.PodStore
+	services  store.ServiceStore
+	nodes     store.NodeStore
+	scheduler scheduler.Scheduler
+	nodeTTL   time.Duration
 }
 
 func New(config Config) *Server {
@@ -40,7 +49,19 @@ func New(config Config) *Server {
 	if serviceStore == nil {
 		serviceStore = store.NewInMemoryServiceStore()
 	}
-	return &Server{pods: podStore, services: serviceStore}
+	nodeStore := config.NodeStore
+	if nodeStore == nil {
+		nodeStore = store.NewInMemoryNodeStore()
+	}
+	podScheduler := config.Scheduler
+	if podScheduler == nil {
+		podScheduler = scheduler.NewNaiveScheduler()
+	}
+	nodeTTL := config.NodeTTL
+	if nodeTTL == 0 {
+		nodeTTL = scheduler.DefaultNodeTTL
+	}
+	return &Server{pods: podStore, services: serviceStore, nodes: nodeStore, scheduler: podScheduler, nodeTTL: nodeTTL}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -63,10 +84,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"namespaced": true,
 				"kind":       "Service",
 				"verbs":      []string{"get", "list", "create", "update", "delete"},
+			}, {
+				"name":       "nodes",
+				"namespaced": false,
+				"kind":       "Node",
+				"verbs":      []string{"get", "list"},
 			}},
 		})
+	case len(parts) == 3 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes":
+		s.handleNodes(w, r, "")
 	case len(parts) == 4 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes" && parts[3] != "":
-		writeStatus(w, http.StatusNotFound, "NotFound", "node subresource not found")
+		s.handleNodes(w, r, parts[3])
 	case len(parts) == 5 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes" && parts[4] == "pods":
 		s.handleNodePods(w, r, parts[3])
 	case len(parts) >= 5 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "namespaces":
@@ -109,6 +137,10 @@ func (s *Server) handlePods(w http.ResponseWriter, r *http.Request, namespace st
 			return
 		}
 		p.Status.Phase = pod.PodPending
+		if err := s.schedulePodIfPossible(p); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
 		if err := s.pods.Create(p); err != nil {
 			writeStoreError(w, err, "pods", p.Name)
 			return
@@ -142,6 +174,10 @@ func (s *Server) handlePods(w http.ResponseWriter, r *http.Request, namespace st
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
+		if err := s.schedulePodIfPossible(p); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
 		if err := s.pods.Update(p); err != nil {
 			writeStoreError(w, err, "pods", name)
 			return
@@ -169,6 +205,14 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 		return
 	}
+	if err := s.nodes.UpsertHeartbeat(nodeName); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	if err := s.scheduleUnassignedPods(); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
 	all, err := s.pods.List("", nil)
 	if err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
@@ -183,6 +227,29 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 	sortPods(items)
 	minilog.Info("node-heartbeat", "node=%s assigned=%d", nodeName, len(items))
 	writeJSON(w, http.StatusOK, map[string]any{"kind": "PodList", "apiVersion": "v1", "items": items})
+}
+
+func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodGet {
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	if name == "" {
+		nodes, err := s.nodes.List()
+		if err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		sortNodes(nodes)
+		writeJSON(w, http.StatusOK, map[string]any{"kind": "NodeList", "apiVersion": "v1", "items": nodes})
+		return
+	}
+	n, err := s.nodes.Get(name)
+	if err != nil {
+		writeStoreError(w, err, "nodes", name)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
 }
 
 func (s *Server) handlePodStatus(w http.ResponseWriter, r *http.Request, namespace, name string) {
@@ -356,6 +423,46 @@ func (s *Server) syncServices(ctx context.Context) error {
 	return ctrl.Sync(ctx)
 }
 
+func (s *Server) schedulePodIfPossible(p *pod.Pod) error {
+	if p.Spec.NodeName != "" {
+		return nil
+	}
+	nodes, err := s.nodes.ListReady(s.nodeTTL)
+	if err != nil {
+		return fmt.Errorf("listing ready nodes: %w", err)
+	}
+	if err := s.scheduler.Schedule(p, nodes); err != nil {
+		return fmt.Errorf("scheduling pod: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) scheduleUnassignedPods() error {
+	pods, err := s.pods.List("", nil)
+	if err != nil {
+		return fmt.Errorf("listing pods: %w", err)
+	}
+	nodes, err := s.nodes.ListReady(s.nodeTTL)
+	if err != nil {
+		return fmt.Errorf("listing ready nodes: %w", err)
+	}
+	for _, p := range pods {
+		if p.Spec.NodeName != "" {
+			continue
+		}
+		if err := s.scheduler.Schedule(p, nodes); err != nil {
+			return fmt.Errorf("scheduling pod %s/%s: %w", p.Namespace, p.Name, err)
+		}
+		if p.Spec.NodeName == "" {
+			continue
+		}
+		if err := s.pods.Update(p); err != nil {
+			return fmt.Errorf("updating scheduled pod %s/%s: %w", p.Namespace, p.Name, err)
+		}
+	}
+	return nil
+}
+
 func decodeObject(r io.Reader, out any) error {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -385,6 +492,12 @@ func sortServices(services []*service.Service) {
 			return services[i].Name < services[j].Name
 		}
 		return services[i].Namespace < services[j].Namespace
+	})
+}
+
+func sortNodes(nodes []node.Node) {
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].Name < nodes[j].Name
 	})
 }
 
@@ -422,6 +535,8 @@ func writeStoreError(w http.ResponseWriter, err error, resource, name string) {
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
 	case errors.Is(err, store.ErrServiceAlreadyExists):
 		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
+	case errors.Is(err, store.ErrNodeNotFound):
+		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
 	default:
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 	}

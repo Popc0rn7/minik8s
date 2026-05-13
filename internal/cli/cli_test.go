@@ -49,7 +49,7 @@ func (m *mockServiceProxy) DeleteService(ctx context.Context, svc *service.Servi
 func TestCLIApplyGetDeletePod(t *testing.T) {
 	serverStore := store.NewInMemoryPodStore()
 	localStore := store.NewInMemoryPodStore()
-	app := newHTTPTestApp(t, apiserver.New(apiserver.Config{PodStore: serverStore}), localStore, store.NewInMemoryServiceStore())
+	app := newHTTPTestApp(t, apiserver.New(apiserver.Config{PodStore: serverStore, NodeStore: store.NewInMemoryNodeStore()}), localStore, store.NewInMemoryServiceStore())
 
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")
 	var out bytes.Buffer
@@ -96,6 +96,7 @@ func TestCLIApplyGetDeleteRequireAPIServer(t *testing.T) {
 		{"delete", "pod", "nginx-pod"},
 		{"get", "services"},
 		{"delete", "service", "nginx-service"},
+		{"get", "nodes"},
 	} {
 		err := app.Run(context.Background(), args, &out)
 		require.Error(t, err)
@@ -295,7 +296,7 @@ func TestCLIDoctorDockerPullsImage(t *testing.T) {
 
 func TestCLIGetPodsShowsPodIP(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
-	app := newHTTPTestApp(t, apiserver.New(apiserver.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	app := newHTTPTestApp(t, apiserver.New(apiserver.Config{PodStore: podStore, NodeStore: store.NewInMemoryNodeStore()}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")
 	var out bytes.Buffer
 
@@ -310,6 +311,28 @@ func TestCLIGetPodsShowsPodIP(t *testing.T) {
 
 	assert.Contains(t, out.String(), "IP")
 	assert.Contains(t, out.String(), "10.244.0.2")
+}
+
+func TestCLIGetNodesShowsHeartbeatNodes(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	nodeStore := store.NewInMemoryNodeStore()
+	require.NoError(t, nodeStore.UpsertHeartbeat("node-a"))
+	app := newHTTPTestApp(t, apiserver.New(apiserver.Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: nodeStore,
+	}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"get", "nodes"}, &out))
+
+	assert.Contains(t, out.String(), "NODE")
+	assert.Contains(t, out.String(), "ROLE")
+	assert.Contains(t, out.String(), "STATUS")
+	assert.Contains(t, out.String(), "AGE")
+	assert.Contains(t, out.String(), "node-a")
+	assert.Contains(t, out.String(), "Worker")
+	assert.Contains(t, out.String(), "Ready")
 }
 
 func TestCLIDoctorNetworkShowsCNIPaths(t *testing.T) {

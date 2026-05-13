@@ -11,6 +11,7 @@ import (
 	"path"
 	"strings"
 
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 )
@@ -101,6 +102,20 @@ func (c *controlPlaneClient) DeleteService(ctx context.Context, name, namespace 
 		return err
 	}
 	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
+}
+
+func (c *controlPlaneClient) ListNodes(ctx context.Context) ([]node.Node, error) {
+	endpoint, err := c.resourceURL("/api/v1/nodes")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []node.Node `json:"items"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
 }
 
 func (c *controlPlaneClient) createPod(ctx context.Context, p *pod.Pod) (*pod.Pod, error) {
