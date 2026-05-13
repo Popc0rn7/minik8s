@@ -12,6 +12,8 @@ unset MINIK8S_CNI_DISABLED
 ./minik8s cni init
 go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
 ./minik8s doctor network
+./minik8s apiserver --listen :8080
+sudo ./minik8s kubelet --node-name node-a --apiserver http://127.0.0.1:8080
 ```
 
 期望 `doctor network` 输出：
@@ -31,7 +33,7 @@ rm -rf .minik8s/testcase-state .minik8s/state/cni-ipam.json
 
 | Handout 要求 | 验证 case | Manifest | 主要命令 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| Pod 启动时分配独立内网 IP | CNI-01 | `pod_nginx.yaml`、`pod_busybox_client.yaml` | `apply`、`get pods` | 已实现，可验证 |
+| Pod 启动时分配独立内网 IP | CNI-01 | `pod_nginx.yaml`、`pod_busybox_client.yaml` | `apply`、`kubelet`、`get pods` | 已实现，可验证 |
 | Pod IP 写入可视化输出 | CNI-01 | 同上 | `get pods` | 已实现，可验证 |
 | 同节点 Pod 通过 CNI IP 直接通信 | CNI-02 | 同上 | client Pod 内 `wget serverIP` | 已实现，需 root/网络环境 |
 | 删除 Pod 时释放 CNI 状态 | CNI-03 | 同上 | `delete pod`、检查 IPAM 状态 | 已实现，可验证 |
@@ -61,7 +63,7 @@ cat .minik8s/state/cni-ipam.json
 期望：
 
 - `doctor network` 显示配置和插件均存在。
-- `apply` 后两个 Pod 均为 `Running`。
+- `apply` 后两个 Pod 进入 `Pending`，kubelet 同步后均为 `Running`。
 - `get pods` 的 `IP` 列中，`nginx-pod` 和 `busybox-client` 均显示 `10.244.0.0/24` 内的不同 IP，通常从 `10.244.0.2` 开始。
 - `.minik8s/state/cni-ipam.json` 中有 `default/nginx-pod` 和 `default/busybox-client` 两个 allocation。
 
@@ -171,4 +173,4 @@ Bridge 插件：`internal/cniplugin/bridge.go` 创建/复用 `mk8s0`，创建 ve
 
 IPAM：`internal/cniplugin/ipam.go` 使用 `.minik8s/state/cni-ipam.json` 持久化 Pod IP allocation；key 优先使用 `namespace/name`，保证同一 Pod 重建时可获得稳定 IP。
 
-删除路径：`delete pod` 调用 controller `DeletePod`，先执行 `network.Del` 删除 veth 并释放 IPAM，再停止并删除 sandbox。
+删除路径：`delete pod` 删除控制面期望状态；下一次 kubelet 同步发现本节点 Pod 消失后调用 controller `DeletePod`，先执行 `network.Del` 删除 veth 并释放 IPAM，再停止并删除 sandbox。

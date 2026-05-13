@@ -6,6 +6,7 @@ metadata:
   labels:
     app: client
 spec:
+  nodeName: node-a
   containers:
   - name: client
     image: busybox

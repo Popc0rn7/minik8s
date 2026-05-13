@@ -2,7 +2,7 @@ MINIK8S ?= ./minik8s
 CNI_PLUGIN ?= .minik8s/cni/bin/minik8s-bridge
 RUN ?= sudo $(MINIK8S)
 
-.PHONY: build test cni-init net-registry netd-once doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
+.PHONY: build test apiserver kubelet-once kubelet cni-init net-registry netd-once doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
 
 build:
 	go build -o $(MINIK8S) ./cmd/minik8s
@@ -10,6 +10,15 @@ build:
 
 test:
 	go test ./...
+
+apiserver: build
+	$(MINIK8S) apiserver --listen :8080
+
+kubelet-once: build
+	$(RUN) kubelet --node-name $(or $(NODE_NAME),node-a) --apiserver $(or $(APISERVER),http://127.0.0.1:8080) --once
+
+kubelet: build
+	$(RUN) kubelet --node-name $(or $(NODE_NAME),node-a) --apiserver $(or $(APISERVER),http://127.0.0.1:8080)
 
 cni-init: build
 	$(RUN) cni init

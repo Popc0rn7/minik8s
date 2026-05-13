@@ -60,19 +60,22 @@ func (s *InMemoryPodStore) List(namespace string, selector *pod.LabelSelector) (
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if namespace == "" {
-		namespace = "default"
-	}
-
-	names, exists := s.index[namespace]
-	if !exists {
-		return []*pod.Pod{}, nil
-	}
-
 	var result []*pod.Pod
-	for _, name := range names {
-		key := namespace + "/" + name
-		p := s.pods[key]
+	if namespace != "" {
+		names, exists := s.index[namespace]
+		if !exists {
+			return []*pod.Pod{}, nil
+		}
+		for _, name := range names {
+			key := namespace + "/" + name
+			p := s.pods[key]
+			if selector == nil || selector.Matches(p.Labels) {
+				result = append(result, p.DeepCopy())
+			}
+		}
+		return result, nil
+	}
+	for _, p := range s.pods {
 		if selector == nil || selector.Matches(p.Labels) {
 			result = append(result, p.DeepCopy())
 		}

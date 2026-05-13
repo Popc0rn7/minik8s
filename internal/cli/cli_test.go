@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"minik8s/internal/pod"
 	"minik8s/internal/service"
 	"minik8s/internal/store"
 	"minik8s/test/mock"
@@ -59,13 +60,13 @@ func TestCLIApplyGetDeletePod(t *testing.T) {
 	assert.Contains(t, out.String(), "DONE")
 	assert.Contains(t, out.String(), "󰄬")
 	assert.Contains(t, out.String(), "pod/nginx-pod created")
-	assert.NotEmpty(t, runtime.StartContainerCalls)
+	assert.Empty(t, runtime.StartContainerCalls)
 
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"get", "pods"}, &out))
 	assert.Contains(t, out.String(), "nginx-pod")
 	assert.Contains(t, out.String(), "󱃾")
-	assert.Contains(t, out.String(), "󰄬 Running")
+	assert.Contains(t, out.String(), "Pending")
 	assert.Contains(t, out.String(), "IP")
 	assert.Contains(t, out.String(), "app=nginx")
 
@@ -74,7 +75,7 @@ func TestCLIApplyGetDeletePod(t *testing.T) {
 	assert.Contains(t, out.String(), "DONE")
 	assert.Contains(t, out.String(), "󰄬")
 	assert.Contains(t, out.String(), "pod/nginx-pod deleted")
-	assert.NotEmpty(t, runtime.RemoveContainerCalls)
+	assert.Empty(t, runtime.RemoveContainerCalls)
 }
 
 func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
@@ -291,7 +292,7 @@ func TestCLIDoctorNetworkShowsCNIPaths(t *testing.T) {
 	assert.Contains(t, out.String(), "󰋽  plugin: minik8s-bridge")
 }
 
-func TestCLIApplyShowsFailedReason(t *testing.T) {
+func TestCLIApplyStoresPendingPodWithoutRuntimeSync(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "pods.json")
 	podStore, err := store.NewFilePodStore(statePath)
 	require.NoError(t, err)
@@ -306,10 +307,11 @@ func TestCLIApplyShowsFailedReason(t *testing.T) {
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
 
-	assert.Contains(t, out.String(), "WARN")
-	assert.Contains(t, out.String(), "pod/nginx-pod created (Failed)")
-	assert.Contains(t, out.String(), "󱈸  reason:")
-	assert.Contains(t, out.String(), "Failed to create sandbox")
+	assert.Contains(t, out.String(), "pod/nginx-pod created (Pending)")
+	assert.Empty(t, runtime.CreateSandboxCalls)
+	got, err := podStore.Get("nginx-pod", "default")
+	require.NoError(t, err)
+	assert.Equal(t, pod.PodPending, got.Status.Phase)
 }
 
 func TestCLIPlainModeFallsBackToASCII(t *testing.T) {
