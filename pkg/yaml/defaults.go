@@ -119,7 +119,7 @@ func DefaultAndValidateService(s *service.Service) error {
 		}
 	}
 	if s.Status.ClusterIP == "" {
-		s.Status.ClusterIP = "10.96.0.1"
+		s.Status.ClusterIP = service.DefaultClusterIP
 	}
 	return nil
 }

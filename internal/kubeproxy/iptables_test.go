@@ -1,0 +1,110 @@
+package kubeproxy
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"minik8s/internal/pod"
+	"minik8s/internal/service"
+)
+
+type recordingRunner struct {
+	commands []string
+	failOn   string
+}
+
+func (r *recordingRunner) Run(ctx context.Context, args ...string) error {
+	_ = ctx
+	command := strings.Join(args, " ")
+	r.commands = append(r.commands, command)
+	if r.failOn != "" && strings.Contains(command, r.failOn) {
+		return errors.New("runner failed")
+	}
+	return nil
+}
+
+func TestIPTablesProxySyncServiceProgramsClusterIPAndNodePort(t *testing.T) {
+	runner := &recordingRunner{}
+	proxy := NewIPTablesProxy(runner.Run)
+	svc := &service.Service{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default"},
+		Spec: service.ServiceSpec{
+			Type: service.ServiceTypeNodePort,
+			Ports: []service.ServicePort{{
+				Protocol:   "TCP",
+				Port:       80,
+				TargetPort: 8080,
+				NodePort:   30080,
+			}},
+		},
+		Status: service.ServiceStatus{
+			ClusterIP: "10.96.0.10",
+			Endpoints: []service.Endpoint{
+				{PodName: "nginx-a", IP: "10.244.0.2", Port: 80, TargetPort: 8080, Protocol: "TCP"},
+				{PodName: "nginx-b", IP: "10.244.0.3", Port: 80, TargetPort: 8080, Protocol: "TCP"},
+			},
+		},
+	}
+
+	require.NoError(t, proxy.SyncService(context.Background(), svc))
+
+	joined := strings.Join(runner.commands, "\n")
+	assert.Contains(t, joined, "-t nat -N MK8S-SVC-")
+	assert.Contains(t, joined, "-t nat -A PREROUTING -p tcp -d 10.96.0.10 --dport 80 -j MK8S-SVC-")
+	assert.Contains(t, joined, "-t nat -A OUTPUT -p tcp -d 10.96.0.10 --dport 80 -j MK8S-SVC-")
+	assert.Contains(t, joined, "-t nat -A PREROUTING -p tcp --dport 30080 -j MK8S-SVC-")
+	assert.Contains(t, joined, "-t nat -A OUTPUT -p tcp --dport 30080 -j MK8S-SVC-")
+	assert.Contains(t, joined, "-t nat -A MK8S-SVC-")
+	assert.Contains(t, joined, "--dport 80 -m statistic --mode random --probability 0.500000 -j DNAT --to-destination 10.244.0.2:8080")
+	assert.Contains(t, joined, "--dport 80 -j DNAT --to-destination 10.244.0.3:8080")
+	assert.Contains(t, joined, "--dport 30080 -m statistic --mode random --probability 0.500000 -j DNAT --to-destination 10.244.0.2:8080")
+	assert.Contains(t, joined, "--dport 30080 -j DNAT --to-destination 10.244.0.3:8080")
+}
+
+func TestIPTablesProxySyncAllReconcilesEveryService(t *testing.T) {
+	runner := &recordingRunner{}
+	proxy := NewIPTablesProxy(runner.Run)
+	services := []*service.Service{
+		{ObjectMeta: pod.ObjectMeta{Name: "a", Namespace: "default"}, Status: service.ServiceStatus{ClusterIP: "10.96.0.1"}},
+		{ObjectMeta: pod.ObjectMeta{Name: "b", Namespace: "default"}, Status: service.ServiceStatus{ClusterIP: "10.96.0.2"}},
+	}
+
+	require.NoError(t, proxy.SyncAll(context.Background(), services))
+
+	assert.Equal(t, 2, countCommandsContaining(runner.commands, "-t nat -N MK8S-SVC-"))
+}
+
+func TestIPTablesProxyDeleteServiceIgnoresMissingRules(t *testing.T) {
+	runner := &recordingRunner{failOn: "-D"}
+	proxy := NewIPTablesProxy(runner.Run)
+	svc := &service.Service{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default"},
+		Spec: service.ServiceSpec{
+			Type:  service.ServiceTypeClusterIP,
+			Ports: []service.ServicePort{{Protocol: "TCP", Port: 80, TargetPort: 8080}},
+		},
+		Status: service.ServiceStatus{ClusterIP: "10.96.0.10"},
+	}
+
+	require.NoError(t, proxy.DeleteService(context.Background(), svc))
+
+	joined := strings.Join(runner.commands, "\n")
+	assert.Contains(t, joined, "-t nat -D PREROUTING -p tcp -d 10.96.0.10 --dport 80 -j MK8S-SVC-")
+	assert.Contains(t, joined, "-t nat -F MK8S-SVC-")
+	assert.Contains(t, joined, "-t nat -X MK8S-SVC-")
+}
+
+func countCommandsContaining(commands []string, needle string) int {
+	count := 0
+	for _, command := range commands {
+		if strings.Contains(command, needle) {
+			count++
+		}
+	}
+	return count
+}

@@ -226,6 +226,6 @@ YAML 解析：`pkg/yaml/service.go` 和 `pkg/yaml/defaults.go` 读取并校验 S
 
 控制器：`internal/controller/service_controller.go` 读取 Service 和 Running Pod，按 selector 匹配同 namespace Pod，并将 `PodIP:targetPort` 写入 endpoints。
 
-流量转发：`internal/controller/iptables_proxy.go` 使用 iptables `nat` 表维护 `MK8S-SVC-*` chain。ClusterIP 规则挂到 `PREROUTING` 和 `OUTPUT`；NodePort 规则同样挂到 `PREROUTING` 和 `OUTPUT`。多个 endpoint 通过 `statistic --mode random` 分摊。
+流量转发：`internal/kubeproxy` 定义 kubeproxy 抽象，默认 `IPTablesProxy` 使用 iptables `nat` 表维护 `MK8S-SVC-*` chain。ClusterIP 规则挂到 `PREROUTING` 和 `OUTPUT`；NodePort 规则同样挂到 `PREROUTING` 和 `OUTPUT`。多个 endpoint 通过 `statistic --mode random` 分摊。
 
 CLI：`internal/cli/cli.go` 的 `apply -f` 会先读取 `kind`，分发到 Pod 或 Service；`get services` 会触发 Service sync 并展示 Service 表；`delete service` 会清理 proxy 规则和持久化状态。

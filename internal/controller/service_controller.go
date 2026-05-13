@@ -6,15 +6,17 @@ import (
 	"sort"
 	"strings"
 
+	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 	"minik8s/internal/store"
 )
 
-type ServiceProxy interface {
-	ApplyService(ctx context.Context, svc *service.Service) error
-	DeleteService(ctx context.Context, svc *service.Service) error
+type ServiceProxy = kubeproxy.Proxy
+
+func NewIPTablesServiceProxy() *kubeproxy.IPTablesProxy {
+	return kubeproxy.NewIPTablesProxy(nil)
 }
 
 type ServiceController struct {
@@ -91,13 +93,13 @@ func (c *ServiceController) reconcileService(ctx context.Context, svc *service.S
 	})
 	svc.Status.Endpoints = endpoints
 	if svc.Status.ClusterIP == "" {
-		svc.Status.ClusterIP = "10.96.0.1"
+		svc.Status.ClusterIP = service.DefaultClusterIP
 	}
 	if err := c.serviceStore.Update(svc); err != nil {
 		return fmt.Errorf("updating service status: %w", err)
 	}
 	if c.proxy != nil {
-		if err := c.proxy.ApplyService(ctx, svc); err != nil {
+		if err := c.proxy.SyncService(ctx, svc); err != nil {
 			return fmt.Errorf("applying service proxy rules: %w", err)
 		}
 	}

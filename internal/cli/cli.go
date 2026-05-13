@@ -16,6 +16,7 @@ import (
 	"minik8s/internal/cliui"
 	"minik8s/internal/cni"
 	"minik8s/internal/controller"
+	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/netagent"
 	"minik8s/internal/netregistry"
@@ -33,7 +34,7 @@ type Config struct {
 	Store        store.PodStore
 	ServiceStore store.ServiceStore
 	Network      controller.PodNetworkManager
-	ServiceProxy controller.ServiceProxy
+	ServiceProxy kubeproxy.Proxy
 }
 
 // App is the Minik8s command-line application.
@@ -42,7 +43,7 @@ type App struct {
 	store        store.PodStore
 	serviceStore store.ServiceStore
 	network      controller.PodNetworkManager
-	serviceProxy controller.ServiceProxy
+	serviceProxy kubeproxy.Proxy
 }
 
 // New creates an App.
@@ -57,7 +58,7 @@ func New(config Config) *App {
 	}
 	serviceProxy := config.ServiceProxy
 	if serviceProxy == nil && os.Getenv("MINIK8S_SERVICE_PROXY_DISABLED") != "1" {
-		serviceProxy = controller.NewIPTablesServiceProxy()
+		serviceProxy = kubeproxy.NewIPTablesProxy(nil)
 	}
 	return &App{
 		runtime:      config.Runtime,
@@ -291,29 +292,7 @@ func (a *App) ensureServiceClusterIP(svc *service.Service) error {
 	if err != nil {
 		return err
 	}
-	used := make(map[string]bool, len(services))
-	for _, existing := range services {
-		if existing.Name == svc.Name && existing.Namespace == svc.Namespace {
-			if existing.Status.ClusterIP != "" {
-				svc.Status.ClusterIP = existing.Status.ClusterIP
-			}
-			continue
-		}
-		if existing.Status.ClusterIP != "" {
-			used[existing.Status.ClusterIP] = true
-		}
-	}
-	if svc.Status.ClusterIP != "" && !used[svc.Status.ClusterIP] {
-		return nil
-	}
-	for i := 1; i < 255; i++ {
-		candidate := fmt.Sprintf("10.96.0.%d", i)
-		if !used[candidate] {
-			svc.Status.ClusterIP = candidate
-			return nil
-		}
-	}
-	return fmt.Errorf("no available service ClusterIP")
+	return service.EnsureClusterIP(svc, services)
 }
 
 func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
