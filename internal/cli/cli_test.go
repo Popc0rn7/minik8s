@@ -535,6 +535,87 @@ func TestServiceSyncLoopRunsPeriodically(t *testing.T) {
 	cancel()
 }
 
+func TestCLICobraResourceAliasesAndNamedGet(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	podStore := store.NewInMemoryPodStore()
+	serviceStore := store.NewInMemoryServiceStore()
+	server := kubeharbor.New(kubeharbor.Config{PodStore: podStore, ServiceStore: serviceStore, NodeStore: store.NewInMemoryNodeStore()})
+	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")}, &out))
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"get", "po", "nginx-pod"}, &out))
+	assert.Contains(t, out.String(), "nginx-pod")
+	assert.Contains(t, out.String(), "Pending")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "testdata", "service_clusterip_nginx.yaml")}, &out))
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"get", "svc", "nginx-service"}, &out))
+	assert.Contains(t, out.String(), "nginx-service")
+	assert.Contains(t, out.String(), "10.96.0.1")
+}
+
+func TestCLIDeleteResourceSlashName(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	podStore := store.NewInMemoryPodStore()
+	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")}, &out))
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"delete", "pod/nginx-pod"}, &out))
+
+	assert.Contains(t, out.String(), "pod/nginx-pod deleted")
+	_, err := podStore.Get("nginx-pod", "default")
+	assert.ErrorIs(t, err, store.ErrPodNotFound)
+}
+
+func TestCLIOutputJSONAndYAML(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")}, &out))
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"get", "pod", "nginx-pod", "-o", "json"}, &out))
+	var got pod.Pod
+	require.NoError(t, json.Unmarshal(out.Bytes(), &got))
+	assert.Equal(t, "nginx-pod", got.Name)
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"get", "pod", "nginx-pod", "-o", "yaml"}, &out))
+	assert.Contains(t, out.String(), "kind: Pod")
+	assert.Contains(t, out.String(), "name: nginx-pod")
+}
+
+func TestCLIDescribeAPIResourcesVersionAndServerFlag(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("MINIK8S_KUBEHARBOR", "http://wrong.example")
+	podStore := store.NewInMemoryPodStore()
+	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"--server", "http://minik8s.test", "apply", "-f", filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")}, &out))
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"--server", "http://minik8s.test", "describe", "pod", "nginx-pod"}, &out))
+	assert.Contains(t, out.String(), "Name: nginx-pod")
+	assert.Contains(t, out.String(), "Status: Pending")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"--server", "http://minik8s.test", "api-resources"}, &out))
+	assert.Contains(t, out.String(), "pods")
+	assert.Contains(t, out.String(), "services")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"--server", "http://minik8s.test", "version"}, &out))
+	assert.Contains(t, out.String(), "kubeharbor")
+}
+
 func newHTTPTestApp(t *testing.T, handler http.Handler, podStore store.PodStore, serviceStore store.ServiceStore) *App {
 	t.Helper()
 	t.Setenv("MINIK8S_KUBEHARBOR", "http://minik8s.test")

@@ -66,6 +66,18 @@ func (c *controlPlaneClient) ListPods(ctx context.Context, namespace string) ([]
 	return list.Items, nil
 }
 
+func (c *controlPlaneClient) GetPod(ctx context.Context, name, namespace string) (*pod.Pod, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "pods", name))
+	if err != nil {
+		return nil, err
+	}
+	var p pod.Pod
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 func (c *controlPlaneClient) DeletePod(ctx context.Context, name, namespace string) error {
 	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "pods", name))
 	if err != nil {
@@ -96,6 +108,18 @@ func (c *controlPlaneClient) ListServices(ctx context.Context, namespace string)
 	return list.Items, nil
 }
 
+func (c *controlPlaneClient) GetService(ctx context.Context, name, namespace string) (*service.Service, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "services", name))
+	if err != nil {
+		return nil, err
+	}
+	var svc service.Service
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &svc); err != nil {
+		return nil, err
+	}
+	return &svc, nil
+}
+
 func (c *controlPlaneClient) DeleteService(ctx context.Context, name, namespace string) error {
 	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "services", name))
 	if err != nil {
@@ -116,6 +140,42 @@ func (c *controlPlaneClient) ListNodes(ctx context.Context) ([]node.Node, error)
 		return nil, err
 	}
 	return list.Items, nil
+}
+
+func (c *controlPlaneClient) GetNode(ctx context.Context, name string) (*node.Node, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/nodes", name))
+	if err != nil {
+		return nil, err
+	}
+	var n node.Node
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &n); err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+func (c *controlPlaneClient) APIResources(ctx context.Context) (map[string]any, error) {
+	endpoint, err := c.resourceURL("/api/v1")
+	if err != nil {
+		return nil, err
+	}
+	var resources map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &resources); err != nil {
+		return nil, err
+	}
+	return resources, nil
+}
+
+func (c *controlPlaneClient) Version(ctx context.Context) (map[string]any, error) {
+	endpoint, err := c.resourceURL("/version")
+	if err != nil {
+		return nil, err
+	}
+	var version map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &version); err != nil {
+		return nil, err
+	}
+	return version, nil
 }
 
 func (c *controlPlaneClient) createPod(ctx context.Context, p *pod.Pod) (*pod.Pod, error) {

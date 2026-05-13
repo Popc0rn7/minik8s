@@ -46,10 +46,19 @@ In a third shell on the control node:
 ```bash
 ./minik8s apply -f manifest/testdata/pod_nginx.yaml
 ./minik8s get pods
+./minik8s get po nginx-pod -o yaml
+./minik8s describe pod nginx-pod
+./minik8s api-resources
+./minik8s version
 ./minik8s doctor docker pull nginx:alpine
 ./minik8s doctor network
-./minik8s delete pod nginx-pod
+./minik8s delete pod/nginx-pod
 ```
+
+Resource commands use the Kubeharbor endpoint from `MINIK8S_KUBEHARBOR`.
+For one-off commands, `--server http://127.0.0.1:18080` overrides the
+environment variable. The Kubeharbor REST surface is documented in
+`docs/kubeharbor-api.md`.
 
 Docker smoke test:
 ```bash

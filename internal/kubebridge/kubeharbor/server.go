@@ -77,6 +77,12 @@ func New(config Config) *Server {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	switch {
+	case r.URL.Path == "/version":
+		writeJSON(w, http.StatusOK, map[string]any{
+			"component":  "kubeharbor",
+			"gitVersion": "v0.1.0",
+			"apiVersion": "v1",
+		})
 	case r.URL.Path == "/api":
 		writeJSON(w, http.StatusOK, map[string]any{"kind": "APIVersions", "versions": []string{"v1"}})
 	case r.URL.Path == "/api/v1":

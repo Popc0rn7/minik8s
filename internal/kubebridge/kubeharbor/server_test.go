@@ -359,3 +359,11 @@ spec:
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 	assert.Contains(t, rec.Body.String(), `"name":"yaml-pod"`)
 }
+
+func TestKubeharborVersionEndpoint(t *testing.T) {
+	rec := serve(t, newTestServer(), http.MethodGet, "/version", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"component":"kubeharbor"`)
+	assert.Contains(t, rec.Body.String(), `"gitVersion"`)
+}

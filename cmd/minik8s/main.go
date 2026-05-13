@@ -51,7 +51,9 @@ func main() {
 	}
 
 	app := cli.New(config)
-	if err := app.Run(context.Background(), os.Args[1:], os.Stdout); err != nil {
+	cmd := cli.NewRootCommand(app, os.Stdout)
+	cmd.SetArgs(os.Args[1:])
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("minik8s: %v", err))
 		os.Exit(1)
 	}
