@@ -28,10 +28,16 @@ func main() {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening pod store: %v", err))
 		os.Exit(1)
 	}
+	serviceStore, err := store.NewFileServiceStore(cli.DefaultServiceStatePath())
+	if err != nil {
+		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening service store: %v", err))
+		os.Exit(1)
+	}
 
 	app := cli.New(cli.Config{
-		Runtime: runtime,
-		Store:   podStore,
+		Runtime:      runtime,
+		Store:        podStore,
+		ServiceStore: serviceStore,
 	})
 	if err := app.Run(context.Background(), os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("minik8s: %v", err))

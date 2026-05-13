@@ -12,9 +12,27 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"minik8s/internal/service"
 	"minik8s/internal/store"
 	"minik8s/test/mock"
 )
+
+type mockServiceProxy struct {
+	applied []*service.Service
+	deleted []*service.Service
+}
+
+func (m *mockServiceProxy) ApplyService(ctx context.Context, svc *service.Service) error {
+	_ = ctx
+	m.applied = append(m.applied, svc.DeepCopy())
+	return nil
+}
+
+func (m *mockServiceProxy) DeleteService(ctx context.Context, svc *service.Service) error {
+	_ = ctx
+	m.deleted = append(m.deleted, svc.DeepCopy())
+	return nil
+}
 
 func TestCLIApplyGetDeletePod(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "pods.json")
@@ -302,4 +320,37 @@ func TestCLIPlainModeFallsBackToASCII(t *testing.T) {
 	assert.Contains(t, out.String(), "[i]  host:")
 	assert.Contains(t, out.String(), "[ok]  ping: ok")
 	assert.NotContains(t, out.String(), "󰋽")
+}
+
+func TestCLIApplyGetDeleteService(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	podStore := store.NewInMemoryPodStore()
+	serviceStore := store.NewInMemoryServiceStore()
+	runtime := mock.NewMockRuntime()
+	proxy := &mockServiceProxy{}
+	app := New(Config{
+		Runtime:      runtime,
+		Store:        podStore,
+		ServiceStore: serviceStore,
+		ServiceProxy: proxy,
+	})
+	manifest := filepath.Join("..", "..", "manifest", "testdata", "service_clusterip_nginx.yaml")
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
+	assert.Contains(t, out.String(), "service/nginx-service created")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"get", "services"}, &out))
+	assert.Contains(t, out.String(), "SERVICE")
+	assert.Contains(t, out.String(), "nginx-service")
+	assert.Contains(t, out.String(), "10.96.0.1")
+	assert.Contains(t, out.String(), "80->80/TCP")
+	assert.Contains(t, out.String(), "app=nginx")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"delete", "service", "nginx-service"}, &out))
+	assert.Contains(t, out.String(), "service/nginx-service deleted")
+	assert.Len(t, proxy.deleted, 1)
 }
