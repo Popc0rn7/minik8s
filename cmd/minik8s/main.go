@@ -12,16 +12,12 @@ import (
 )
 
 func main() {
-	podStore, err := store.NewFilePodStore(cli.DefaultStatePath())
+	podStore, serviceStore, closeStores, err := openStores()
 	if err != nil {
-		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening pod store: %v", err))
+		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening stores: %v", err))
 		os.Exit(1)
 	}
-	serviceStore, err := store.NewFileServiceStore(cli.DefaultServiceStatePath())
-	if err != nil {
-		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening service store: %v", err))
-		os.Exit(1)
-	}
+	defer closeStores()
 
 	config := cli.Config{
 		Store:        podStore,
@@ -59,4 +55,25 @@ func needsDockerRuntime(args []string) bool {
 		return true
 	}
 	return false
+}
+
+func openStores() (store.PodStore, store.ServiceStore, func(), error) {
+	endpoints := store.ParseEndpoints(os.Getenv("MINIK8S_ETCD_ENDPOINTS"))
+	if len(endpoints) > 0 {
+		client, err := store.NewClient(endpoints)
+		if err != nil {
+			return nil, nil, func() {}, err
+		}
+		return store.NewEtcdPodStore(client), store.NewEtcdServiceStore(client), func() { _ = client.Close() }, nil
+	}
+
+	podStore, err := store.NewFilePodStore(cli.DefaultStatePath())
+	if err != nil {
+		return nil, nil, func() {}, fmt.Errorf("opening pod store: %w", err)
+	}
+	serviceStore, err := store.NewFileServiceStore(cli.DefaultServiceStatePath())
+	if err != nil {
+		return nil, nil, func() {}, fmt.Errorf("opening service store: %w", err)
+	}
+	return podStore, serviceStore, func() {}, nil
 }

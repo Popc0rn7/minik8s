@@ -103,6 +103,21 @@ func TestCLIApplyGetDeleteRequireAPIServer(t *testing.T) {
 	}
 }
 
+func TestCLIDoctorEtcdWarnsWhenEndpointsUnset(t *testing.T) {
+	t.Setenv("MINIK8S_ETCD_ENDPOINTS", "")
+	app := New(Config{
+		Runtime:      mock.NewMockRuntime(),
+		Store:        store.NewInMemoryPodStore(),
+		ServiceStore: store.NewInMemoryServiceStore(),
+		ServiceProxy: nil,
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"doctor", "etcd"}, &out))
+	assert.Contains(t, out.String(), "WARN")
+	assert.Contains(t, out.String(), "MINIK8S_ETCD_ENDPOINTS is not set")
+}
+
 func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
