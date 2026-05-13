@@ -121,7 +121,8 @@ func TestCLIControllerRunsUntilContextCancelled(t *testing.T) {
 	}()
 
 	require.Eventually(t, func() bool {
-		return len(runtime.StartContainerCalls) > 0
+		updated, err := podStore.Get("nginx-pod", "default")
+		return err == nil && updated.Status.Phase == "Running"
 	}, time.Second, 10*time.Millisecond)
 
 	cancel()
