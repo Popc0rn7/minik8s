@@ -9,6 +9,7 @@ import (
 	"minik8s/internal/cliui"
 	kubebridge "minik8s/internal/kubebridge"
 	store "minik8s/internal/kubebridge/etcd"
+	"minik8s/internal/kubeproxy"
 	dockerruntime "minik8s/internal/runtime/docker"
 )
 
@@ -24,11 +25,7 @@ func main() {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening node store: %v", err))
 		os.Exit(1)
 	}
-	bridge := kubebridge.New(kubebridge.Config{
-		PodStore:     podStore,
-		ServiceStore: serviceStore,
-		NodeStore:    nodeStore,
-	})
+	bridge := kubebridge.New(newKubebridgeConfig(podStore, serviceStore, nodeStore))
 
 	config := cli.Config{
 		Store:        podStore,
@@ -91,4 +88,16 @@ func openStores() (store.PodStore, store.ServiceStore, func(), error) {
 		return nil, nil, func() {}, fmt.Errorf("opening service store: %w", err)
 	}
 	return podStore, serviceStore, func() {}, nil
+}
+
+func newKubebridgeConfig(podStore store.PodStore, serviceStore store.ServiceStore, nodeStore store.NodeStore) kubebridge.Config {
+	config := kubebridge.Config{
+		PodStore:     podStore,
+		ServiceStore: serviceStore,
+		NodeStore:    nodeStore,
+	}
+	if os.Getenv("MINIK8S_SERVICE_PROXY_DISABLED") != "1" {
+		config.ServiceProxy = kubeproxy.NewIPTablesProxy(nil)
+	}
+	return config
 }

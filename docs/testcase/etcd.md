@@ -1,52 +1,42 @@
 # Etcd 控制面状态存储测试用例
 
-本文档验证 Minik8s 在设置 `MINIK8S_ETCD_ENDPOINTS` 后使用真实 etcd 作为控制面状态源，并能在 kubebridge 重启后恢复 Pod 和 Service 对象。
+本文档验证 v0.1.0 在设置 `MINIK8S_ETCD_ENDPOINTS` 后，Pod 和 Service 对象使用真实 etcd 作为控制面状态源。etcd 只运行在 node-a/control plane；node-b worker 不直连 etcd，只访问 Kubeharbor。
 
-## 0. 前置准备
+## 覆盖矩阵
 
-在仓库根目录构建二进制：
+| Case | 目标 | 机器 | 必跑 |
+| --- | --- | --- | --- |
+| ETCD-01 | 安装并启动 node-a 本地 etcd | node-a | 是 |
+| ETCD-02 | kubebridge 使用 etcd 后端 | node-a | 是 |
+| ETCD-03 | Pod/Service key 写入与删除 | node-a | 是 |
+| ETCD-04 | kubebridge 重启后恢复对象 | node-a + node-b | 是 |
+| ETCD-05 | 并发与 watch 检查 | 任意开发机 + node-a | 可选 |
 
-```bash
-make build
-export MINIK8S_ETCD_ENDPOINTS=http://127.0.0.1:2379
-export MINIK8S_KUBEHARBOR=http://127.0.0.1:18080
-export MINIK8S_PLAIN=1
-export NO_COLOR=1
-```
+## ETCD-01：安装并启动 etcd
 
-本 case 固定使用 kubecaptain 机器上的本地 etcd 服务，不使用 Docker etcd。单 kubecaptain 模式下，kubebridge 和 etcd 在同一台机器上运行，etcd 只监听 `127.0.0.1` 即可。
+目标：在 node-a 启动本地 etcd，监听 `127.0.0.1:2379`。worker 不需要访问该端口。
 
-## 1. Kubecaptain 机器 etcd 配置
+机器：node-a。
 
-### 1.1 安装 etcd 和 etcdctl
-
-若系统包管理器提供 etcd，可直接安装：
+安装：
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y etcd etcd-client
-```
-
-若系统源没有合适版本，也可以下载官方 release 后把 `etcd`、`etcdctl` 放到 `/usr/local/bin/`。安装后确认：
-
-```bash
 which etcd
 which etcdctl
 etcd --version
 etcdctl version
 ```
 
-### 1.2 创建数据目录和配置文件
+如果系统源没有 etcd，可下载官方 release，并把 `etcd`、`etcdctl` 放到 `/usr/local/bin/`。
+
+创建目录和配置：
 
 ```bash
 sudo useradd --system --home /var/lib/minik8s/etcd --shell /usr/sbin/nologin etcd || true
 sudo mkdir -p /etc/etcd /var/lib/minik8s/etcd
 sudo chown -R etcd:etcd /var/lib/minik8s/etcd
-```
-
-写入 `/etc/etcd/minik8s-etcd.yaml`：
-
-```bash
 sudo tee /etc/etcd/minik8s-etcd.yaml >/dev/null <<'EOF'
 name: minik8s-kubecaptain
 data-dir: /var/lib/minik8s/etcd
@@ -69,17 +59,12 @@ quota-backend-bytes: 8589934592
 EOF
 ```
 
-说明：这里选择只监听 `127.0.0.1`，因为 Minik8s kubebridge 也部署在 kubecaptain 本机。Worker 节点不需要直接访问 etcd，它们只访问 kubebridge。
-
-### 1.3 创建 systemd 服务
-
-写入 `/etc/systemd/system/minik8s-etcd.service`：
+创建 systemd service：
 
 ```bash
 sudo tee /etc/systemd/system/minik8s-etcd.service >/dev/null <<'EOF'
 [Unit]
 Description=Minik8s local etcd
-Documentation=https://etcd.io/docs/
 After=network-online.target
 Wants=network-online.target
 
@@ -87,7 +72,7 @@ Wants=network-online.target
 Type=notify
 User=etcd
 Group=etcd
-ExecStart=/usr/local/bin/etcd --config-file /etc/etcd/minik8s-etcd.yaml
+ExecStart=/usr/bin/etcd --config-file /etc/etcd/minik8s-etcd.yaml
 Restart=always
 RestartSec=5s
 LimitNOFILE=40000
@@ -97,52 +82,51 @@ WantedBy=multi-user.target
 EOF
 ```
 
-如果你的 `etcd` 安装在 `/usr/bin/etcd`，把 `ExecStart` 改为：
+如果 `which etcd` 显示 `/usr/local/bin/etcd`，把 `ExecStart` 改成 `/usr/local/bin/etcd --config-file /etc/etcd/minik8s-etcd.yaml`。
 
-```ini
-ExecStart=/usr/bin/etcd --config-file /etc/etcd/minik8s-etcd.yaml
-```
-
-启动并设置开机自启：
+启动：
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now minik8s-etcd
 sudo systemctl status minik8s-etcd --no-pager
-```
-
-### 1.4 检查本地 etcd
-
-```bash
 curl http://127.0.0.1:2379/health
 etcdctl --endpoints=http://127.0.0.1:2379 endpoint health
-etcdctl --endpoints=http://127.0.0.1:2379 endpoint status --write-out=table
 ```
 
-管理服务：
+期望：
+
+- systemd service 为 active。
+- health 输出健康。
+
+失败排查：
+
+- service 起不来：查看 `sudo journalctl -u minik8s-etcd -n 100 --no-pager`。
+- `ExecStart` 路径错误：用 `which etcd` 修正 service 文件。
+
+## ETCD-02：kubebridge 使用 etcd
+
+目标：确认 kubebridge 读取 `MINIK8S_ETCD_ENDPOINTS`，Pod/Service store 切到 etcd。
+
+机器：node-a。
+
+前置：
 
 ```bash
-sudo systemctl restart minik8s-etcd
-sudo systemctl stop minik8s-etcd
-sudo systemctl start minik8s-etcd
-sudo journalctl -u minik8s-etcd -f
+export MINIK8S_ETCD_ENDPOINTS=http://127.0.0.1:2379
+export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
+export MINIK8S_PLAIN=1
+export NO_COLOR=1
+etcdctl --endpoints="${MINIK8S_ETCD_ENDPOINTS}" del --prefix /registry
 ```
 
-清理旧 key：
+启动 kubebridge：
 
 ```bash
-etcdctl --endpoints="$MINIK8S_ETCD_ENDPOINTS" del --prefix /registry
+./minik8s kubebridge --listen :18080 --service-sync-interval 5s
 ```
 
-## 2. 启动控制面并检查 etcd
-
-在一个终端启动 kubebridge：
-
-```bash
-./minik8s kubebridge --listen :18080
-```
-
-在另一个终端检查 etcd：
+另一个终端检查：
 
 ```bash
 ./minik8s doctor etcd
@@ -153,82 +137,129 @@ etcdctl --endpoints="$MINIK8S_ETCD_ENDPOINTS" del --prefix /registry
 - 输出包含 `endpoints: http://127.0.0.1:2379`。
 - 输出包含 `etcd: ok`。
 
-## 3. 写入 Pod 和 Service
+失败排查：
+
+- `doctor etcd` 失败：确认 kubebridge/CLI 终端都设置了同一个 `MINIK8S_ETCD_ENDPOINTS`。
+
+## ETCD-03：Pod/Service key 写入与删除
+
+目标：验证 Pod 和 Service 对象写入 `/registry`，删除后 key 清理。
+
+机器：node-a。
+
+流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx.yaml
+./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
 ./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
 ./minik8s get pods
 ./minik8s get services
-```
-
-检查 etcd 中的对象：
-
-```bash
-etcdctl --endpoints="$MINIK8S_ETCD_ENDPOINTS" get --prefix /registry
+etcdctl --endpoints="${MINIK8S_ETCD_ENDPOINTS}" get --prefix /registry
 ```
 
 期望：
 
-- 存在 `/registry/pods/default/nginx-pod`。
-- 存在 `/registry/services/default/nginx-service`。
-- `get pods` 和 `get services` 能看到刚创建的对象。
+- etcd 中存在 `/registry/pods/default/nginx-node-a`。
+- etcd 中存在 `/registry/services/default/nginx-service`。
+- CLI 能看到相同对象。
 
-## 4. 重启 kubebridge 后恢复状态
-
-停止 `./minik8s kubebridge` 进程，然后使用同样环境变量重新启动：
+删除：
 
 ```bash
-./minik8s kubebridge --listen :18080
+./minik8s delete service nginx-service
+./minik8s delete pod nginx-node-a
+sleep 6
+etcdctl --endpoints="${MINIK8S_ETCD_ENDPOINTS}" get --prefix /registry
 ```
 
-再次执行：
+期望：
+
+- 对应 Pod/Service key 不再存在。
+
+失败排查：
+
+- key 残留：确认删除命令连接的是同一个 `KUBEHARBOR`。
+
+## ETCD-04：kubebridge 重启后恢复状态
+
+目标：验证 kubebridge 进程重启后，Pod/Service 对象仍可从 etcd 恢复；两个 worker 重新心跳后继续接管 assigned Pods。
+
+机器：node-a 控制面；node-a/node-b worker。
+
+流程：
 
 ```bash
+./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
+./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+sleep 10
+./minik8s get pods
+./minik8s get services
+```
+
+停止 kubebridge 进程，但保持 etcd 和两个 kubesailer 可重启。重新启动 kubebridge，仍带同样环境变量：
+
+```bash
+export MINIK8S_ETCD_ENDPOINTS=http://127.0.0.1:2379
+./minik8s kubebridge --listen :18080 --service-sync-interval 5s
+```
+
+在 node-a 和 node-b 确认 kubesailer 仍在运行；如果已退出，重新启动：
+
+```bash
+sudo env MINIK8S_PLAIN=1 NO_COLOR=1 ./minik8s kubesailer --node-name node-a --kubeharbor ${KUBEHARBOR}
+sudo env MINIK8S_PLAIN=1 NO_COLOR=1 ./minik8s kubesailer --node-name node-b --kubeharbor ${KUBEHARBOR}
+```
+
+重新检查：
+
+```bash
+./minik8s get nodes
 ./minik8s get pods
 ./minik8s get services
 ```
 
 期望：
 
-- Pod 列表仍包含 `nginx-pod`。
+- Pod 列表仍包含 `nginx-node-a` 和 `nginx-node-b`。
 - Service 列表仍包含 `nginx-service` 和原 ClusterIP。
-- 说明控制面状态来自 etcd，而不是 kubebridge 进程内存。
+- 两个 worker 心跳后 `get nodes` 重新显示 `node-a`、`node-b` Ready。
 
-## 5. 删除对象并验证 key 清理
+失败排查：
 
-```bash
-./minik8s delete service nginx-service
-./minik8s delete pod nginx-pod
-etcdctl --endpoints="$MINIK8S_ETCD_ENDPOINTS" get --prefix /registry
-```
+- Pod/Service 消失：检查 kubebridge 是否启动时带了 `MINIK8S_ETCD_ENDPOINTS`。
+- Node 消失：NodeStore 当前仍是本地 file store/heartbeat 语义，重启后需要 kubesailer 重新心跳。
 
-期望：
+## ETCD-05：并发与 watch 检查
 
-- 删除命令成功。
-- `/registry/pods/default/nginx-pod` 和 `/registry/services/default/nginx-service` 不再存在。
+目标：补充验证 etcd store 的并发 create 和 watch 可观察性。
 
-## 6. 持续监控与并发特性检查
+机器：任意开发机执行 Go test；node-a 执行 watch。
 
-检查并发 TX：
+流程：
 
 ```bash
 go test -count=1 ./internal/kubebridge/etcd -run ConcurrentCreate
 ```
 
-该测试会并发创建同一个 Pod，期望只有一个请求成功，其余请求返回 `AlreadyExists`。
-
-检查 watch 能观察 `/registry` 变化：
+在 node-a：
 
 ```bash
-etcdctl --endpoints="$MINIK8S_ETCD_ENDPOINTS" watch --prefix /registry
+etcdctl --endpoints="${MINIK8S_ETCD_ENDPOINTS}" watch --prefix /registry
 ```
 
-在另一个终端执行 `apply` / `delete`，watch 终端应能看到 `PUT` / `DELETE` 事件。
+另一个终端执行：
 
-## 7. 实现映射
+```bash
+./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
+./minik8s delete pod nginx-node-a
+```
 
-- `MINIK8S_ETCD_ENDPOINTS` 非空时，`cmd/minik8s/main.go` 创建真实 etcd client，并把 `EtcdPodStore`、`EtcdServiceStore` 注入 kubebridge。
-- 未设置 `MINIK8S_ETCD_ENDPOINTS` 时，Minik8s 继续使用 `.minik8s/state/pods.json` 和 `.minik8s/state/services.json`，保持本地开发模式。
-- Pod key 格式为 `/registry/pods/{namespace}/{name}`。
-- Service key 格式为 `/registry/services/{namespace}/{name}`。
+期望：
+
+- 并发测试只有一个 create 成功，其余返回 AlreadyExists。
+- watch 终端看到 `/registry` 下的 `PUT` 和 `DELETE`。
+
+失败排查：
+
+- watch 没输出：确认 apply/delete 使用的是 etcd 模式下的 kubebridge。

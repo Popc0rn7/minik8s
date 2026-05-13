@@ -1,301 +1,238 @@
-# kubeproxy 能力测试用例与实现映射
+# Service / kube-proxy 测试用例
 
-本文档覆盖 Minik8s Service 数据面能力，重点验证 `internal/kubeproxy` 抽象和默认 `IPTablesProxy` backend 是否能把 Service 期望状态同步为可用的 ClusterIP、NodePort、endpoint 负载均衡和清理规则。所有 YAML case 使用 `manifest/testdata/` 中的 manifest。
+本文档覆盖 v0.1.0 的 Service endpoints、ClusterIP、NodePort、多 endpoint 负载均衡和 iptables 清理。双机公共启动流程见 `docs/testcase/two-node.md`。
 
-## 0. 前置准备
+注意：v0.1.0 的 iptables proxy 由 `kubebridge` 进程所在节点同步，因此必测数据面入口是 node-a。node-b 访问 NodePort 可以作为观察项；若 node-b 没有运行 proxy 规则，node-b 的 NodePort 不作为失败。
 
-kubeproxy 默认 backend 使用 Linux iptables NAT 规则，完整数据面 case 需要 root 权限或等价网络能力。在仓库根目录执行：
+## 覆盖矩阵
 
-```bash
-go build -o minik8s ./cmd/minik8s
-export MINIK8S_PLAIN=1
-export NO_COLOR=1
-unset MINIK8S_CNI_DISABLED
-./minik8s cni init
-go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
-./minik8s doctor network
-./minik8s kubebridge --listen :8080
-sudo ./minik8s kubesailer --node-name node-a --kubeharbor http://127.0.0.1:8080
-```
+| Case | 目标 | 机器 | 必跑 |
+| --- | --- | --- | --- |
+| SVC-01 | selector 生成 endpoints | node-a | 是 |
+| SVC-02 | ClusterIP iptables 规则与数据面 | node-a | 是 |
+| SVC-03 | NodePort iptables 规则与宿主机访问 | node-a，node-b 辅助 | 是 |
+| SVC-04 | 双机多 endpoint 与负载均衡规则 | node-a + node-b | 是 |
+| SVC-05 | endpoint 动态更新 | node-a + node-b | 是 |
+| SVC-06 | 删除 Service 清理 iptables | node-a | 是 |
+| SVC-07 | kubeproxy 单元测试 | 任意开发机 | 是 |
 
-如需隔离本次 case 的状态：
+## SVC-01：Service endpoints
 
-```bash
-export MINIK8S_STATE_DIR=.minik8s/testcase-state
-rm -rf .minik8s/testcase-state .minik8s/state/cni-ipam.json
-```
+目标：验证 ServiceKubecaptain 根据 selector 选中 Running Pod，并写入 endpoints。
 
-每个网络 case 运行前建议先确认没有旧规则残留：
+机器：node-a 执行 CLI。
+
+流程：
 
 ```bash
-iptables-save -t nat | grep MK8S-SVC || true
-```
-
-## 1. 能力追踪矩阵
-
-| kubeproxy 能力 | 验证 case | 层级 | 主要命令 | 通过标准 |
-| --- | --- | --- | --- | --- |
-| ServiceKubecaptain 生成期望状态并调用 kubeproxy | KP-01 | 控制面 | `go test`、`get services` | endpoints 与 matching Running Pod 一致 |
-| ClusterIP 入口规则 | KP-02 | iptables 规则面 | `iptables-save -t nat` | PREROUTING/OUTPUT 指向 `MK8S-SVC-*` |
-| ClusterIP 数据面转发 | KP-03 | 数据面 | client Pod 内 `wget 10.96.0.1:80` | 返回 nginx 页面 |
-| NodePort 入口规则和宿主机访问 | KP-04 | 规则面 + 数据面 | `curl 127.0.0.1:30080` | 返回 nginx 页面 |
-| 多 endpoint 负载均衡规则 | KP-05 | iptables 规则面 | `iptables-save -t nat` | DNAT 规则包含 `statistic --mode random` |
-| endpoint 动态 reconcile | KP-06 | 控制面 + 规则面 | 新增/删除 Pod 后 `get services` | endpoint 集合和规则随 Pod 变化 |
-| 删除 Service 清理规则 | KP-07 | 规则清理 | `delete service`、`iptables-save` | 对应 `MK8S-SVC-*` chain 消失 |
-| kubeproxy backend 可单测、可替换 | KP-08 | 单元测试 | `go test ./internal/kubeproxy` | fake runner 记录预期命令 |
-
-## 2. Case KP-01：控制器生成 Service 期望状态
-
-目标：验证 kubesailer 将分配给本节点的 Pod 运行起来后，ServiceKubecaptain 能从 Service selector 和 Running Pod 生成 endpoints，并把更新后的 Service 交给 kubeproxy 抽象。
-
-自动化测试：
-
-```bash
-go test ./internal/kubebridge/kubecaptain -run 'TestServiceKubecaptain(BuildsEndpointsAndAppliesProxy|UpdatesEndpointsWhenPodChanges|DeleteCleansProxyAndStore)' -count=1
-```
-
-CLI 验证：
-
-```bash
-./minik8s apply -f manifest/testdata/pod_nginx.yaml
+./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
+sleep 8
 ./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+sleep 6
 ./minik8s get services
+./minik8s describe service nginx-service
 ```
 
 期望：
 
-- `get services` 输出包含 `nginx-service`、`ClusterIP`、`10.96.0.1`、`80->80/TCP`。
-- `ENDPOINTS` 列包含 `nginx-pod` 对应的 Pod IP 和 `:80`。
-- 不匹配 selector 的 Pod 不会进入 endpoints。
+- `nginx-service` 类型为 `ClusterIP`。
+- ClusterIP 为 `10.96.0.1`。
+- endpoints 包含 `nginx-node-a:<targetPort 80>` 对应的 PodIP。
 
-清理：
+失败排查：
 
-```bash
-./minik8s delete service nginx-service || true
-./minik8s delete pod nginx-pod || true
-```
+- endpoints 为空：确认 Pod 已 Running 且 label `app=nginx` 存在。
+- Service 不存在：确认 `MINIK8S_KUBEHARBOR=${KUBEHARBOR}`。
 
-## 3. Case KP-02：ClusterIP 规则面
+## SVC-02：ClusterIP 规则与数据面
 
-目标：验证 `IPTablesProxy.SyncService` 为 ClusterIP Service 创建稳定 chain，并从 `PREROUTING` 和 `OUTPUT` 挂入口规则。
+目标：验证 kubebridge 节点上的 ServiceProxy 写入 iptables NAT 规则，并能从 node-a Pod 内访问 ClusterIP。
 
-流程：
-
-```bash
-./minik8s apply -f manifest/testdata/pod_nginx.yaml
-./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
-iptables-save -t nat | grep -E 'MK8S-SVC|10\.96\.0\.1|10\.244\.0'
-```
-
-期望：
-
-- 存在名为 `MK8S-SVC-*` 的 Service chain。
-- 存在 `-A PREROUTING -p tcp -d 10.96.0.1/32 --dport 80 -j MK8S-SVC-*` 或等价规则。
-- 存在 `-A OUTPUT -p tcp -d 10.96.0.1/32 --dport 80 -j MK8S-SVC-*` 或等价规则。
-- Service chain 内存在 `DNAT --to-destination <nginx-pod-ip>:80`。
-
-清理：
-
-```bash
-./minik8s delete service nginx-service || true
-./minik8s delete pod nginx-pod || true
-```
-
-## 4. Case KP-03：ClusterIP 数据面转发
-
-目标：验证 Pod 内访问 Service ClusterIP 时，流量经 kubeproxy 规则转发到后端 nginx Pod。
-
-Manifest：
-
-- `manifest/testdata/pod_nginx.yaml`
-- `manifest/testdata/pod_busybox_client.yaml`
-- `manifest/testdata/service_clusterip_nginx.yaml`
+机器：node-a。
 
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx.yaml
+./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
 ./minik8s apply -f manifest/testdata/pod_busybox_client.yaml
 ./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
-./minik8s get services
-CLIENT_CID=$(docker ps -q --filter label=minik8s.pod.name=busybox-client --filter label=minik8s.container.name=client)
-docker exec "$CLIENT_CID" wget -qO- http://10.96.0.1:80 >/tmp/minik8s-kubeproxy-clusterip.html
-head -n 1 /tmp/minik8s-kubeproxy-clusterip.html
+sleep 8
+sudo iptables-save -t nat | grep -E 'MK8S-SVC|10\.96\.0\.1'
+CLIENT_A_CID=$(docker ps -q --filter label=minik8s.pod.name=busybox-client --filter label=minik8s.container.name=client)
+docker exec "${CLIENT_A_CID}" wget -qO- http://10.96.0.1:80 >/tmp/minik8s-service-clusterip.html
+head -n 1 /tmp/minik8s-service-clusterip.html
 ```
 
 期望：
 
-- `get services` 显示 `nginx-service` 的 endpoint 为 nginx Pod IP。
-- client Pod 内访问 `http://10.96.0.1:80` 成功。
-- 响应内容为 nginx 默认 HTML。
+- iptables 中存在 `MK8S-SVC-*` chain。
+- `PREROUTING` 和 `OUTPUT` 有指向 `10.96.0.1:80` 的入口规则。
+- Service chain 内存在 `DNAT --to-destination <nginx-node-a-pod-ip>:80`。
+- Pod 内访问 `http://10.96.0.1:80` 返回 nginx HTML。
 
-清理：
+失败排查：
 
-```bash
-./minik8s delete service nginx-service || true
-./minik8s delete pod busybox-client || true
-./minik8s delete pod nginx-pod || true
-```
+- 没有 `MK8S-SVC`：确认 kubebridge 没有设置 `MINIK8S_SERVICE_PROXY_DISABLED=1`，并且使用的是包含 P0 修复后的二进制。
+- 有规则但访问失败：检查 CNI PodIP、`ip route` 和 Docker container 网络命名空间。
 
-## 5. Case KP-04：NodePort 规则面和宿主机访问
+## SVC-03：NodePort 规则与宿主机访问
 
-目标：验证 NodePort Service 会在宿主机端口暴露 Service，并复用同一个 Service chain 转发到后端 Pod。
+目标：验证 NodePort Service 在运行 ServiceProxy 的节点上暴露 `30080`。
 
-Manifest：
-
-- `manifest/testdata/pod_nginx.yaml`
-- `manifest/testdata/service_nodeport_nginx.yaml`
+机器：node-a 必测；node-b 辅助观察。
 
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx.yaml
+./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
 ./minik8s apply -f manifest/testdata/service_nodeport_nginx.yaml
+sleep 8
 ./minik8s get services
-iptables-save -t nat | grep -E 'MK8S-SVC|30080|10\.96\.0\.1|10\.244\.0'
-curl -fsS http://127.0.0.1:30080 >/tmp/minik8s-kubeproxy-nodeport.html
-head -n 1 /tmp/minik8s-kubeproxy-nodeport.html
+sudo iptables-save -t nat | grep -E 'MK8S-SVC|30080|10\.96\.0\.1'
+curl -fsS "http://${NODE_A_IP}:30080" >/tmp/minik8s-service-nodeport-a.html
+head -n 1 /tmp/minik8s-service-nodeport-a.html
+```
+
+在 node-b 可选观察：
+
+```bash
+curl -fsS "http://${NODE_B_IP}:30080" >/tmp/minik8s-service-nodeport-b.html || true
 ```
 
 期望：
 
-- `get services` 输出包含 `nginx-nodeport`、`NodePort`、`80->80/TCP:30080`。
-- iptables 中存在 `--dport 30080 -j MK8S-SVC-*` 的 `PREROUTING` 和 `OUTPUT` 入口规则。
-- Service chain 内存在针对 nodePort 流量的 `DNAT --to-destination <nginx-pod-ip>:80`。
-- 宿主机访问 `127.0.0.1:30080` 成功返回 nginx 页面。
+- `get services` 包含 `nginx-nodeport`、`NodePort`、`80->80/TCP:30080`。
+- node-a iptables 中存在 `--dport 30080 -j MK8S-SVC-*`。
+- node-a 访问 `${NODE_A_IP}:30080` 返回 nginx HTML。
+- node-b 只有在本机也运行了等价 proxy 规则时才要求成功。
 
-清理：
+失败排查：
 
-```bash
-./minik8s delete service nginx-nodeport || true
-./minik8s delete pod nginx-pod || true
-```
+- node-a curl 失败：检查宿主机防火墙是否允许 `30080`，以及 iptables 规则是否存在。
+- node-b curl 失败：这是 v0.1.0 允许的观察结果，不影响必测结论。
 
-## 6. Case KP-05：多 endpoint 负载均衡规则
+## SVC-04：双机多 endpoint 与负载均衡规则
 
-目标：验证当 Service 选中多个 Running Pod 时，kubeproxy 为同一 Service chain 写入多条 DNAT 规则，并用 iptables statistic 模块做随机分摊。
+目标：验证同一个 Service 可以选中分布在 node-a/node-b 的后端，并生成多条 DNAT 规则。
+
+机器：node-a 执行 CLI 和 iptables 检查；node-b 提供后端 Pod。
 
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx.yaml
-./minik8s apply -f manifest/testdata/pod_nginx_service_peer.yaml
+./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
 ./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+sleep 10
 ./minik8s get services
-iptables-save -t nat | grep MK8S-SVC
+./minik8s describe service nginx-service
+sudo iptables-save -t nat | grep MK8S-SVC
 ```
 
 期望：
 
-- `get services` 的 `ENDPOINTS` 列包含两个 `10.244.0.0/24` 内 Pod IP，端口均为 `:80`。
-- Service chain 内至少有两条 `DNAT --to-destination <pod-ip>:80` 规则。
-- 除最后一个 endpoint 外，前置 endpoint 规则包含 `-m statistic --mode random --probability ...`。
+- `nginx-service` endpoints 包含两个 PodIP：一个 `10.244.0.0/24`，一个 `10.244.1.0/24`。
+- Service chain 内至少两条 DNAT。
+- 除最后一个 endpoint 外，前置 DNAT 规则包含 `-m statistic --mode random --probability ...`。
 
-清理：
+失败排查：
 
-```bash
-./minik8s delete service nginx-service || true
-./minik8s delete pod nginx-pod-2 || true
-./minik8s delete pod nginx-pod || true
-```
+- 只有一个 endpoint：检查另一个节点的 kubesailer 是否运行，Pod 是否 Running。
+- 有 node-b endpoint 但访问失败：检查 node-a 到 `10.244.1.0/24` 的 route。
 
-## 7. Case KP-06：endpoint 动态 reconcile
+## SVC-05：endpoint 动态更新
 
-目标：验证 kubeproxy 以 Service 当前 endpoints 为期望状态，每次 sync 都先清理旧规则再重建新规则。
+目标：验证新增/删除匹配 Pod 后，Service endpoints 和 iptables 规则能被周期性刷新。
+
+机器：node-a。
 
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx.yaml
+./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
 ./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
-./minik8s get services
-iptables-save -t nat | grep MK8S-SVC
+sleep 8
+./minik8s describe service nginx-service
 
-./minik8s apply -f manifest/testdata/pod_nginx_service_peer.yaml
-./minik8s get services
-iptables-save -t nat | grep MK8S-SVC
+./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
+sleep 8
+./minik8s describe service nginx-service
+sudo iptables-save -t nat | grep MK8S-SVC
 
-./minik8s delete pod nginx-pod
-./minik8s get services
-iptables-save -t nat | grep MK8S-SVC
+./minik8s delete pod nginx-node-a
+sleep 8
+./minik8s describe service nginx-service
+sudo iptables-save -t nat | grep MK8S-SVC
 ```
 
 期望：
 
-- 初始状态只有 `nginx-pod` 一个 endpoint。
-- 新增 `nginx-pod-2` 后，`get services` 和 DNAT 规则都包含两个 endpoints。
-- 删除 `nginx-pod` 后，`get services` 和 DNAT 规则只保留 `nginx-pod-2` 的 Pod IP。
-- 规则中不再出现已删除 Pod 的旧 IP。
+- 初始只有 node-a endpoint。
+- 新增 node-b 后 endpoints 变为两个。
+- 删除 node-a 后 endpoints 只剩 node-b，iptables 不再包含 node-a 的 PodIP。
 
-清理：
+失败排查：
 
-```bash
-./minik8s delete service nginx-service || true
-./minik8s delete pod nginx-pod-2 || true
-./minik8s delete pod nginx-pod || true
-```
+- endpoints 延迟不变：等待 `--service-sync-interval` 至少一个周期，默认 5s。
+- 删除后旧 DNAT 仍在：检查 kubebridge 日志是否有 `service-periodic-sync` 错误。
 
-## 8. Case KP-07：删除 Service 清理 kubeproxy 状态
+## SVC-06：删除 Service 清理规则
 
-目标：验证删除 Service 时，kubeproxy 会移除入口规则、flush chain 并删除该 Service chain。
+目标：验证删除 Service 后入口规则、Service chain 和 DNAT 规则被清理。
+
+机器：node-a。
 
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx.yaml
+./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
 ./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
-iptables-save -t nat | grep MK8S-SVC
+sleep 8
+sudo iptables-save -t nat | grep MK8S-SVC
 ./minik8s delete service nginx-service
+sleep 2
 ./minik8s get services
-iptables-save -t nat | grep MK8S-SVC || true
+sudo iptables-save -t nat | grep MK8S-SVC || true
 ```
 
 期望：
 
-- 删除前能看到 `MK8S-SVC-*` chain、ClusterIP 入口规则和 DNAT 规则。
-- `delete service` 输出包含 `service/nginx-service deleted`。
+- 删除前能看到 `MK8S-SVC-*`。
 - 删除后 `get services` 不再显示 `nginx-service`。
-- 删除后不再存在该 Service 对应的 `MK8S-SVC-*` chain。
+- 删除后不再有该 Service 对应的 `MK8S-SVC-*` chain。
+
+失败排查：
+
+- chain 残留：确认删除的是对应 Service，必要时重跑 `delete service`。
 
 清理：
 
 ```bash
 ./minik8s delete service nginx-service || true
-./minik8s delete pod nginx-pod || true
+./minik8s delete service nginx-nodeport || true
+./minik8s delete pod nginx-node-a || true
+./minik8s delete pod nginx-node-b || true
+./minik8s delete pod busybox-client || true
 ```
 
-## 9. Case KP-08：kubeproxy 抽象和 iptables backend 单测
+## SVC-07：kubeproxy 单元测试
 
-目标：在无需 root 权限、无需真实 iptables 的环境中验证 kubeproxy backend 的规则生成能力，避免只能靠手工网络 case 才能发现回归。
+目标：在无需 root 和真实 iptables 的环境中验证规则生成，避免手工网络 case 才发现回归。
+
+机器：任意开发机。
 
 流程：
 
 ```bash
-go test ./internal/kubeproxy -count=1
-go test ./internal/service ./internal/kubebridge/kubecaptain ./internal/cli -count=1
+go test ./cmd/minik8s ./internal/kubeproxy ./internal/kubebridge/kubecaptain ./internal/cli -count=1
 ```
 
 期望：
 
-- `TestIPTablesProxySyncServiceProgramsClusterIPAndNodePort` 验证 ClusterIP、NodePort 和多 endpoint DNAT 命令。
-- `TestIPTablesProxySyncAllReconcilesEveryService` 验证 kubeproxy 抽象支持全量同步入口。
-- `TestIPTablesProxyDeleteServiceIgnoresMissingRules` 验证删除时缺失旧规则不阻塞清理。
-- ServiceKubecaptain/CLI 测试仍通过，说明控制面只依赖 `kubeproxy.Proxy`，不依赖具体 iptables 实现。
+- `cmd/minik8s` 测试确认默认注入 iptables ServiceProxy，并尊重 `MINIK8S_SERVICE_PROXY_DISABLED=1`。
+- `internal/kubeproxy` 测试确认 ClusterIP、NodePort、多 endpoint、delete 规则生成。
+- ServiceKubecaptain 和 CLI 测试通过。
 
-## 10. 实现设计映射
+失败排查：
 
-类型定义：`internal/service/types.go` 定义 Service、ServiceSpec、ServicePort、Endpoint 和 ServiceStatus。
-
-ClusterIP 分配：`internal/service/clusterip.go` 定义默认 ClusterIP 和分配逻辑；CLI 在创建或更新 Service 时保留既有 ClusterIP，并为新 Service 分配可用地址。
-
-YAML 解析：`pkg/yaml/service.go` 和 `pkg/yaml/defaults.go` 读取并校验 Service manifest，默认 `namespace=default`、`type=ClusterIP`、`protocol=TCP`。
-
-状态持久化：`internal/kubebridge/etcd/service_store.go` 提供文件和内存两种 ServiceStore。默认文件为 `.minik8s/state/services.json`，也可通过 `MINIK8S_STATE_DIR` 隔离。
-
-期望状态生成：`internal/kubebridge/kubecaptain/service_kubecaptain.go` 读取 Service 和 Running Pod，按 selector 匹配同 namespace Pod，并将 `PodIP:targetPort` 写入 endpoints。
-
-kubeproxy 抽象：`internal/kubeproxy/proxy.go` 定义 `SyncService`、`SyncAll`、`DeleteService`。ServiceKubecaptain 和 CLI 面向该接口，backend 可替换。
-
-iptables backend：`internal/kubeproxy/iptables.go` 的 `IPTablesProxy` 使用 iptables `nat` 表维护 `MK8S-SVC-*` chain。ClusterIP 和 NodePort 入口规则挂到 `PREROUTING` 和 `OUTPUT`；endpoint 规则用 DNAT 转发到 Pod IP；多个 endpoint 通过 `statistic --mode random` 分摊。
-
-CLI 接入：`internal/cli/cli.go` 的 `apply -f` 会读取 `kind` 并分发到 Pod 或 Service；`get services` 触发 Service sync；`delete service` 清理 kubeproxy 规则和持久化状态。
+- `cmd/minik8s` 注入测试失败：检查 main 入口是否绕过了默认 ServiceProxy。

@@ -560,12 +560,13 @@ func writePodTable(out io.Writer, pods []*pod.Pod) error {
 }
 
 func writeServiceTable(out io.Writer, services []*service.Service) error {
-	if err := writef(out, "%s %s %s %s %s %s %s\n",
+	if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 		cliui.PadRight("SERVICE", 31),
 		cliui.PadRight("TYPE", 12),
 		cliui.PadRight("CLUSTER-IP", 16),
 		cliui.PadRight("PORTS", 18),
 		cliui.PadRight("ENDPOINTS", 28),
+		cliui.PadRight("SELECTOR", 22),
 		cliui.PadRight("NAMESPACE", 14),
 		"LABELS",
 	); err != nil {
@@ -573,12 +574,13 @@ func writeServiceTable(out io.Writer, services []*service.Service) error {
 	}
 	for _, svc := range services {
 		serviceName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[svc]"), svc.Name)
-		if err := writef(out, "%s %s %s %s %s %s %s\n",
+		if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 			cliui.PadRight(serviceName, 31),
 			cliui.PadRight(string(svc.Spec.Type), 12),
 			cliui.PadRight(svc.Status.ClusterIP, 16),
 			cliui.PadRight(formatServicePorts(svc), 18),
 			cliui.PadRight(formatServiceEndpoints(svc.Status.Endpoints), 28),
+			cliui.PadRight(formatServiceSelector(svc.Spec.Selector), 22),
 			cliui.PadRight(svc.Namespace, 14),
 			formatLabels(svc.Labels),
 		); err != nil {
