@@ -78,10 +78,10 @@ func (k *Kubebridge) ServiceStore() store.ServiceStore {
 	return k.serviceStore
 }
 
-func (k *Kubebridge) NodeStore() store.NodeStore {
-	return k.nodeStore
-}
-
 func (k *Kubebridge) ServiceProxy() kubeproxy.Proxy {
 	return k.serviceProxy
+}
+
+func (k *Kubebridge) NodeStore() store.NodeStore {
+	return k.nodeStore
 }
