@@ -14,6 +14,8 @@ unset MINIK8S_CNI_DISABLED
 ./minik8s cni init
 go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
 ./minik8s doctor network
+./minik8s apiserver --listen :8080
+sudo ./minik8s kubelet --node-name node-a --apiserver http://127.0.0.1:8080
 ```
 
 如需隔离本次 case 的状态：
@@ -44,7 +46,7 @@ iptables-save -t nat | grep MK8S-SVC || true
 
 ## 2. Case KP-01：控制器生成 Service 期望状态
 
-目标：验证 ServiceController 能从 Service selector 和 Running Pod 生成 endpoints，并把更新后的 Service 交给 kubeproxy 抽象。
+目标：验证 kubelet 将分配给本节点的 Pod 运行起来后，ServiceController 能从 Service selector 和 Running Pod 生成 endpoints，并把更新后的 Service 交给 kubeproxy 抽象。
 
 自动化测试：
 

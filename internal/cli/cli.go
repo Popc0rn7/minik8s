@@ -13,9 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"minik8s/internal/apiserver"
 	"minik8s/internal/cliui"
 	"minik8s/internal/cni"
 	"minik8s/internal/controller"
+	"minik8s/internal/kubelet"
 	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/netagent"
@@ -92,6 +94,10 @@ func (a *App) Run(ctx context.Context, args []string, out io.Writer) error {
 		return a.netRegistry(ctx, args[1:], out)
 	case "netd":
 		return a.netd(ctx, args[1:], out)
+	case "apiserver":
+		return a.apiserver(ctx, args[1:], out)
+	case "kubelet":
+		return a.kubelet(ctx, args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -126,8 +132,6 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 			return err
 		}
 	}
-	ctrl := controller.NewPodControllerWithNetwork(a.runtime, a.store, a.network)
-	ctrl.Sync(ctx)
 	updated, err := a.store.Get(p.Name, p.Namespace)
 	if err != nil {
 		return err
@@ -157,8 +161,6 @@ func (a *App) get(ctx context.Context, args []string, out io.Writer) error {
 		return fmt.Errorf("usage: minik8s get pods|services [-n namespace]")
 	}
 	namespace := namespaceFlag(args[1:])
-	ctrl := controller.NewPodControllerWithNetwork(a.runtime, a.store, a.network)
-	ctrl.Sync(ctx)
 	pods, err := a.store.List(namespace, nil)
 	if err != nil {
 		return err
@@ -212,8 +214,7 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 	}
 	name := args[1]
 	namespace := namespaceFlag(args[2:])
-	ctrl := controller.NewPodControllerWithNetwork(a.runtime, a.store, a.network)
-	if err := ctrl.DeletePod(ctx, name, namespace); err != nil {
+	if err := a.store.Delete(name, namespace); err != nil {
 		return err
 	}
 	return writes(out, cliui.SuccessLine("pod/%s deleted", name))
@@ -647,8 +648,133 @@ func parseNetDOptions(args []string) (netDOptions, error) {
 	return options, nil
 }
 
+type apiServerOptions struct {
+	listen string
+}
+
+func (a *App) apiserver(ctx context.Context, args []string, out io.Writer) error {
+	options, err := parseAPIServerOptions(args)
+	if err != nil {
+		return err
+	}
+	server := &http.Server{
+		Addr:    options.listen,
+		Handler: apiserver.New(apiserver.Config{PodStore: a.store}),
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe()
+	}()
+	if err := writes(out, cliui.InfoLine("apiserver listening on %s", options.listen)); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		return ctx.Err()
+	case err := <-errCh:
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
+	}
+}
+
+func parseAPIServerOptions(args []string) (apiServerOptions, error) {
+	options := apiServerOptions{listen: ":8080"}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--listen":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --listen")
+			}
+			options.listen = args[i]
+		default:
+			return options, fmt.Errorf("unknown apiserver flag %q", args[i])
+		}
+	}
+	return options, nil
+}
+
+type kubeletOptions struct {
+	nodeName  string
+	apiserver string
+	interval  time.Duration
+	once      bool
+}
+
+func (a *App) kubelet(ctx context.Context, args []string, out io.Writer) error {
+	options, err := parseKubeletOptions(args)
+	if err != nil {
+		return err
+	}
+	k := kubelet.New(kubelet.Config{
+		NodeName: options.nodeName,
+		Runtime:  a.runtime,
+		Network:  a.network,
+		Client:   kubelet.NewHTTPPodClient(options.apiserver, nil),
+		Interval: options.interval,
+	})
+	if options.once {
+		if err := k.SyncOnce(ctx); err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("kubelet synced node=%s", options.nodeName))
+	}
+	if err := writes(out, cliui.InfoLine("kubelet started node=%s apiserver=%s", options.nodeName, options.apiserver)); err != nil {
+		return err
+	}
+	return k.Run(ctx)
+}
+
+func parseKubeletOptions(args []string) (kubeletOptions, error) {
+	options := kubeletOptions{interval: 5 * time.Second}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--node-name":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --node-name")
+			}
+			options.nodeName = args[i]
+		case "--apiserver":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --apiserver")
+			}
+			options.apiserver = args[i]
+		case "--interval":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --interval")
+			}
+			interval, err := time.ParseDuration(args[i])
+			if err != nil {
+				return options, fmt.Errorf("invalid --interval %q: %w", args[i], err)
+			}
+			options.interval = interval
+		case "--once":
+			options.once = true
+		default:
+			return options, fmt.Errorf("unknown kubelet flag %q", args[i])
+		}
+	}
+	if options.nodeName == "" {
+		return options, fmt.Errorf("--node-name is required")
+	}
+	if options.apiserver == "" {
+		return options, fmt.Errorf("--apiserver is required")
+	}
+	return options, nil
+}
+
 func (a *App) usage(out io.Writer) error {
-	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s apply -f <manifest.yaml> | get pods|services | delete pod|service <name> | doctor docker|network | cni init"))
+	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s apiserver [--listen :8080] | kubelet --node-name <node> --apiserver <url> | apply -f <manifest.yaml> | get pods|services | delete pod|service <name> | doctor docker|network | cni init"))
 	return err
 }
 
