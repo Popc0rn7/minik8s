@@ -7,6 +7,7 @@ import (
 
 	"minik8s/internal/cli"
 	"minik8s/internal/cliui"
+	kubecaptain "minik8s/internal/kubecaptain"
 	store "minik8s/internal/kubecaptain/etcd"
 	dockerruntime "minik8s/internal/runtime/docker"
 )
@@ -22,10 +23,22 @@ func main() {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening service store: %v", err))
 		os.Exit(1)
 	}
+	nodeStore, err := store.NewFileNodeStore(cli.DefaultNodeStatePath())
+	if err != nil {
+		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening node store: %v", err))
+		os.Exit(1)
+	}
+	captain := kubecaptain.New(kubecaptain.Config{
+		PodStore:     podStore,
+		ServiceStore: serviceStore,
+		NodeStore:    nodeStore,
+	})
 
 	config := cli.Config{
 		Store:        podStore,
 		ServiceStore: serviceStore,
+		NodeStore:    nodeStore,
+		Captain:      captain,
 	}
 	if needsDockerRuntime(os.Args[1:]) {
 		runtime, err := dockerruntime.NewDockerRuntime()

@@ -18,7 +18,10 @@ import (
 )
 
 func newTestServer() *Server {
-	return New(Config{PodStore: store.NewInMemoryPodStore()})
+	return New(Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: store.NewInMemoryNodeStore(),
+	})
 }
 
 func serve(t *testing.T, handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -63,6 +66,7 @@ func TestAPIServerDiscoveryIncludesServices(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"name":"pods"`)
 	assert.Contains(t, rec.Body.String(), `"name":"services"`)
+	assert.Contains(t, rec.Body.String(), `"name":"nodes"`)
 }
 
 func TestAPIServerPodCRUDLogsControlPlaneEvents(t *testing.T) {
@@ -133,7 +137,6 @@ func TestAPIServerNodePodsEndpointFiltersByNodeName(t *testing.T) {
 	}{
 		{name: "a", node: "node-a"},
 		{name: "b", node: "node-b"},
-		{name: "unscheduled", node: ""},
 	} {
 		body := `{"kind":"Pod","apiVersion":"v1","metadata":{"name":"` + item.name + `","namespace":"default"},"spec":{"nodeName":"` + item.node + `","containers":[{"name":"c","image":"busybox"}]}}`
 		rec := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/pods", body)
@@ -145,7 +148,48 @@ func TestAPIServerNodePodsEndpointFiltersByNodeName(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"name":"a"`)
 	assert.NotContains(t, rec.Body.String(), `"name":"b"`)
-	assert.NotContains(t, rec.Body.String(), `"name":"unscheduled"`)
+}
+
+func TestAPIServerNodePodsEndpointRegistersHeartbeat(t *testing.T) {
+	srv := newTestServer()
+
+	rec := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	nodes := serve(t, srv, http.MethodGet, "/api/v1/nodes", "")
+
+	require.Equal(t, http.StatusOK, nodes.Code, nodes.Body.String())
+	assert.Contains(t, nodes.Body.String(), `"name":"node-a"`)
+	assert.Contains(t, nodes.Body.String(), `"role":"Worker"`)
+	assert.Contains(t, nodes.Body.String(), `"status":"Ready"`)
+}
+
+func TestAPIServerSchedulesUnassignedPodOnHeartbeat(t *testing.T) {
+	srv := newTestServer()
+	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/pods", `{
+		"kind":"Pod",
+		"apiVersion":"v1",
+		"metadata":{"name":"nginx","namespace":"default"},
+		"spec":{"containers":[{"name":"nginx","image":"nginx"}]}
+	}`)
+	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
+	assert.Contains(t, create.Body.String(), `"phase":"Pending"`)
+	assert.NotContains(t, create.Body.String(), `"nodeName"`)
+
+	list := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
+	require.Equal(t, http.StatusOK, list.Code, list.Body.String())
+	assert.Contains(t, list.Body.String(), `"name":"nginx"`)
+	assert.Contains(t, list.Body.String(), `"nodeName":"node-a"`)
+}
+
+func TestAPIServerGetNode(t *testing.T) {
+	srv := newTestServer()
+	heartbeat := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
+	require.Equal(t, http.StatusOK, heartbeat.Code, heartbeat.Body.String())
+
+	rec := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"name":"node-a"`)
 }
 
 func TestAPIServerLogsNodePollAndPodStatusUpdate(t *testing.T) {

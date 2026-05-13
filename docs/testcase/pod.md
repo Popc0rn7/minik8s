@@ -14,7 +14,7 @@ export MINIK8S_PLAIN=1
 export NO_COLOR=1
 export MINIK8S_CNI_DISABLED=1
 export MINIK8S_APISERVER=http://127.0.0.1:18080
-./minik8s apiserver --listen :18080
+./minik8s kubecaptain --listen :18080
 ```
 
 在另一个终端启动本节点 kubelet：
@@ -34,7 +34,7 @@ export MINIK8S_PLAIN=1
 export NO_COLOR=1
 ```
 
-`MINIK8S_APISERVER` 让 CLI 通过控制面 HTTP API 执行 `apply/get/delete`；未设置时这些命令会直接报错，避免绕过 API Server 读写状态。`MINIK8S_STATE_DIR` 是 API Server 的本地持久化目录，普通 CLI 客户端不直接读写该目录。`MINIK8S_PLAIN=1` 让 CLI 输出退回 ASCII，方便在报告和自动化断言中匹配 `DONE`、`WARN`、`[ok]` 等文本。Pod 基础 case 关注生命周期、端口、volume 和资源映射，因此设置 `MINIK8S_CNI_DISABLED=1`，避免已有 CNI 配置影响 hostPort 行为。`apply` 只向控制面提交期望状态，真正创建/重启/删除容器由独立 kubelet 完成。kubelet 需要 `sudo` 时要用 `sudo env ...` 传递输出和 CNI 相关环境变量。API Server 使用 `:18080` 是为了避开 POD-01 中 nginx 的 `hostPort: 8080`。
+`MINIK8S_APISERVER` 让 CLI 通过 kubecaptain 的 HTTP API 执行 `apply/get/delete`；未设置时这些命令会直接报错，避免绕过 kubecaptain 读写状态。`MINIK8S_STATE_DIR` 是 kubecaptain 的本地持久化目录，普通 CLI 客户端不直接读写该目录。`MINIK8S_PLAIN=1` 让 CLI 输出退回 ASCII，方便在报告和自动化断言中匹配 `DONE`、`WARN`、`[ok]` 等文本。Pod 基础 case 关注生命周期、端口、volume 和资源映射，因此设置 `MINIK8S_CNI_DISABLED=1`，避免已有 CNI 配置影响 hostPort 行为。`apply` 只向控制面提交期望状态，真正创建/重启/删除容器由独立 kubelet 完成。kubelet 需要 `sudo` 时要用 `sudo env ...` 传递输出和 CNI 相关环境变量。kubecaptain 使用 `:18080` 是为了避开 POD-01 中 nginx 的 `hostPort: 8080`。
 
 ## 1. 需求追踪矩阵
 
@@ -168,11 +168,11 @@ go test ./internal/kubecaptain/controller ./internal/kubelet -run 'SandboxCreati
 
 ## 6. 实现设计映射
 
-进程入口：`cmd/minik8s/main.go` 根据子命令延迟初始化 Docker runtime。kubecaptain 控制面位于 `internal/kubecaptain/`：`apiserver` 提供 HTTP API，`etcd` 拥有本地 file-backed store，`controller` 负责 Pod/Service 状态协调，`scheduler` 预留给后续节点分配逻辑。`kubelet` 才初始化 Docker runtime 和 CNI。
+进程入口：`cmd/minik8s/main.go` 根据子命令延迟初始化 Docker runtime。kubecaptain 控制面位于 `internal/kubecaptain/`：`Kubecaptain` 是对外暴露的控制面内核，APIServer、file-backed store、controller 和 scheduler 都是其内部组件。`kubelet` 才初始化 Docker runtime 和 CNI。
 
 YAML 解析：`pkg/yaml/pod.go` 读取 YAML；`pkg/yaml/defaults.go` 校验 `kind`、`metadata.name`、container image、volume 引用，并默认 `namespace=default`、`restartPolicy=Always`。
 
-生命周期管理：`internal/cli/cli.go` 的 `apply` 通过 `MINIK8S_APISERVER` 向控制面提交 Pod，API Server 将初始状态写为 `Pending`；`internal/kubelet` 通过 API Server 拉取 `spec.nodeName` 等于本节点的 Pod，复用 `PodController` 创建/重启/删除容器，并通过 status API 回写状态。
+生命周期管理：`internal/cli/cli.go` 的 `apply` 通过 `MINIK8S_APISERVER` 向 kubecaptain 提交 Pod，kubecaptain 将初始状态写为 `Pending`；`internal/kubelet` 通过 kubecaptain API 拉取 `spec.nodeName` 等于本节点的 Pod，复用 `PodController` 创建/重启/删除容器，并通过 status API 回写状态。
 
 运行时抽象：`pkg/runtime/runtime.go` 定义 sandbox、container、image、inspect、health 接口；`internal/runtime/docker/runtime.go` 使用 pause 容器作为 Pod sandbox，workload 容器共享 sandbox network namespace。
 

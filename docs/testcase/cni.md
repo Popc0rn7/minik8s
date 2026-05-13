@@ -12,7 +12,7 @@ unset MINIK8S_CNI_DISABLED
 ./minik8s cni init
 go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
 ./minik8s doctor network
-./minik8s apiserver --listen :8080
+./minik8s kubecaptain --listen :8080
 sudo ./minik8s kubelet --node-name node-a --apiserver http://127.0.0.1:8080
 ```
 
