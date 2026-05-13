@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -152,6 +153,44 @@ func TestCLICNIInitRejectsInvalidRouteSyntax(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "route must use <remote-cidr>=<node-ip>")
+}
+
+func TestNetDOptionsParseDynamicHostGWConfig(t *testing.T) {
+	options, err := parseNetDOptions([]string{
+		"--node-name", "node-a",
+		"--node-ip", "192.168.1.10",
+		"--pod-cidr", "10.244.0.0/24",
+		"--registry", "http://192.168.1.100:8088",
+		"--interval", "2s",
+		"--once",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "node-a", options.nodeName)
+	assert.Equal(t, "192.168.1.10", options.nodeIP)
+	assert.Equal(t, "10.244.0.0/24", options.podCIDR)
+	assert.Equal(t, "http://192.168.1.100:8088", options.registryURL)
+	assert.Equal(t, 2*time.Second, options.interval)
+	assert.True(t, options.once)
+}
+
+func TestNetDOptionsRequireNodeName(t *testing.T) {
+	_, err := parseNetDOptions([]string{
+		"--node-ip", "192.168.1.10",
+		"--pod-cidr", "10.244.0.0/24",
+		"--registry", "http://192.168.1.100:8088",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--node-name is required")
+}
+
+func TestNetRegistryOptionsUseDefaults(t *testing.T) {
+	options, err := parseNetRegistryOptions(nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, ":8088", options.listen)
+	assert.Equal(t, time.Minute, options.leaseTTL)
 }
 
 func TestCLIDoctorDockerShowsEndpointAndHealth(t *testing.T) {

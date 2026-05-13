@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,6 +17,8 @@ import (
 	"minik8s/internal/cni"
 	"minik8s/internal/controller"
 	"minik8s/internal/minilog"
+	"minik8s/internal/netagent"
+	"minik8s/internal/netregistry"
 	"minik8s/internal/pod"
 	dockerruntime "minik8s/internal/runtime/docker"
 	"minik8s/internal/store"
@@ -69,6 +72,10 @@ func (a *App) Run(ctx context.Context, args []string, out io.Writer) error {
 		return a.doctor(ctx, args[1:], out)
 	case "cni":
 		return a.cni(ctx, args[1:], out)
+	case "net-registry":
+		return a.netRegistry(ctx, args[1:], out)
+	case "netd":
+		return a.netd(ctx, args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -354,8 +361,174 @@ func parseCNIRoute(value string) (cniInitRoute, error) {
 	return cniInitRoute{Dst: dst, GW: gw}, nil
 }
 
+type netRegistryOptions struct {
+	listen   string
+	leaseTTL time.Duration
+}
+
+func (a *App) netRegistry(ctx context.Context, args []string, out io.Writer) error {
+	options, err := parseNetRegistryOptions(args)
+	if err != nil {
+		return err
+	}
+	store := netregistry.NewStore(options.leaseTTL)
+	server := &http.Server{
+		Addr:    options.listen,
+		Handler: netregistry.NewHandler(store),
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe()
+	}()
+	if err := writes(out, cliui.InfoLine("net-registry listening on %s", options.listen)); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		return ctx.Err()
+	case err := <-errCh:
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
+	}
+}
+
+func parseNetRegistryOptions(args []string) (netRegistryOptions, error) {
+	options := netRegistryOptions{
+		listen:   ":8088",
+		leaseTTL: time.Minute,
+	}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--listen":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --listen")
+			}
+			options.listen = args[i]
+		case "--lease-ttl":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --lease-ttl")
+			}
+			ttl, err := time.ParseDuration(args[i])
+			if err != nil {
+				return options, fmt.Errorf("invalid --lease-ttl %q: %w", args[i], err)
+			}
+			options.leaseTTL = ttl
+		default:
+			return options, fmt.Errorf("unknown net-registry flag %q", args[i])
+		}
+	}
+	return options, nil
+}
+
+type netDOptions struct {
+	nodeName    string
+	nodeIP      string
+	podCIDR     string
+	registryURL string
+	interval    time.Duration
+	once        bool
+}
+
+func (a *App) netd(ctx context.Context, args []string, out io.Writer) error {
+	options, err := parseNetDOptions(args)
+	if err != nil {
+		return err
+	}
+	agent := netagent.New(netagent.Options{
+		NodeName: options.nodeName,
+		NodeIP:   options.nodeIP,
+		PodCIDR:  options.podCIDR,
+		Registry: netregistry.NewClient(options.registryURL),
+	})
+	if options.once {
+		if err := agent.Sync(ctx); err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("netd synced host-gw routes for %s", options.nodeName))
+	}
+	if err := writes(out, cliui.InfoLine("netd started node=%s registry=%s", options.nodeName, options.registryURL)); err != nil {
+		return err
+	}
+	return agent.Run(ctx, options.interval)
+}
+
+func parseNetDOptions(args []string) (netDOptions, error) {
+	options := netDOptions{interval: 5 * time.Second}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--node-name":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --node-name")
+			}
+			options.nodeName = args[i]
+		case "--node-ip":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --node-ip")
+			}
+			options.nodeIP = args[i]
+		case "--pod-cidr":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --pod-cidr")
+			}
+			options.podCIDR = args[i]
+		case "--registry":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --registry")
+			}
+			options.registryURL = args[i]
+		case "--interval":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --interval")
+			}
+			interval, err := time.ParseDuration(args[i])
+			if err != nil {
+				return options, fmt.Errorf("invalid --interval %q: %w", args[i], err)
+			}
+			options.interval = interval
+		case "--once":
+			options.once = true
+		default:
+			return options, fmt.Errorf("unknown netd flag %q", args[i])
+		}
+	}
+	if options.nodeName == "" {
+		return options, fmt.Errorf("--node-name is required")
+	}
+	if options.nodeIP == "" {
+		return options, fmt.Errorf("--node-ip is required")
+	}
+	if options.podCIDR == "" {
+		return options, fmt.Errorf("--pod-cidr is required")
+	}
+	if options.registryURL == "" {
+		return options, fmt.Errorf("--registry is required")
+	}
+	if err := netregistry.ValidateNode(netregistry.Node{
+		Name:    options.nodeName,
+		NodeIP:  options.nodeIP,
+		PodCIDR: options.podCIDR,
+	}); err != nil {
+		return options, err
+	}
+	return options, nil
+}
+
 func (a *App) usage(out io.Writer) error {
-	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s apply -f <pod.yaml> | get pods | delete pod <name> | doctor docker|network | cni init"))
+	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s apply -f <pod.yaml> | get pods | delete pod <name> | doctor docker|network | cni init | net-registry | netd"))
 	return err
 }
 

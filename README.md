@@ -63,3 +63,32 @@ sudo go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
 Start one Pod on each node, then use `./minik8s get pods` to read their Pod IPs.
 Pods should be able to ping or curl each other directly by Pod IP when the two
 nodes can already reach each other by host IP and the Pod CIDRs do not overlap.
+
+Dynamic host-gw mode removes the manual `--route` step by running a tiny
+registry plus one route-sync agent per node:
+```bash
+# On any reachable control host.
+./minik8s net-registry --listen :8088
+
+# On node A.
+sudo ./minik8s cni init --pod-cidr 10.244.0.0/24 --gateway 10.244.0.1
+sudo go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
+sudo ./minik8s netd \
+  --node-name node-a \
+  --node-ip <node-a-ip> \
+  --pod-cidr 10.244.0.0/24 \
+  --registry http://<registry-ip>:8088
+
+# On node B.
+sudo ./minik8s cni init --pod-cidr 10.244.1.0/24 --gateway 10.244.1.1
+sudo go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
+sudo ./minik8s netd \
+  --node-name node-b \
+  --node-ip <node-b-ip> \
+  --pod-cidr 10.244.1.0/24 \
+  --registry http://<registry-ip>:8088
+```
+
+For a one-shot route sync during demos, add `--once` to `netd`. After both
+nodes have registered, `ip route` should show the remote PodCIDR via the remote
+node IP, and Pods should communicate directly by Pod IP.
