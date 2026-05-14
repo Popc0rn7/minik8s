@@ -121,7 +121,7 @@ etcdctl --endpoints="${MINIK8S_ETCD_ENDPOINTS}" del --prefix /registry
 启动 kubebridge：
 
 ```bash
-./minik8s kubebridge --listen :18080 --service-sync-interval 5s
+./minik8s kubebridge --listen :18080
 ```
 
 另一个终端检查：
@@ -199,7 +199,7 @@ sleep 10
 
 ```bash
 export MINIK8S_ETCD_ENDPOINTS=http://127.0.0.1:2379
-./minik8s kubebridge --listen :18080 --service-sync-interval 5s
+./minik8s kubebridge --listen :18080
 ```
 
 在 node-a 和 node-b 确认 kubesailer 仍在运行；如果已退出，重新启动：

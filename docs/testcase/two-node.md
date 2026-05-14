@@ -86,7 +86,7 @@ unset MINIK8S_CNI_DISABLED
 ```bash
 export MINIK8S_STATE_DIR=.minik8s/testcase-state
 export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
-./minik8s kubebridge --listen :18080 --service-sync-interval 5s
+./minik8s kubebridge --listen :18080
 ```
 
 期望：

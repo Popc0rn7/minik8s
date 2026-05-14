@@ -56,7 +56,7 @@ make build
 ```bash
 export MINIK8S_STATE_DIR=.minik8s/testcase-state
 export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
-./minik8s kubebridge --listen :18080 --service-sync-interval 5s
+./minik8s kubebridge --listen :18080
 ```
 
 在 node-b 先确认能访问控制面：

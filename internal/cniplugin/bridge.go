@@ -186,6 +186,9 @@ func ensureBridge(conf BridgeConfig, prefix int) error {
 		return err
 	}
 	_ = run("sysctl", "-w", "net.ipv4.ip_forward=1")
+	if err := configureForwarding(conf, run); err != nil {
+		return err
+	}
 	return configureMasquerade(conf, run)
 }
 
@@ -236,19 +239,26 @@ func configureMasquerade(conf BridgeConfig, runner commandRunner) error {
 		return err
 	}
 	for _, route := range routes {
-		if err := ensureIptablesRule(runner, "-I", []string{"1"}, "-s", conf.PodCIDR, "-d", route.Dst, "-j", "ACCEPT"); err != nil {
+		if err := ensureIptablesRule(runner, "nat", "POSTROUTING", "-I", []string{"1"}, "-s", conf.PodCIDR, "-d", route.Dst, "-j", "ACCEPT"); err != nil {
 			return err
 		}
 	}
-	return ensureIptablesRule(runner, "-A", nil, "-s", conf.PodCIDR, "!", "-o", conf.Bridge, "-j", "MASQUERADE")
+	return ensureIptablesRule(runner, "nat", "POSTROUTING", "-A", nil, "-s", conf.PodCIDR, "!", "-o", conf.Bridge, "-j", "MASQUERADE")
 }
 
-func ensureIptablesRule(runner commandRunner, mode string, extra []string, rule ...string) error {
-	checkArgs := append([]string{"-t", "nat", "-C", "POSTROUTING"}, rule...)
+func configureForwarding(conf BridgeConfig, runner commandRunner) error {
+	if err := ensureIptablesRule(runner, "filter", "FORWARD", "-I", []string{"1"}, "-i", conf.Bridge, "-j", "ACCEPT"); err != nil {
+		return err
+	}
+	return ensureIptablesRule(runner, "filter", "FORWARD", "-I", []string{"1"}, "-o", conf.Bridge, "-j", "ACCEPT")
+}
+
+func ensureIptablesRule(runner commandRunner, table, chain, mode string, extra []string, rule ...string) error {
+	checkArgs := append([]string{"-t", table, "-C", chain}, rule...)
 	if err := runner("iptables", checkArgs...); err == nil {
 		return nil
 	}
-	args := []string{"-t", "nat", mode, "POSTROUTING"}
+	args := []string{"-t", table, mode, chain}
 	args = append(args, extra...)
 	args = append(args, rule...)
 	return runner("iptables", args...)
