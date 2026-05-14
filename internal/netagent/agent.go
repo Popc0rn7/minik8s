@@ -120,16 +120,32 @@ func (a *Agent) syncNode(node netregistry.Node) error {
 	if err := a.runner("ip", "route", "replace", dst.String(), "via", gateway.String()); err != nil {
 		return err
 	}
-	return a.ensureIptablesAccept(dst.String())
+	if err := a.ensureNATAccept(dst.String()); err != nil {
+		return err
+	}
+	return a.ensureForwardAccept(dst.String())
 }
 
-func (a *Agent) ensureIptablesAccept(remoteCIDR string) error {
+func (a *Agent) ensureNATAccept(remoteCIDR string) error {
 	rule := []string{"-s", a.local.PodCIDR, "-d", remoteCIDR, "-j", "ACCEPT"}
-	checkArgs := append([]string{"-t", "nat", "-C", "POSTROUTING"}, rule...)
+	return a.ensureIptablesRule("nat", "POSTROUTING", "-I", []string{"1"}, rule...)
+}
+
+func (a *Agent) ensureForwardAccept(remoteCIDR string) error {
+	if err := a.ensureIptablesRule("filter", "FORWARD", "-I", []string{"1"}, "-s", a.local.PodCIDR, "-d", remoteCIDR, "-j", "ACCEPT"); err != nil {
+		return err
+	}
+	return a.ensureIptablesRule("filter", "FORWARD", "-I", []string{"1"}, "-s", remoteCIDR, "-d", a.local.PodCIDR, "-j", "ACCEPT")
+}
+
+func (a *Agent) ensureIptablesRule(table, chain, mode string, extra []string, rule ...string) error {
+	checkArgs := append([]string{"-t", table, "-C", chain}, rule...)
 	if err := a.runner("iptables", checkArgs...); err == nil {
 		return nil
 	}
-	args := append([]string{"-t", "nat", "-I", "POSTROUTING", "1"}, rule...)
+	args := []string{"-t", table, mode, chain}
+	args = append(args, extra...)
+	args = append(args, rule...)
 	return a.runner("iptables", args...)
 }
 

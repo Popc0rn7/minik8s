@@ -54,6 +54,8 @@ func TestAgentRegistersLocalNodeAndSyncsRemoteRoutes(t *testing.T) {
 	assert.Equal(t, "node-a", registry.registered[0].Name)
 	assert.Contains(t, commands, "ip route replace 10.244.1.0/24 via 192.168.1.11")
 	assert.Contains(t, commands, "iptables -t nat -I POSTROUTING 1 -s 10.244.0.0/24 -d 10.244.1.0/24 -j ACCEPT")
+	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -s 10.244.0.0/24 -d 10.244.1.0/24 -j ACCEPT")
+	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -s 10.244.1.0/24 -d 10.244.0.0/24 -j ACCEPT")
 }
 
 func TestAgentSkipsLocalAndInvalidRemoteNodes(t *testing.T) {
