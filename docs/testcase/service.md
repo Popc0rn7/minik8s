@@ -173,7 +173,7 @@ iptables-save -t nat | grep MK8S-SVC
 
 失败排查：
 
-- endpoints 延迟不变：等待 `--service-sync-interval` 至少一个周期，默认 5s。
+- endpoints 延迟不变：等待 service sync 默认周期，通常约 5s。
 - 删除后旧 DNAT 仍在：检查 kubebridge 日志是否有 `service-periodic-sync` 错误。
 
 ## SVC-06：删除 Service 清理规则

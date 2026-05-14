@@ -12,6 +12,7 @@
 ping -c 3 ${NODE_B_IP}
 docker version
 which ip
+which bridge
 which iptables
 which nsenter
 iptables-save -t nat >/tmp/minik8s-iptables-a.txt
@@ -23,6 +24,7 @@ iptables-save -t nat >/tmp/minik8s-iptables-a.txt
 ping -c 3 ${NODE_A_IP}
 docker version
 which ip
+which bridge
 which iptables
 which nsenter
 iptables-save -t nat >/tmp/minik8s-iptables-b.txt
@@ -32,7 +34,7 @@ iptables-save -t nat >/tmp/minik8s-iptables-b.txt
 
 - 两台机器互 ping 成功。
 - Docker client/server 正常。
-- `ip`、`iptables`、`nsenter` 均存在。
+- `ip`、`bridge`、`iptables`、`nsenter` 均存在。
 - `iptables-save` 可用，说明网络规则检查能力正常。
 
 失败排查：
@@ -86,7 +88,7 @@ unset MINIK8S_CNI_DISABLED
 ```bash
 export MINIK8S_STATE_DIR=.minik8s/testcase-state
 export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
-./minik8s kubebridge --listen :18080 --service-sync-interval 5s
+./minik8s kubebridge --listen :18080
 ```
 
 期望：
@@ -119,16 +121,19 @@ export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
 
 期望：
 
-- `kubesailer` 同时注册节点心跳、同步 assigned Pods，并通过 Kubeharbor `/nodes` 同步 host-gw route。
-- 两边 `ip route` 能看到对端 PodCIDR：
+- `kubesailer` 同时注册节点心跳、同步 assigned Pods，并通过 Kubeharbor `/nodes` 同步 VXLAN overlay。
+- 两边 `ip route` 能看到对端 PodCIDR，并且 `mk8s-vxlan` FDB 指向对端 NodeIP：
 
 ```bash
 ip route | grep 10.244
+ip link show mk8s-vxlan
+bridge fdb show dev mk8s-vxlan
 ```
 
 失败排查：
 
-- 如果没有对端 route，先确认 `KUBEHARBOR` 指向 node-a 局域网 IP，且 node-b 可以访问 `${KUBEHARBOR}/nodes`。
+- 如果没有对端 route 或 `mk8s-vxlan`，先确认 `KUBEHARBOR` 指向 node-a 局域网 IP，且 node-b 可以访问 `${KUBEHARBOR}/nodes`。
+- 云主机或安全组环境下，确认 node-a/node-b 双向放通 UDP `4789`。
 - 可先执行一次 `kubesailer --once`，便于快速暴露错误。
 
 在 node-a 的 CLI 终端验证：
@@ -169,4 +174,4 @@ node-b：
   --route ${POD_CIDR_A}=${NODE_A_IP}
 ```
 
-v0.1.0 推荐使用带 `--node-ip` 和 `--pod-cidr` 的 `kubesailer`，因为 route 会周期性恢复。
+v0.1.0 推荐使用带 `--node-ip` 和 `--pod-cidr` 的 `kubesailer`，因为 VXLAN、FDB 和 route 会周期性恢复。

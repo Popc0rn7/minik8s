@@ -1,6 +1,6 @@
 # CNI 测试用例
 
-本文档从 0 开始验证 v0.1.0 的 CNI bridge、IPAM、同节点 PodIP、跨节点 PodIP、删除清理，以及静态 route fallback。主路径只需要一个控制面端口：node-a 的 Kubeharbor `18080`。
+本文档从 0 开始验证 v0.1.0 的 CNI bridge、IPAM、同节点 PodIP、VXLAN 跨节点 PodIP、删除清理，以及静态 route fallback。主路径需要 node-a 的 Kubeharbor `18080`，以及节点间 UDP `4789`。
 
 ## 测试模型
 
@@ -9,11 +9,11 @@
 | node-a | `192.168.1.8` | `10.244.0.0/24` | `kubebridge`、`kubesailer` |
 | node-b | `192.168.1.6` | `10.244.1.0/24` | `kubesailer` |
 
-`minik8s-bridge` CNI 负责本机 Pod 网络；带 `--node-ip` 和 `--pod-cidr` 的 `kubesailer` 会向 Kubeharbor `/nodes` 注册节点网络信息，并周期性同步跨节点 host-gw route。
+`minik8s-bridge` CNI 负责本机 Pod 网络；带 `--node-ip` 和 `--pod-cidr` 的 `kubesailer` 会向 Kubeharbor `/nodes` 注册节点网络信息，并周期性同步跨节点 VXLAN overlay。
 
 ## 从 0 启动
 
-两台机器都需要 Linux、Docker、`ip`、`iptables`、`nsenter`、`curl` 或 `wget`，并以 root 用户执行命令。安全组或防火墙至少放通 node-a 入站 TCP `18080`，来源为 node-b 的 IP 或当前局域网网段。
+两台机器都需要 Linux、Docker、`ip`、`bridge`、`iptables`、`nsenter`、`curl` 或 `wget`，并以 root 用户执行命令。安全组或防火墙至少放通 node-a 入站 TCP `18080`，以及两台节点之间双向 UDP `4789`。
 
 在 node-a 和 node-b 都设置变量：
 
@@ -56,7 +56,7 @@ make build
 ```bash
 export MINIK8S_STATE_DIR=.minik8s/testcase-state
 export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
-./minik8s kubebridge --listen :18080 --service-sync-interval 5s
+./minik8s kubebridge --listen :18080
 ```
 
 在 node-b 先确认能访问控制面：
@@ -86,25 +86,29 @@ curl -fsS ${KUBEHARBOR}/nodes
   --pod-cidr ${POD_CIDR_B}
 ```
 
-在 node-a 的测试终端确认节点和路由：
+在 node-a 的测试终端确认节点和 VXLAN/路由：
 
 ```bash
 ./minik8s get nodes
 curl -fsS ${KUBEHARBOR}/nodes
 ip route | grep 10.244
+ip link show mk8s-vxlan
+bridge fdb show dev mk8s-vxlan
 ```
 
-在 node-b 确认路由：
+在 node-b 确认 VXLAN/路由：
 
 ```bash
 ip route | grep 10.244
+ip link show mk8s-vxlan
+bridge fdb show dev mk8s-vxlan
 ```
 
 期望：
 
 - `get nodes` 包含 `node-a` 和 `node-b`，状态为 `Ready`。
-- node-a 有到 `10.244.1.0/24` 的 route。
-- node-b 有到 `10.244.0.0/24` 的 route。
+- node-a 有到 `10.244.1.0/24` 的 route，且 `mk8s-vxlan` FDB 指向 node-b IP。
+- node-b 有到 `10.244.0.0/24` 的 route，且 `mk8s-vxlan` FDB 指向 node-a IP。
 
 ## 通用清理
 
@@ -234,12 +238,13 @@ head -n 1 /tmp/minik8s-cni-cross-b.html
 - `NGINX_A_IP` 属于 `10.244.0.0/24`。
 - `NGINX_B_IP` 属于 `10.244.1.0/24`。
 - 两个跨节点 `wget` 都返回 nginx HTML。
-- 两台宿主机 `ip route` 中都有对端 PodCIDR。
+- 两台宿主机 `ip route` 中都有对端 PodCIDR，且 `mk8s-vxlan` 存在。
 
 失败排查：
 
 - node-b shell 没有 `NGINX_A_IP`：从 node-a 输出复制该变量，或在 node-b 手动 `export NGINX_A_IP=<value>`。
-- 跨节点不通但同节点通：检查 kubesailer 是否带了 `--node-ip` 和 `--pod-cidr`，再检查 `ip route`、宿主机防火墙、Linux `ip_forward`。
+- 跨节点不通但同节点通：检查 kubesailer 是否带了 `--node-ip` 和 `--pod-cidr`，再检查 `ip link show mk8s-vxlan`、`bridge fdb show dev mk8s-vxlan`、`ip route`、宿主机防火墙、Linux `ip_forward`。
+- 云主机跨节点不通：确认安全组双向放通 UDP `4789`，并用 `tcpdump -ni ens3 udp port 4789` 确认 VXLAN 包是否到达对端。
 - node-b Pod 没启动：看 node-b 的 kubesailer 日志和 Docker 状态。
 
 ## CNI-04：删除释放 IPAM
@@ -347,5 +352,5 @@ cat .minik8s/state/cni-ipam.json 2>/dev/null || true
 - `curl ${KUBEHARBOR}/version` 失败：先查 node-a `kubebridge` 是否运行、node-a 入站 `18080` 是否放通。
 - `get nodes` 缺 node-b：检查 node-b kubesailer 的 `--kubeharbor` 是否指向 node-a 局域网 IP。
 - `/nodes` 为空：检查 kubesailer 是否带 `--node-ip` 和 `--pod-cidr`。
-- 跨节点 PodIP 不通：检查两台机器的 `ip route | grep 10.244`，再查防火墙、`ip_forward` 和 kubesailer 日志。
+- 跨节点 PodIP 不通：检查两台机器的 `ip link show mk8s-vxlan`、`bridge fdb show dev mk8s-vxlan`、`ip route | grep 10.244`，再查 UDP `4789`、防火墙、`ip_forward` 和 kubesailer 日志。
 - Pod 一直 `Pending`：检查对应节点 kubesailer 是否在运行。

@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Node describes one Minik8s node participating in host-gw routing.
+// Node describes one Minik8s node participating in cross-node Pod networking.
 type Node struct {
 	Name      string    `json:"name"`
 	NodeIP    string    `json:"nodeIP"`

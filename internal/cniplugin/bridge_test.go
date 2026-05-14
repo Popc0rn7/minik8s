@@ -97,3 +97,20 @@ func TestConfigureMasqueradeExcludesRemotePodCIDRs(t *testing.T) {
 	assert.Contains(t, commands, "iptables -t nat -I POSTROUTING 1 -s 10.244.1.0/24 -d 10.244.0.0/24 -j ACCEPT")
 	assert.Contains(t, commands, "iptables -t nat -A POSTROUTING -s 10.244.1.0/24 ! -o mk8s0 -j MASQUERADE")
 }
+
+func TestConfigureForwardingAllowsBridgeTraffic(t *testing.T) {
+	var commands []string
+	runner := func(name string, args ...string) error {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		if name == "iptables" && len(args) > 3 && args[2] == "-C" {
+			return errors.New("missing rule")
+		}
+		return nil
+	}
+
+	err := configureForwarding(BridgeConfig{Bridge: "mk8s0"}, runner)
+
+	require.NoError(t, err)
+	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -i mk8s0 -j ACCEPT")
+	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -o mk8s0 -j ACCEPT")
+}

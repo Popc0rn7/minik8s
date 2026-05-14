@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -590,6 +591,9 @@ type netDOptions struct {
 	podCIDR     string
 	registryURL string
 	interval    time.Duration
+	vxlanID     int
+	vxlanPort   int
+	vxlanName   string
 	once        bool
 }
 
@@ -599,16 +603,19 @@ func (a *App) netd(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	agent := netagent.New(netagent.Options{
-		NodeName: options.nodeName,
-		NodeIP:   options.nodeIP,
-		PodCIDR:  options.podCIDR,
-		Registry: netregistry.NewClient(options.registryURL),
+		NodeName:  options.nodeName,
+		NodeIP:    options.nodeIP,
+		PodCIDR:   options.podCIDR,
+		VXLANID:   options.vxlanID,
+		VXLANPort: options.vxlanPort,
+		VXLANName: options.vxlanName,
+		Registry:  netregistry.NewClient(options.registryURL),
 	})
 	if options.once {
 		if err := agent.Sync(ctx); err != nil {
 			return err
 		}
-		return writes(out, cliui.SuccessLine("netd synced host-gw routes for %s", options.nodeName))
+		return writes(out, cliui.SuccessLine("netd synced VXLAN overlay for %s", options.nodeName))
 	}
 	if err := writes(out, cliui.InfoLine("netd started node=%s registry=%s", options.nodeName, options.registryURL)); err != nil {
 		return err
@@ -617,7 +624,12 @@ func (a *App) netd(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func parseNetDOptions(args []string) (netDOptions, error) {
-	options := netDOptions{interval: 5 * time.Second}
+	options := netDOptions{
+		interval:  5 * time.Second,
+		vxlanID:   42,
+		vxlanPort: 4789,
+		vxlanName: "mk8s-vxlan",
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--node-name":
@@ -654,6 +666,35 @@ func parseNetDOptions(args []string) (netDOptions, error) {
 				return options, fmt.Errorf("invalid --interval %q: %w", args[i], err)
 			}
 			options.interval = interval
+		case "--vxlan-id":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-id")
+			}
+			id, err := strconv.Atoi(args[i])
+			if err != nil || id <= 0 {
+				return options, fmt.Errorf("invalid --vxlan-id %q", args[i])
+			}
+			options.vxlanID = id
+		case "--vxlan-port":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-port")
+			}
+			port, err := strconv.Atoi(args[i])
+			if err != nil || port <= 0 || port > 65535 {
+				return options, fmt.Errorf("invalid --vxlan-port %q", args[i])
+			}
+			options.vxlanPort = port
+		case "--vxlan-name":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-name")
+			}
+			if strings.TrimSpace(args[i]) == "" {
+				return options, fmt.Errorf("invalid --vxlan-name %q", args[i])
+			}
+			options.vxlanName = args[i]
 		case "--once":
 			options.once = true
 		default:
@@ -803,6 +844,9 @@ type kubesailerOptions struct {
 	nodeIP     string
 	podCIDR    string
 	interval   time.Duration
+	vxlanID    int
+	vxlanPort  int
+	vxlanName  string
 	once       bool
 }
 
@@ -853,11 +897,14 @@ func (a *App) kubesailerNetworkAgent(options kubesailerOptions) (*netagent.Agent
 		return nil, fmt.Errorf("--pod-cidr is required when --node-ip is set")
 	}
 	return netagent.New(netagent.Options{
-		NodeName: options.nodeName,
-		NodeIP:   options.nodeIP,
-		PodCIDR:  options.podCIDR,
-		Registry: netregistry.NewClientWithHTTPClient(options.kubeharbor, a.httpClient),
-		Runner:   a.netRunner,
+		NodeName:  options.nodeName,
+		NodeIP:    options.nodeIP,
+		PodCIDR:   options.podCIDR,
+		VXLANID:   options.vxlanID,
+		VXLANPort: options.vxlanPort,
+		VXLANName: options.vxlanName,
+		Registry:  netregistry.NewClientWithHTTPClient(options.kubeharbor, a.httpClient),
+		Runner:    a.netRunner,
 	}), nil
 }
 
@@ -877,7 +924,12 @@ func runKubesailerWithNetwork(ctx context.Context, k *kubesailer.Kubesailer, age
 }
 
 func parseKubesailerOptions(args []string) (kubesailerOptions, error) {
-	options := kubesailerOptions{interval: 5 * time.Second}
+	options := kubesailerOptions{
+		interval:  5 * time.Second,
+		vxlanID:   42,
+		vxlanPort: 4789,
+		vxlanName: "mk8s-vxlan",
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--node-name":
@@ -914,6 +966,35 @@ func parseKubesailerOptions(args []string) (kubesailerOptions, error) {
 				return options, fmt.Errorf("invalid --interval %q: %w", args[i], err)
 			}
 			options.interval = interval
+		case "--vxlan-id":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-id")
+			}
+			id, err := strconv.Atoi(args[i])
+			if err != nil || id <= 0 {
+				return options, fmt.Errorf("invalid --vxlan-id %q", args[i])
+			}
+			options.vxlanID = id
+		case "--vxlan-port":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-port")
+			}
+			port, err := strconv.Atoi(args[i])
+			if err != nil || port <= 0 || port > 65535 {
+				return options, fmt.Errorf("invalid --vxlan-port %q", args[i])
+			}
+			options.vxlanPort = port
+		case "--vxlan-name":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-name")
+			}
+			if strings.TrimSpace(args[i]) == "" {
+				return options, fmt.Errorf("invalid --vxlan-name %q", args[i])
+			}
+			options.vxlanName = args[i]
 		case "--once":
 			options.once = true
 		default:
