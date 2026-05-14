@@ -298,13 +298,16 @@ func TestCLICNIInitRejectsInvalidRouteSyntax(t *testing.T) {
 	assert.Contains(t, err.Error(), "route must use <remote-cidr>=<node-ip>")
 }
 
-func TestNetDOptionsParseDynamicHostGWConfig(t *testing.T) {
+func TestNetDOptionsParseDynamicVXLANConfig(t *testing.T) {
 	options, err := parseNetDOptions([]string{
 		"--node-name", "node-a",
 		"--node-ip", "192.168.1.10",
 		"--pod-cidr", "10.244.0.0/24",
 		"--registry", "http://192.168.1.100:8088",
 		"--interval", "2s",
+		"--vxlan-id", "99",
+		"--vxlan-port", "8472",
+		"--vxlan-name", "vx-test",
 		"--once",
 	})
 
@@ -314,7 +317,24 @@ func TestNetDOptionsParseDynamicHostGWConfig(t *testing.T) {
 	assert.Equal(t, "10.244.0.0/24", options.podCIDR)
 	assert.Equal(t, "http://192.168.1.100:8088", options.registryURL)
 	assert.Equal(t, 2*time.Second, options.interval)
+	assert.Equal(t, 99, options.vxlanID)
+	assert.Equal(t, 8472, options.vxlanPort)
+	assert.Equal(t, "vx-test", options.vxlanName)
 	assert.True(t, options.once)
+}
+
+func TestNetDOptionsUseDefaultVXLANConfig(t *testing.T) {
+	options, err := parseNetDOptions([]string{
+		"--node-name", "node-a",
+		"--node-ip", "192.168.1.10",
+		"--pod-cidr", "10.244.0.0/24",
+		"--registry", "http://192.168.1.100:8088",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, 42, options.vxlanID)
+	assert.Equal(t, 4789, options.vxlanPort)
+	assert.Equal(t, "mk8s-vxlan", options.vxlanName)
 }
 
 func TestNetDOptionsRequireNodeName(t *testing.T) {
@@ -335,6 +355,9 @@ func TestKubesailerOptionsParseNetworkConfig(t *testing.T) {
 		"--node-ip", "192.168.1.8",
 		"--pod-cidr", "10.244.0.0/24",
 		"--interval", "2s",
+		"--vxlan-id", "99",
+		"--vxlan-port", "8472",
+		"--vxlan-name", "vx-test",
 		"--once",
 	})
 
@@ -344,7 +367,22 @@ func TestKubesailerOptionsParseNetworkConfig(t *testing.T) {
 	assert.Equal(t, "192.168.1.8", options.nodeIP)
 	assert.Equal(t, "10.244.0.0/24", options.podCIDR)
 	assert.Equal(t, 2*time.Second, options.interval)
+	assert.Equal(t, 99, options.vxlanID)
+	assert.Equal(t, 8472, options.vxlanPort)
+	assert.Equal(t, "vx-test", options.vxlanName)
 	assert.True(t, options.once)
+}
+
+func TestKubesailerOptionsUseDefaultVXLANConfig(t *testing.T) {
+	options, err := parseKubesailerOptions([]string{
+		"--node-name", "node-a",
+		"--kubeharbor", "http://192.168.1.8:18080",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, 42, options.vxlanID)
+	assert.Equal(t, 4789, options.vxlanPort)
+	assert.Equal(t, "mk8s-vxlan", options.vxlanName)
 }
 
 func TestKubesailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {

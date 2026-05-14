@@ -15,8 +15,8 @@ import (
 
 	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/minilog"
-	"minik8s/internal/node"
 	"minik8s/internal/netregistry"
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 )
