@@ -2,6 +2,7 @@ package netagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os/exec"
@@ -9,6 +10,14 @@ import (
 	"time"
 
 	"minik8s/internal/netregistry"
+)
+
+const (
+	defaultBridgeName = "mk8s0"
+	defaultVXLANName  = "mk8s-vxlan"
+	defaultVXLANID    = 42
+	defaultVXLANPort  = 4789
+	vxlanFDBMAC       = "00:00:00:00:00:00"
 )
 
 // Registry is the node registry API needed by the agent.
@@ -20,27 +29,51 @@ type Registry interface {
 // Runner executes host networking commands.
 type Runner func(name string, args ...string) error
 
-// Options configure one host-gw agent.
+// Options configure one VXLAN overlay agent.
 type Options struct {
-	NodeName string
-	NodeIP   string
-	PodCIDR  string
-	Registry Registry
-	Runner   Runner
+	NodeName   string
+	NodeIP     string
+	PodCIDR    string
+	VXLANName  string
+	VXLANID    int
+	VXLANPort  int
+	BridgeName string
+	Registry   Registry
+	Runner     Runner
 }
 
-// Agent registers the local node and reconciles host-gw routes.
+// Agent registers the local node and reconciles VXLAN overlay routing.
 type Agent struct {
-	local    netregistry.Node
-	registry Registry
-	runner   Runner
+	local      netregistry.Node
+	vxlanName  string
+	vxlanID    int
+	vxlanPort  int
+	bridgeName string
+	registry   Registry
+	runner     Runner
 }
 
-// New creates a host-gw route sync agent.
+// New creates a VXLAN route sync agent.
 func New(options Options) *Agent {
 	runner := options.Runner
 	if runner == nil {
 		runner = run
+	}
+	vxlanName := options.VXLANName
+	if vxlanName == "" {
+		vxlanName = defaultVXLANName
+	}
+	vxlanID := options.VXLANID
+	if vxlanID == 0 {
+		vxlanID = defaultVXLANID
+	}
+	vxlanPort := options.VXLANPort
+	if vxlanPort == 0 {
+		vxlanPort = defaultVXLANPort
+	}
+	bridgeName := options.BridgeName
+	if bridgeName == "" {
+		bridgeName = defaultBridgeName
 	}
 	return &Agent{
 		local: netregistry.Node{
@@ -48,8 +81,12 @@ func New(options Options) *Agent {
 			NodeIP:  options.NodeIP,
 			PodCIDR: options.PodCIDR,
 		},
-		registry: options.Registry,
-		runner:   runner,
+		vxlanName:  vxlanName,
+		vxlanID:    vxlanID,
+		vxlanPort:  vxlanPort,
+		bridgeName: bridgeName,
+		registry:   options.Registry,
+		runner:     runner,
 	}
 }
 
@@ -62,6 +99,12 @@ func (a *Agent) Sync(ctx context.Context) error {
 		return err
 	}
 	if err := a.registry.Register(ctx, a.local); err != nil {
+		return err
+	}
+	if !a.bridgeExists() {
+		return nil
+	}
+	if err := a.ensureVXLANDevice(); err != nil {
 		return err
 	}
 	nodes, err := a.registry.List(ctx)
@@ -108,6 +151,10 @@ func (a *Agent) isRemoteNode(node netregistry.Node) bool {
 	return netregistry.ValidateNode(node) == nil
 }
 
+func (a *Agent) bridgeExists() bool {
+	return a.runner("ip", "link", "show", a.bridgeName) == nil
+}
+
 func (a *Agent) syncNode(node netregistry.Node) error {
 	_, dst, err := net.ParseCIDR(node.PodCIDR)
 	if err != nil {
@@ -117,21 +164,66 @@ func (a *Agent) syncNode(node netregistry.Node) error {
 	if gateway == nil {
 		return nil
 	}
-	if err := a.runner("ip", "route", "replace", dst.String(), "via", gateway.String()); err != nil {
+	if err := a.syncFDB(gateway.String()); err != nil {
 		return err
 	}
-	return a.ensureIptablesAccept(dst.String())
+	if err := a.runner("ip", "route", "replace", dst.String(), "dev", a.bridgeName); err != nil {
+		return err
+	}
+	if err := a.ensureNATAccept(dst.String()); err != nil {
+		return err
+	}
+	return a.ensureForwardAccept(dst.String())
 }
 
-func (a *Agent) ensureIptablesAccept(remoteCIDR string) error {
+func (a *Agent) ensureVXLANDevice() error {
+	err := a.runner("ip", "link", "show", a.vxlanName)
+	if err != nil {
+		if err := a.runner("ip", "link", "add", a.vxlanName, "type", "vxlan", "id", fmt.Sprintf("%d", a.vxlanID), "local", a.local.NodeIP, "dstport", fmt.Sprintf("%d", a.vxlanPort)); err != nil {
+			return err
+		}
+	}
+	if err := a.runner("ip", "link", "set", a.vxlanName, "master", a.bridgeName); err != nil {
+		return err
+	}
+	return a.runner("ip", "link", "set", a.vxlanName, "up")
+}
+
+func (a *Agent) syncFDB(remoteNodeIP string) error {
+	if err := a.runner("bridge", "fdb", "delete", vxlanFDBMAC, "dev", a.vxlanName, "dst", remoteNodeIP); err != nil && !isFDBMissing(err) {
+		return err
+	}
+	return a.runner("bridge", "fdb", "append", vxlanFDBMAC, "dev", a.vxlanName, "dst", remoteNodeIP)
+}
+
+func (a *Agent) ensureNATAccept(remoteCIDR string) error {
 	rule := []string{"-s", a.local.PodCIDR, "-d", remoteCIDR, "-j", "ACCEPT"}
-	checkArgs := append([]string{"-t", "nat", "-C", "POSTROUTING"}, rule...)
+	return a.ensureIptablesRule("nat", "POSTROUTING", "-I", []string{"1"}, rule...)
+}
+
+func (a *Agent) ensureForwardAccept(remoteCIDR string) error {
+	if err := a.ensureIptablesRule("filter", "FORWARD", "-I", []string{"1"}, "-s", a.local.PodCIDR, "-d", remoteCIDR, "-j", "ACCEPT"); err != nil {
+		return err
+	}
+	return a.ensureIptablesRule("filter", "FORWARD", "-I", []string{"1"}, "-s", remoteCIDR, "-d", a.local.PodCIDR, "-j", "ACCEPT")
+}
+
+func (a *Agent) ensureIptablesRule(table, chain, mode string, extra []string, rule ...string) error {
+	checkArgs := append([]string{"-t", table, "-C", chain}, rule...)
 	if err := a.runner("iptables", checkArgs...); err == nil {
 		return nil
 	}
-	args := append([]string{"-t", "nat", "-I", "POSTROUTING", "1"}, rule...)
+	args := []string{"-t", table, mode, chain}
+	args = append(args, extra...)
+	args = append(args, rule...)
 	return a.runner("iptables", args...)
 }
+
+func isFDBMissing(err error) bool {
+	return errors.Is(err, errNoFDBEntry) || strings.Contains(err.Error(), "No such file or directory") || strings.Contains(err.Error(), "RTNETLINK answers: No such file or directory")
+}
+
+var errNoFDBEntry = errors.New("fdb entry missing")
 
 func run(name string, args ...string) error {
 	cmd := exec.Command(name, args...)

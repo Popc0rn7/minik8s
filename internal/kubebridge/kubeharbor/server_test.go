@@ -8,12 +8,15 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/minilog"
+	"minik8s/internal/netregistry"
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 )
@@ -92,6 +95,24 @@ func TestKubeharborDiscoveryIncludesServices(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"name":"nodes"`)
 }
 
+func TestKubeharborServesNetRegistryNodesEndpoint(t *testing.T) {
+	srv := newTestServer()
+	body := `{"name":"node-a","nodeIP":"192.168.1.8","podCIDR":"10.244.0.0/24"}`
+
+	register := serve(t, srv, http.MethodPost, "/nodes", body)
+	require.Equal(t, http.StatusNoContent, register.Code, register.Body.String())
+
+	list := serve(t, srv, http.MethodGet, "/nodes", "")
+	require.Equal(t, http.StatusOK, list.Code, list.Body.String())
+	var nodes []netregistry.Node
+	require.NoError(t, json.Unmarshal(list.Body.Bytes(), &nodes))
+	require.Len(t, nodes, 1)
+	assert.Equal(t, "node-a", nodes[0].Name)
+	assert.Equal(t, "192.168.1.8", nodes[0].NodeIP)
+	assert.Equal(t, "10.244.0.0/24", nodes[0].PodCIDR)
+	assert.NotZero(t, nodes[0].UpdatedAt)
+}
+
 func TestKubeharborPodCRUDLogsControlPlaneEvents(t *testing.T) {
 	var logs bytes.Buffer
 	restore := minilog.SetOutput(&logs)
@@ -114,6 +135,36 @@ func TestKubeharborPodCRUDLogsControlPlaneEvents(t *testing.T) {
 	assert.Contains(t, logs.String(), "pod-create: pod=default/nginx")
 	assert.Contains(t, logs.String(), "pod-update: pod=default/nginx")
 	assert.Contains(t, logs.String(), "pod-delete: pod=default/nginx")
+}
+
+func TestKubeharborPodSpecUpdatePreservesStatus(t *testing.T) {
+	srv := newTestServer()
+	body := `{
+		"kind":"Pod",
+		"apiVersion":"v1",
+		"metadata":{"name":"nginx","namespace":"default","labels":{"app":"nginx"}},
+		"spec":{"nodeName":"node-a","containers":[{"name":"nginx","image":"nginx","imageTag":"alpine"}]}
+	}`
+
+	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/pods", body)
+	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
+
+	status := pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.0.2", SandboxID: "sandbox-1"}
+	data, err := json.Marshal(status)
+	require.NoError(t, err)
+	updateStatus := serve(t, srv, http.MethodPut, "/api/v1/namespaces/default/pods/nginx/status", string(data))
+	require.Equal(t, http.StatusOK, updateStatus.Code, updateStatus.Body.String())
+
+	updateSpec := serve(t, srv, http.MethodPut, "/api/v1/namespaces/default/pods/nginx", body)
+	require.Equal(t, http.StatusOK, updateSpec.Code, updateSpec.Body.String())
+
+	get := serve(t, srv, http.MethodGet, "/api/v1/namespaces/default/pods/nginx", "")
+	require.Equal(t, http.StatusOK, get.Code, get.Body.String())
+	var got pod.Pod
+	require.NoError(t, json.Unmarshal(get.Body.Bytes(), &got))
+	assert.Equal(t, pod.PodRunning, got.Status.Phase)
+	assert.Equal(t, "10.244.0.2", got.Status.PodIP)
+	assert.Equal(t, "sandbox-1", got.Status.SandboxID)
 }
 
 func TestKubeharborServiceCRUD(t *testing.T) {
@@ -252,7 +303,68 @@ func TestKubeharborGetNode(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"name":"node-a"`)
 }
 
-func TestKubeharborLogsNodePollAndPodStatusUpdate(t *testing.T) {
+func TestKubeharborListNodesRefreshesExpiredNodesToUnknown(t *testing.T) {
+	now := time.Unix(100, 0)
+	nodeStore := store.NewInMemoryNodeStore()
+	nodeStore.SetNow(func() time.Time { return now })
+	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}))
+	srv := New(Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: nodeStore,
+		NodeTTL:   30 * time.Second,
+	})
+
+	rec := serve(t, srv, http.MethodGet, "/api/v1/nodes", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"name":"node-a"`)
+	assert.Contains(t, rec.Body.String(), `"status":"Unknown"`)
+}
+
+func TestKubeharborLogsNodeConnectOnlyOnStateTransition(t *testing.T) {
+	var logs bytes.Buffer
+	restore := minilog.SetOutput(&logs)
+	defer restore()
+	now := time.Unix(100, 0)
+	nodeStore := store.NewInMemoryNodeStore()
+	nodeStore.SetNow(func() time.Time { return now })
+	srv := New(Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: nodeStore,
+	})
+
+	first := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
+	require.Equal(t, http.StatusOK, first.Code)
+	second := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
+	require.Equal(t, http.StatusOK, second.Code)
+
+	assert.Equal(t, 1, strings.Count(logs.String(), "node-connect: node=node-a"))
+	assert.NotContains(t, logs.String(), "node-heartbeat")
+}
+
+func TestKubeharborLogsNodeReconnectFromUnknown(t *testing.T) {
+	var logs bytes.Buffer
+	restore := minilog.SetOutput(&logs)
+	defer restore()
+	now := time.Unix(100, 0)
+	nodeStore := store.NewInMemoryNodeStore()
+	nodeStore.SetNow(func() time.Time { return now })
+	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeUnknown, LastHeartbeat: now.Add(-time.Minute)}))
+	srv := New(Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: nodeStore,
+	})
+
+	rec := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, 1, strings.Count(logs.String(), "node-connect: node=node-a"))
+	got, err := nodeStore.Get("node-a")
+	require.NoError(t, err)
+	assert.Equal(t, node.NodeReady, got.Status)
+}
+
+func TestKubeharborLogsPodStatusUpdate(t *testing.T) {
 	var logs bytes.Buffer
 	restore := minilog.SetOutput(&logs)
 	defer restore()
@@ -273,7 +385,6 @@ func TestKubeharborLogsNodePollAndPodStatusUpdate(t *testing.T) {
 	update := serve(t, srv, http.MethodPut, "/api/v1/namespaces/default/pods/nginx/status", string(data))
 	require.Equal(t, http.StatusOK, update.Code)
 
-	assert.Contains(t, logs.String(), "node-heartbeat: node=node-a assigned=1")
 	assert.Contains(t, logs.String(), "pod-status-update: node=node-a pod=default/nginx phase=Running")
 }
 

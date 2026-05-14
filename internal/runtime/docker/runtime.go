@@ -111,12 +111,7 @@ func (d *DockerRuntime) CreateSandbox(ctx context.Context, config *runtime.Sandb
 	if err := d.cleanupExistingPodContainers(ctx, config.Namespace, config.Name); err != nil {
 		return "", err
 	}
-	hostConfig := &container.HostConfig{
-		PortBindings: portBindings,
-	}
-	if config.NetworkMode != "" {
-		hostConfig.NetworkMode = container.NetworkMode(config.NetworkMode)
-	}
+	hostConfig := sandboxHostConfig(portBindings, config.NetworkMode)
 
 	resp, err := d.client.ContainerCreate(ctx, &container.Config{
 		Image:        imageName,
@@ -129,6 +124,17 @@ func (d *DockerRuntime) CreateSandbox(ctx context.Context, config *runtime.Sandb
 	}
 	minilog.Success("sandbox-create", "created pod=%s/%s sandbox=%s", config.Namespace, config.Name, resp.ID)
 	return resp.ID, nil
+}
+
+func sandboxHostConfig(portBindings nat.PortMap, networkMode string) *container.HostConfig {
+	hostConfig := &container.HostConfig{
+		PortBindings: portBindings,
+		NetworkMode:  container.NetworkMode("none"),
+	}
+	if networkMode != "" {
+		hostConfig.NetworkMode = container.NetworkMode(networkMode)
+	}
+	return hostConfig
 }
 
 // GetSandboxNetNSPath returns the Linux network namespace path for a sandbox.

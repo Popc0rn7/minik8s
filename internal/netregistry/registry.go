@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Node describes one Minik8s node participating in host-gw routing.
+// Node describes one Minik8s node participating in cross-node Pod networking.
 type Node struct {
 	Name      string    `json:"name"`
 	NodeIP    string    `json:"nodeIP"`
@@ -120,9 +120,17 @@ type Client struct {
 
 // NewClient creates a registry HTTP client.
 func NewClient(baseURL string) *Client {
+	return NewClientWithHTTPClient(baseURL, nil)
+}
+
+// NewClientWithHTTPClient creates a registry HTTP client with an explicit HTTP client.
+func NewClientWithHTTPClient(baseURL string, httpClient *http.Client) *Client {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: http.DefaultClient,
+		httpClient: httpClient,
 	}
 }
 

@@ -57,7 +57,7 @@ sleep 6
 ./minik8s apply -f manifest/testdata/pod_busybox_client.yaml
 ./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
 sleep 8
-sudo iptables-save -t nat | grep -E 'MK8S-SVC|10\.96\.0\.1'
+iptables-save -t nat | grep -E 'MK8S-SVC|10\.96\.0\.1'
 CLIENT_A_CID=$(docker ps -q --filter label=minik8s.pod.name=busybox-client --filter label=minik8s.container.name=client)
 docker exec "${CLIENT_A_CID}" wget -qO- http://10.96.0.1:80 >/tmp/minik8s-service-clusterip.html
 head -n 1 /tmp/minik8s-service-clusterip.html
@@ -88,7 +88,7 @@ head -n 1 /tmp/minik8s-service-clusterip.html
 ./minik8s apply -f manifest/testdata/service_nodeport_nginx.yaml
 sleep 8
 ./minik8s get services
-sudo iptables-save -t nat | grep -E 'MK8S-SVC|30080|10\.96\.0\.1'
+iptables-save -t nat | grep -E 'MK8S-SVC|30080|10\.96\.0\.1'
 curl -fsS "http://${NODE_A_IP}:30080" >/tmp/minik8s-service-nodeport-a.html
 head -n 1 /tmp/minik8s-service-nodeport-a.html
 ```
@@ -126,7 +126,7 @@ curl -fsS "http://${NODE_B_IP}:30080" >/tmp/minik8s-service-nodeport-b.html || t
 sleep 10
 ./minik8s get services
 ./minik8s describe service nginx-service
-sudo iptables-save -t nat | grep MK8S-SVC
+iptables-save -t nat | grep MK8S-SVC
 ```
 
 期望：
@@ -157,12 +157,12 @@ sleep 8
 ./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
 sleep 8
 ./minik8s describe service nginx-service
-sudo iptables-save -t nat | grep MK8S-SVC
+iptables-save -t nat | grep MK8S-SVC
 
 ./minik8s delete pod nginx-node-a
 sleep 8
 ./minik8s describe service nginx-service
-sudo iptables-save -t nat | grep MK8S-SVC
+iptables-save -t nat | grep MK8S-SVC
 ```
 
 期望：
@@ -173,7 +173,7 @@ sudo iptables-save -t nat | grep MK8S-SVC
 
 失败排查：
 
-- endpoints 延迟不变：等待 `--service-sync-interval` 至少一个周期，默认 5s。
+- endpoints 延迟不变：等待 service sync 默认周期，通常约 5s。
 - 删除后旧 DNAT 仍在：检查 kubebridge 日志是否有 `service-periodic-sync` 错误。
 
 ## SVC-06：删除 Service 清理规则
@@ -188,11 +188,11 @@ sudo iptables-save -t nat | grep MK8S-SVC
 ./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
 ./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
 sleep 8
-sudo iptables-save -t nat | grep MK8S-SVC
+iptables-save -t nat | grep MK8S-SVC
 ./minik8s delete service nginx-service
 sleep 2
 ./minik8s get services
-sudo iptables-save -t nat | grep MK8S-SVC || true
+iptables-save -t nat | grep MK8S-SVC || true
 ```
 
 期望：

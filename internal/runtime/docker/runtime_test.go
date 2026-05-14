@@ -40,6 +40,18 @@ func TestSandboxImageCanBeOverridden(t *testing.T) {
 	assert.Empty(t, sandboxCommand())
 }
 
+func TestSandboxHostConfigDefaultsToNoNetwork(t *testing.T) {
+	hostConfig := sandboxHostConfig(nil, "")
+
+	assert.Equal(t, container.NetworkMode("none"), hostConfig.NetworkMode)
+}
+
+func TestSandboxHostConfigAllowsExplicitNetworkMode(t *testing.T) {
+	hostConfig := sandboxHostConfig(nil, "host")
+
+	assert.Equal(t, container.NetworkMode("host"), hostConfig.NetworkMode)
+}
+
 func TestResolveDockerEndpointUsesDockerHostFirst(t *testing.T) {
 	t.Setenv("DOCKER_HOST", "unix:///explicit.sock")
 	t.Setenv("DOCKER_CONTEXT", "desktop-linux")

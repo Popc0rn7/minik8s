@@ -1,6 +1,127 @@
 # CNI 测试用例
 
-本文档覆盖 v0.1.0 的 CNI bridge、IPAM、同节点 PodIP 通信、跨节点 PodIP 通信和删除清理。双机公共启动流程见 `docs/testcase/two-node.md`。
+本文档从 0 开始验证 v0.1.0 的 CNI bridge、IPAM、同节点 PodIP、VXLAN 跨节点 PodIP、删除清理，以及静态 route fallback。主路径需要 node-a 的 Kubeharbor `18080`，以及节点间 UDP `4789`。
+
+## 测试模型
+
+| 节点 | 宿主机 IP | PodCIDR | 运行组件 |
+| --- | --- | --- | --- |
+| node-a | `192.168.1.8` | `10.244.0.0/24` | `kubebridge`、`kubesailer` |
+| node-b | `192.168.1.6` | `10.244.1.0/24` | `kubesailer` |
+
+`minik8s-bridge` CNI 负责本机 Pod 网络；带 `--node-ip` 和 `--pod-cidr` 的 `kubesailer` 会向 Kubeharbor `/nodes` 注册节点网络信息，并周期性同步跨节点 VXLAN overlay。
+
+## 从 0 启动
+
+两台机器都需要 Linux、Docker、`ip`、`bridge`、`iptables`、`nsenter`、`curl` 或 `wget`，并以 root 用户执行命令。安全组或防火墙至少放通 node-a 入站 TCP `18080`，以及两台节点之间双向 UDP `4789`。
+
+在 node-a 和 node-b 都设置变量：
+
+```bash
+export NODE_A_IP=192.168.1.8
+export NODE_B_IP=192.168.1.6
+export POD_CIDR_A=10.244.0.0/24
+export POD_CIDR_B=10.244.1.0/24
+export KUBEHARBOR=http://${NODE_A_IP}:18080
+export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
+unset MINIK8S_CNI_DISABLED
+```
+
+两台机器都构建二进制和 CNI plugin：
+
+```bash
+make build
+```
+
+在 node-a 初始化 CNI：
+
+```bash
+./minik8s cni init \
+  --pod-cidr ${POD_CIDR_A} \
+  --gateway 10.244.0.1
+./minik8s doctor network
+```
+
+在 node-b 初始化 CNI：
+
+```bash
+./minik8s cni init \
+  --pod-cidr ${POD_CIDR_B} \
+  --gateway 10.244.1.1
+./minik8s doctor network
+```
+
+在 node-a 终端 1 启动控制面：
+
+```bash
+export MINIK8S_STATE_DIR=.minik8s/testcase-state
+export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
+./minik8s kubebridge --listen :18080
+```
+
+在 node-b 先确认能访问控制面：
+
+```bash
+curl -fsS ${KUBEHARBOR}/version
+curl -fsS ${KUBEHARBOR}/nodes
+```
+
+在 node-a 终端 2 启动 worker：
+
+```bash
+./minik8s kubesailer \
+  --node-name node-a \
+  --kubeharbor ${KUBEHARBOR} \
+  --node-ip ${NODE_A_IP} \
+  --pod-cidr ${POD_CIDR_A}
+```
+
+在 node-b 终端 1 启动 worker：
+
+```bash
+./minik8s kubesailer \
+  --node-name node-b \
+  --kubeharbor ${KUBEHARBOR} \
+  --node-ip ${NODE_B_IP} \
+  --pod-cidr ${POD_CIDR_B}
+```
+
+在 node-a 的测试终端确认节点和 VXLAN/路由：
+
+```bash
+./minik8s get nodes
+curl -fsS ${KUBEHARBOR}/nodes
+ip route | grep 10.244
+ip link show mk8s-vxlan
+bridge fdb show dev mk8s-vxlan
+```
+
+在 node-b 确认 VXLAN/路由：
+
+```bash
+ip route | grep 10.244
+ip link show mk8s-vxlan
+bridge fdb show dev mk8s-vxlan
+```
+
+期望：
+
+- `get nodes` 包含 `node-a` 和 `node-b`，状态为 `Ready`。
+- node-a 有到 `10.244.1.0/24` 的 route，且 `mk8s-vxlan` FDB 指向 node-b IP。
+- node-b 有到 `10.244.0.0/24` 的 route，且 `mk8s-vxlan` FDB 指向 node-a IP。
+
+## 通用清理
+
+每个 case 都可以单独运行。运行前后建议在 node-a 执行一次清理，避免残留 Pod 影响判断：
+
+```bash
+./minik8s delete pod busybox-node-b || true
+./minik8s delete pod busybox-client || true
+./minik8s delete pod nginx-node-a || true
+./minik8s delete pod nginx-node-b || true
+./minik8s delete pod nginx-pod || true
+sleep 8
+```
 
 ## 覆盖矩阵
 
@@ -14,14 +135,11 @@
 
 ## CNI-01：配置与 Pod IP 分配
 
-目标：确认两台机器都使用不同 PodCIDR，Pod 启动后获得各自网段内 IP。
+目标：确认两台机器使用不同 PodCIDR，Pod 启动后获得各自网段内 IP。
 
-机器：node-a 执行 CLI；node-a/node-b 都运行 kubesailer 和 netd。
-
-流程：
+在 node-a：
 
 ```bash
-unset MINIK8S_CNI_DISABLED
 ./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
 ./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
 sleep 8
@@ -51,16 +169,14 @@ cat .minik8s/state/cni-ipam.json
 
 失败排查：
 
-- PodIP 为空：检查对应节点 `doctor network`，确认 `MINIK8S_CNI_DISABLED` 未设置为 `1`。
+- PodIP 为空：检查对应节点 `./minik8s doctor network`，确认 `MINIK8S_CNI_DISABLED` 未设置为 `1`。
 - 两个 Pod 拿到同一网段：检查两台机器的 `cni init --pod-cidr` 参数。
 
 ## CNI-02：同节点 PodIP 通信
 
-目标：验证同一节点上的 client Pod 可以通过 PodIP 访问 nginx Pod。
+目标：验证 node-a 上的 client Pod 可以通过 PodIP 访问 node-a 上的 nginx Pod。
 
-机器：node-a。
-
-流程：
+在 node-a：
 
 ```bash
 ./minik8s apply -f manifest/testdata/pod_nginx.yaml
@@ -75,27 +191,18 @@ head -n 1 /tmp/minik8s-cni-same-node.html
 期望：
 
 - `SERVER_IP` 是 `10.244.0.0/24` 内地址。
-- `wget` 成功返回 nginx HTML。
+- `wget` 返回 nginx HTML。
 
 失败排查：
 
-- client 容器不存在：确认 `busybox-client` 固定在 `node-a` 且 node-a kubesailer 正常。
+- client 容器不存在：确认 node-a 的 kubesailer 正在运行。
 - `wget` 超时：检查 `mk8s0`、veth、iptables MASQUERADE。
-
-清理：
-
-```bash
-./minik8s delete pod busybox-client || true
-./minik8s delete pod nginx-pod || true
-```
 
 ## CNI-03：跨节点 PodIP 通信
 
-目标：验证 node-b 上的 client 可以访问 node-a 上的 nginx PodIP，并验证反向从 node-a 访问 node-b 后端。
+目标：验证 node-b 上的 client 可以访问 node-a 的 nginx PodIP，并验证 node-a 上的 client 可以访问 node-b 的 nginx PodIP。
 
-机器：node-a 执行 API 命令；node-a/node-b 分别执行本地 Docker exec。
-
-流程：
+在 node-a 创建测试 Pod 并记录 IP：
 
 ```bash
 ./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
@@ -112,6 +219,7 @@ echo "${NGINX_A_IP} ${NGINX_B_IP}"
 在 node-b，验证访问 node-a：
 
 ```bash
+export NGINX_A_IP=<node-a 输出的 NGINX_A_IP>
 CLIENT_B_CID=$(docker ps -q --filter label=minik8s.pod.name=busybox-node-b --filter label=minik8s.container.name=client)
 docker exec "${CLIENT_B_CID}" wget -qO- "http://${NGINX_A_IP}:80" >/tmp/minik8s-cni-cross-a.html
 head -n 1 /tmp/minik8s-cni-cross-a.html
@@ -129,30 +237,21 @@ head -n 1 /tmp/minik8s-cni-cross-b.html
 
 - `NGINX_A_IP` 属于 `10.244.0.0/24`。
 - `NGINX_B_IP` 属于 `10.244.1.0/24`。
-- 两个跨节点 `wget` 均返回 nginx HTML。
-- 两台宿主机 `ip route` 中都有对端 PodCIDR。
+- 两个跨节点 `wget` 都返回 nginx HTML。
+- 两台宿主机 `ip route` 中都有对端 PodCIDR，且 `mk8s-vxlan` 存在。
 
 失败排查：
 
 - node-b shell 没有 `NGINX_A_IP`：从 node-a 输出复制该变量，或在 node-b 手动 `export NGINX_A_IP=<value>`。
-- 跨节点不通但同节点通：检查 `netd`、`ip route`、宿主机防火墙、Linux `ip_forward`。
-
-清理：
-
-```bash
-./minik8s delete pod busybox-node-b || true
-./minik8s delete pod busybox-client || true
-./minik8s delete pod nginx-node-a || true
-./minik8s delete pod nginx-node-b || true
-```
+- 跨节点不通但同节点通：检查 kubesailer 是否带了 `--node-ip` 和 `--pod-cidr`，再检查 `ip link show mk8s-vxlan`、`bridge fdb show dev mk8s-vxlan`、`ip route`、宿主机防火墙、Linux `ip_forward`。
+- 云主机跨节点不通：确认安全组双向放通 UDP `4789`，并用 `tcpdump -ni ens3 udp port 4789` 确认 VXLAN 包是否到达对端。
+- node-b Pod 没启动：看 node-b 的 kubesailer 日志和 Docker 状态。
 
 ## CNI-04：删除释放 IPAM
 
 目标：验证删除 Pod 后 kubesailer 调用 CNI `DEL`，释放 IPAM allocation 并删除 veth/runtime 资源。
 
-机器：node-a 执行 API 删除；两台机器检查本地状态。
-
-流程：
+在 node-a：
 
 ```bash
 ./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
@@ -189,27 +288,69 @@ docker ps -a --filter label=minik8s.pod.name=nginx-node-b
 
 ## CNI-05：静态 route fallback
 
-目标：在不运行 `netd` 时，用 CNI 配置中的 `routes` 字段手动完成跨节点路由。
+目标：验证在 kubesailer 不负责网络路由同步时，也可以用 CNI 配置中的 `routes` 字段手动完成跨节点路由。
 
-机器：node-a + node-b。此 case 可选，只在排查 `netd` 时使用。
+此 case 可选，只在排查动态路由同步时使用。执行前先停止 node-a/node-b 的 kubesailer，并重新启动不带 `--node-ip`、`--pod-cidr` 的 kubesailer，避免动态路由恢复影响观察。
 
-流程：
+在 node-a 重新初始化 CNI：
 
 ```bash
-# node-a
-sudo ./minik8s cni init \
+./minik8s cni init \
   --pod-cidr ${POD_CIDR_A} \
   --gateway 10.244.0.1 \
   --route ${POD_CIDR_B}=${NODE_B_IP}
+./minik8s doctor network
+```
 
-# node-b
-sudo ./minik8s cni init \
+在 node-b 重新初始化 CNI：
+
+```bash
+./minik8s cni init \
   --pod-cidr ${POD_CIDR_B} \
   --gateway 10.244.1.1 \
   --route ${POD_CIDR_A}=${NODE_A_IP}
+./minik8s doctor network
 ```
+
+两台机器分别启动不带网络参数的 kubesailer：
+
+```bash
+./minik8s kubesailer \
+  --node-name <node-a-or-node-b> \
+  --kubeharbor ${KUBEHARBOR}
+```
+
+然后按 CNI-03 创建 Pod 并验证跨节点访问。
 
 期望：
 
-- `./minik8s doctor network` 显示 `route: <remote PodCIDR> via <remote NodeIP>`。
-- 后续执行 CNI-03 时跨节点访问成功。
+- `doctor network` 显示 `route: <remote PodCIDR> via <remote NodeIP>`。
+- 两方向跨节点访问均成功。
+
+## 收尾清理
+
+在 node-a 清理 API 对象：
+
+```bash
+./minik8s delete pod busybox-node-b || true
+./minik8s delete pod busybox-client || true
+./minik8s delete pod nginx-node-a || true
+./minik8s delete pod nginx-node-b || true
+./minik8s delete pod nginx-pod || true
+sleep 8
+```
+
+在两台机器检查本地残留：
+
+```bash
+docker ps -a --filter label=minik8s.pod.namespace=default
+cat .minik8s/state/cni-ipam.json 2>/dev/null || true
+```
+
+## 快速排查索引
+
+- `curl ${KUBEHARBOR}/version` 失败：先查 node-a `kubebridge` 是否运行、node-a 入站 `18080` 是否放通。
+- `get nodes` 缺 node-b：检查 node-b kubesailer 的 `--kubeharbor` 是否指向 node-a 局域网 IP。
+- `/nodes` 为空：检查 kubesailer 是否带 `--node-ip` 和 `--pod-cidr`。
+- 跨节点 PodIP 不通：检查两台机器的 `ip link show mk8s-vxlan`、`bridge fdb show dev mk8s-vxlan`、`ip route | grep 10.244`，再查 UDP `4789`、防火墙、`ip_forward` 和 kubesailer 日志。
+- Pod 一直 `Pending`：检查对应节点 kubesailer 是否在运行。

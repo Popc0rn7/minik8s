@@ -17,6 +17,7 @@ import (
 
 	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/kubebridge/kubeharbor"
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 	"minik8s/test/mock"
@@ -297,13 +298,16 @@ func TestCLICNIInitRejectsInvalidRouteSyntax(t *testing.T) {
 	assert.Contains(t, err.Error(), "route must use <remote-cidr>=<node-ip>")
 }
 
-func TestNetDOptionsParseDynamicHostGWConfig(t *testing.T) {
+func TestNetDOptionsParseDynamicVXLANConfig(t *testing.T) {
 	options, err := parseNetDOptions([]string{
 		"--node-name", "node-a",
 		"--node-ip", "192.168.1.10",
 		"--pod-cidr", "10.244.0.0/24",
 		"--registry", "http://192.168.1.100:8088",
 		"--interval", "2s",
+		"--vxlan-id", "99",
+		"--vxlan-port", "8472",
+		"--vxlan-name", "vx-test",
 		"--once",
 	})
 
@@ -313,7 +317,24 @@ func TestNetDOptionsParseDynamicHostGWConfig(t *testing.T) {
 	assert.Equal(t, "10.244.0.0/24", options.podCIDR)
 	assert.Equal(t, "http://192.168.1.100:8088", options.registryURL)
 	assert.Equal(t, 2*time.Second, options.interval)
+	assert.Equal(t, 99, options.vxlanID)
+	assert.Equal(t, 8472, options.vxlanPort)
+	assert.Equal(t, "vx-test", options.vxlanName)
 	assert.True(t, options.once)
+}
+
+func TestNetDOptionsUseDefaultVXLANConfig(t *testing.T) {
+	options, err := parseNetDOptions([]string{
+		"--node-name", "node-a",
+		"--node-ip", "192.168.1.10",
+		"--pod-cidr", "10.244.0.0/24",
+		"--registry", "http://192.168.1.100:8088",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, 42, options.vxlanID)
+	assert.Equal(t, 4789, options.vxlanPort)
+	assert.Equal(t, "mk8s-vxlan", options.vxlanName)
 }
 
 func TestNetDOptionsRequireNodeName(t *testing.T) {
@@ -325,6 +346,87 @@ func TestNetDOptionsRequireNodeName(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--node-name is required")
+}
+
+func TestKubesailerOptionsParseNetworkConfig(t *testing.T) {
+	options, err := parseKubesailerOptions([]string{
+		"--node-name", "node-a",
+		"--kubeharbor", "http://192.168.1.8:18080",
+		"--node-ip", "192.168.1.8",
+		"--pod-cidr", "10.244.0.0/24",
+		"--interval", "2s",
+		"--vxlan-id", "99",
+		"--vxlan-port", "8472",
+		"--vxlan-name", "vx-test",
+		"--once",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "node-a", options.nodeName)
+	assert.Equal(t, "http://192.168.1.8:18080", options.kubeharbor)
+	assert.Equal(t, "192.168.1.8", options.nodeIP)
+	assert.Equal(t, "10.244.0.0/24", options.podCIDR)
+	assert.Equal(t, 2*time.Second, options.interval)
+	assert.Equal(t, 99, options.vxlanID)
+	assert.Equal(t, 8472, options.vxlanPort)
+	assert.Equal(t, "vx-test", options.vxlanName)
+	assert.True(t, options.once)
+}
+
+func TestKubesailerOptionsUseDefaultVXLANConfig(t *testing.T) {
+	options, err := parseKubesailerOptions([]string{
+		"--node-name", "node-a",
+		"--kubeharbor", "http://192.168.1.8:18080",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, 42, options.vxlanID)
+	assert.Equal(t, 4789, options.vxlanPort)
+	assert.Equal(t, "mk8s-vxlan", options.vxlanName)
+}
+
+func TestKubesailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {
+	var registered map[string]string
+	httpClient := &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		rec := httptestResponseRecorder(req)
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/nodes/node-a/pods":
+			_ = json.NewEncoder(rec).Encode(map[string]any{"items": []any{}})
+		case req.Method == http.MethodPost && req.URL.Path == "/nodes":
+			require.NoError(t, json.NewDecoder(req.Body).Decode(&registered))
+			rec.WriteHeader(http.StatusNoContent)
+		case req.Method == http.MethodGet && req.URL.Path == "/nodes":
+			_ = json.NewEncoder(rec).Encode([]any{})
+		default:
+			rec.WriteHeader(http.StatusNotFound)
+		}
+		return rec.Result(), nil
+	})}
+	app := New(Config{
+		Runtime:    mock.NewMockRuntime(),
+		Store:      store.NewInMemoryPodStore(),
+		HTTPClient: httpClient,
+		NetRunner: func(name string, args ...string) error {
+			return nil
+		},
+	})
+	var out bytes.Buffer
+
+	err := app.Run(context.Background(), []string{
+		"kubesailer",
+		"--node-name", "node-a",
+		"--kubeharbor", "http://minik8s.test",
+		"--node-ip", "192.168.1.8",
+		"--pod-cidr", "10.244.0.0/24",
+		"--once",
+	}, &out)
+
+	require.NoError(t, err)
+	require.NotNil(t, registered)
+	assert.Equal(t, "node-a", registered["name"])
+	assert.Equal(t, "192.168.1.8", registered["nodeIP"])
+	assert.Equal(t, "10.244.0.0/24", registered["podCIDR"])
+	assert.Contains(t, out.String(), "kubesailer synced node=node-a")
 }
 
 func TestNetRegistryOptionsUseDefaults(t *testing.T) {
@@ -407,6 +509,27 @@ func TestCLIGetNodesShowsHeartbeatNodes(t *testing.T) {
 	assert.Contains(t, out.String(), "node-a")
 	assert.Contains(t, out.String(), "Worker")
 	assert.Contains(t, out.String(), "Ready")
+}
+
+func TestCLIGetNodesShowsExpiredHeartbeatNodesUnknown(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	now := time.Unix(100, 0)
+	nodeStore := store.NewInMemoryNodeStore()
+	nodeStore.SetNow(func() time.Time { return now })
+	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}))
+	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: nodeStore,
+		NodeTTL:   30 * time.Second,
+	}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"get", "nodes"}, &out))
+
+	assert.Contains(t, out.String(), "node-a")
+	assert.Contains(t, out.String(), "Unknown")
+	assert.NotContains(t, out.String(), "Ready")
 }
 
 func TestCLIDoctorNetworkShowsCNIPaths(t *testing.T) {

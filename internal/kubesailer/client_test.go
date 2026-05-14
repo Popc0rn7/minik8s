@@ -43,6 +43,25 @@ func TestHTTPPodClientListsAssignedPodsAndUpdatesStatus(t *testing.T) {
 	assert.Equal(t, "10.244.0.2", got.Status.PodIP)
 }
 
+func TestHTTPPodClientUpdateStatusErrorIncludesResponseBody(t *testing.T) {
+	client := NewHTTPPodClient("http://minik8s.test", &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptest.NewRecorder()
+			http.Error(rec, "iptables failed", http.StatusInternalServerError)
+			return rec.Result(), nil
+		}),
+	})
+
+	err := client.UpdatePodStatus(t.Context(), &pod.Pod{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default"},
+		Status:     pod.PodStatus{Phase: pod.PodRunning},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "500 Internal Server Error")
+	assert.Contains(t, err.Error(), "iptables failed")
+}
+
 type roundTripFunc func(req *http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

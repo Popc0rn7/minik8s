@@ -20,7 +20,7 @@
 
 | 模块 | 对标 Kubernetes | 当前状态 | 稳定度 | 说明 |
 | --- | --- | --- | --- | --- |
-| CLI | `kubectl` 子集 | 部分实现 | 中 | 支持 `apply/get/describe/delete/api-resources/version/doctor/cni/netd/kubebridge/kubesailer`，仅 Pod/Service/Node。 |
+| CLI | `kubectl` 子集 | 部分实现 | 中 | 支持 `apply/get/describe/delete/api-resources/version/doctor/cni/kubebridge/kubesailer`，仅 Pod/Service/Node。 |
 | Kubeharbor | kube-apiserver 子集 | 部分实现 | 中 | HTTP API、默认值、状态存储、status 更新可用，但没有 auth、watch、admission、resourceVersion。 |
 | Store | etcd/local store | 部分实现 | 中 | Pod/Service 支持 file store 与 etcd store；Node 主要是 file/in-memory，etcd Node store 未作为统一集群状态闭环。 |
 | Node | Node API / kubelet heartbeat | 部分实现 | 中低 | Kubesailer 通过 `/nodes/{name}/pods` 心跳注册 Ready；没有 capacity、allocatable、conditions、taints。 |
@@ -28,8 +28,8 @@
 | Kubesailer | kubelet 子集 | 部分实现 | 中 | 能拉 assigned Pod、创建/删除容器、回写 status；没有完整 pod worker、probe、日志、exec、资源上报。 |
 | Pod Kubecaptain | kubelet pod lifecycle | 部分实现 | 中 | Docker sandbox、workload、volume、resource limit、restartPolicy 可用；probe 字段有类型但未执行。 |
 | Docker runtime | CRI runtime 子集 | 部分实现 | 中 | 使用 Docker SDK，不是 CRI；pause 默认用 `alpine:3.20` 模拟。 |
-| CNI runner/plugin | CNI + bridge | 部分实现 | 中低 | 单节点 bridge、veth、IPAM、NAT 可用；跨节点需要手工 route 或 netd，缺少与 Node/PodCIDR 自动集成。 |
-| net-registry/netd | flannel host-gw 类似组件 | 部分实现 | 中低 | 能注册 node 与同步 host-gw route，但独立于 Kubeharbor Node API。 |
+| CNI runner/plugin | CNI + bridge | 部分实现 | 中低 | 单节点 bridge、veth、IPAM、NAT 可用；跨节点可通过 kubesailer 内置 host-gw 同步或手工 route。 |
+| kubeharbor 网络注册表 + kubesailer 网络同步 | flannel host-gw 类似组件 | 部分实现 | 中低 | Kubeharbor 暴露网络节点注册表，kubesailer 通过同一控制面端口注册 node 与同步 host-gw route。 |
 | Service Kubecaptain | endpoint controller | 部分实现 | 中 | 根据 selector + Running PodIP 生成 endpoints；没有独立 EndpointSlice 对象。 |
 | kube-proxy | kube-proxy iptables mode | 部分实现 | 中低 | iptables 规则生成有单测；真实运行需要 root/network 权限，主入口注入 proxy 存在风险。 |
 | ReplicaSet | replicaset-controller | 未实现 | 无 | 没有类型、API、controller。 |
@@ -119,7 +119,7 @@
 - `minik8s-bridge` 插件创建 bridge、veth、Pod IP、默认路由、NAT。
 - IPAM 用 JSON 文件持久化 allocation。
 - 支持静态 host-gw routes。
-- `net-registry` + `netd` 能动态注册并同步 host-gw route。
+- Kubeharbor 内置网络注册表，带 `--node-ip`、`--pod-cidr` 的 `kubesailer` 能动态注册并同步 host-gw route。
 
 主要缺口：
 
@@ -215,7 +215,7 @@
 1. 固定启动流程
    - `make build`
    - `./minik8s kubebridge --listen :18080`
-   - `sudo ./minik8s kubesailer --node-name node-a --kubeharbor http://127.0.0.1:18080`
+   - `./minik8s kubesailer --node-name node-a --kubeharbor http://127.0.0.1:18080`
    - `./minik8s apply/get/delete`
 
 2. Service proxy 注入风险
@@ -233,7 +233,7 @@
 ### P1：把“部分实现”补到可信
 
 1. Scheduler 尊重 `nodeSelector`，或者移除/标注该字段。
-2. Node 类型补 `NodeIP`、`PodCIDR`，让 netd/CNI 和 Node API 语义统一。
+2. Node 类型补 `NodeIP`、`PodCIDR`，让 kubesailer 网络同步/CNI 和 Node API 语义统一。
 3. NodeStore etcd 化，避免“Pod/Service 在 etcd，Node 在 file”的混合状态。
 4. 给 Service 数据面加一个真实 smoke test 脚本，失败时能自动清理 iptables chain。
 
@@ -286,7 +286,7 @@
 第 3 步：补最小一致性。
 
 - Node 加 `NodeIP`、`PodCIDR` 字段。
-- netd 注册可以复用 Node 信息，至少文档上统一。
+- kubesailer 网络注册可以复用 Node 信息，至少文档上统一。
 - Scheduler 对 `nodeSelector` 做最小匹配。
 
 第 4 步：建立稳定验收脚本。

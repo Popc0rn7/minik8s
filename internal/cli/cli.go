@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,7 @@ type Config struct {
 	Network      kubecaptain.PodNetworkManager
 	ServiceProxy kubeproxy.Proxy
 	HTTPClient   *http.Client
+	NetRunner    netagent.Runner
 }
 
 // App is the Minik8s command-line application.
@@ -54,6 +56,7 @@ type App struct {
 	network      kubecaptain.PodNetworkManager
 	serviceProxy kubeproxy.Proxy
 	httpClient   *http.Client
+	netRunner    netagent.Runner
 	server       string
 	namespace    string
 }
@@ -94,6 +97,7 @@ func New(config Config) *App {
 		network:      network,
 		serviceProxy: serviceProxy,
 		httpClient:   config.HTTPClient,
+		netRunner:    config.NetRunner,
 		namespace:    "default",
 	}
 }
@@ -156,59 +160,6 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
-func (a *App) get(ctx context.Context, args []string, out io.Writer) error {
-	minilog.Info("cli-get", "start args=%v", args)
-	client, err := a.controlPlaneClient()
-	if err != nil {
-		return err
-	}
-	if len(args) == 0 {
-		return fmt.Errorf("usage: minik8s get pods|services|nodes [-n namespace]")
-	}
-	if args[0] == "services" || args[0] == "svc" {
-		return a.getServices(ctx, client, args[1:], out)
-	}
-	if args[0] == "nodes" || args[0] == "node" {
-		return a.getNodes(ctx, client, out)
-	}
-	if args[0] != "pods" {
-		return fmt.Errorf("usage: minik8s get pods|services|nodes [-n namespace]")
-	}
-	namespace := namespaceFlag(args[1:])
-	pods, err := client.ListPods(ctx, namespace)
-	if err != nil {
-		return err
-	}
-	sort.Slice(pods, func(i, j int) bool {
-		return pods[i].Name < pods[j].Name
-	})
-	if err := writef(out, "%s %s %s %s %s %s\n",
-		cliui.PadRight("POD", 31),
-		cliui.PadRight("STATUS", 18),
-		cliui.PadRight("IP", 15),
-		cliui.PadRight("UPTIME", 10),
-		cliui.PadRight("NAMESPACE", 14),
-		"LABELS",
-	); err != nil {
-		return err
-	}
-	for _, p := range pods {
-		podName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconPod, "[pod]"), p.Name)
-		status := fmt.Sprintf("%s %s", cliui.StatusIcon(p.Status.Phase), p.Status.Phase)
-		if err := writef(out, "%s %s %s %s %s %s\n",
-			cliui.PadRight(podName, 31),
-			cliui.PadRight(status, 18),
-			formatPodIP(p.Status.PodIP),
-			cliui.PadRight(formatUptime(p.Status), 10),
-			cliui.PadRight(p.Namespace, 14),
-			formatLabels(p.Labels),
-		); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 	minilog.Info("cli-delete", "start args=%v", args)
 	client, err := a.controlPlaneClient()
@@ -235,75 +186,6 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	return writes(out, cliui.SuccessLine("pod/%s deleted", name))
-}
-
-func (a *App) getServices(ctx context.Context, client *controlPlaneClient, args []string, out io.Writer) error {
-	namespace := namespaceFlag(args)
-	services, err := client.ListServices(ctx, namespace)
-	if err != nil {
-		return err
-	}
-	sort.Slice(services, func(i, j int) bool {
-		return services[i].Name < services[j].Name
-	})
-	if err := writef(out, "%s %s %s %s %s %s %s %s\n",
-		cliui.PadRight("SERVICE", 31),
-		cliui.PadRight("TYPE", 12),
-		cliui.PadRight("CLUSTER-IP", 16),
-		cliui.PadRight("PORTS", 18),
-		cliui.PadRight("ENDPOINTS", 28),
-		cliui.PadRight("SELECTOR", 22),
-		cliui.PadRight("NAMESPACE", 14),
-		"LABELS",
-	); err != nil {
-		return err
-	}
-	for _, svc := range services {
-		serviceName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[svc]"), svc.Name)
-		if err := writef(out, "%s %s %s %s %s %s %s %s\n",
-			cliui.PadRight(serviceName, 31),
-			cliui.PadRight(string(svc.Spec.Type), 12),
-			cliui.PadRight(svc.Status.ClusterIP, 16),
-			cliui.PadRight(formatServicePorts(svc), 18),
-			cliui.PadRight(formatServiceEndpoints(svc.Status.Endpoints), 28),
-			cliui.PadRight(formatServiceSelector(svc.Spec.Selector), 22),
-			cliui.PadRight(svc.Namespace, 14),
-			formatLabels(svc.Labels),
-		); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (a *App) getNodes(ctx context.Context, client *controlPlaneClient, out io.Writer) error {
-	nodes, err := client.ListNodes(ctx)
-	if err != nil {
-		return err
-	}
-	sort.Slice(nodes, func(i, j int) bool {
-		return nodes[i].Name < nodes[j].Name
-	})
-	if err := writef(out, "%s %s %s %s\n",
-		cliui.PadRight("NODE", 31),
-		cliui.PadRight("ROLE", 14),
-		cliui.PadRight("STATUS", 14),
-		"AGE",
-	); err != nil {
-		return err
-	}
-	for _, n := range nodes {
-		nodeName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[node]"), n.Name)
-		if err := writef(out, "%s %s %s %s\n",
-			cliui.PadRight(nodeName, 31),
-			cliui.PadRight(string(n.Role), 14),
-			cliui.PadRight(formatNodeStatus(n.Status), 14),
-			formatNodeAge(n),
-		); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (a *App) controlPlaneClient() (*controlPlaneClient, error) {
@@ -709,6 +591,9 @@ type netDOptions struct {
 	podCIDR     string
 	registryURL string
 	interval    time.Duration
+	vxlanID     int
+	vxlanPort   int
+	vxlanName   string
 	once        bool
 }
 
@@ -718,16 +603,19 @@ func (a *App) netd(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	agent := netagent.New(netagent.Options{
-		NodeName: options.nodeName,
-		NodeIP:   options.nodeIP,
-		PodCIDR:  options.podCIDR,
-		Registry: netregistry.NewClient(options.registryURL),
+		NodeName:  options.nodeName,
+		NodeIP:    options.nodeIP,
+		PodCIDR:   options.podCIDR,
+		VXLANID:   options.vxlanID,
+		VXLANPort: options.vxlanPort,
+		VXLANName: options.vxlanName,
+		Registry:  netregistry.NewClient(options.registryURL),
 	})
 	if options.once {
 		if err := agent.Sync(ctx); err != nil {
 			return err
 		}
-		return writes(out, cliui.SuccessLine("netd synced host-gw routes for %s", options.nodeName))
+		return writes(out, cliui.SuccessLine("netd synced VXLAN overlay for %s", options.nodeName))
 	}
 	if err := writes(out, cliui.InfoLine("netd started node=%s registry=%s", options.nodeName, options.registryURL)); err != nil {
 		return err
@@ -736,7 +624,12 @@ func (a *App) netd(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func parseNetDOptions(args []string) (netDOptions, error) {
-	options := netDOptions{interval: 5 * time.Second}
+	options := netDOptions{
+		interval:  5 * time.Second,
+		vxlanID:   42,
+		vxlanPort: 4789,
+		vxlanName: "mk8s-vxlan",
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--node-name":
@@ -773,6 +666,35 @@ func parseNetDOptions(args []string) (netDOptions, error) {
 				return options, fmt.Errorf("invalid --interval %q: %w", args[i], err)
 			}
 			options.interval = interval
+		case "--vxlan-id":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-id")
+			}
+			id, err := strconv.Atoi(args[i])
+			if err != nil || id <= 0 {
+				return options, fmt.Errorf("invalid --vxlan-id %q", args[i])
+			}
+			options.vxlanID = id
+		case "--vxlan-port":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-port")
+			}
+			port, err := strconv.Atoi(args[i])
+			if err != nil || port <= 0 || port > 65535 {
+				return options, fmt.Errorf("invalid --vxlan-port %q", args[i])
+			}
+			options.vxlanPort = port
+		case "--vxlan-name":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-name")
+			}
+			if strings.TrimSpace(args[i]) == "" {
+				return options, fmt.Errorf("invalid --vxlan-name %q", args[i])
+			}
+			options.vxlanName = args[i]
 		case "--once":
 			options.once = true
 		default:
@@ -822,6 +744,7 @@ func (a *App) kubebridge(ctx context.Context, args []string, out io.Writer) erro
 	if options.serviceSyncInterval > 0 {
 		go a.runServiceSyncLoop(ctx, options.serviceSyncInterval)
 	}
+	go a.runNodeLivenessLoop(ctx, 5*time.Second)
 	if err := writes(out, cliui.InfoLine("kubebridge listening on %s", options.listen)); err != nil {
 		return err
 	}
@@ -888,10 +811,42 @@ func (a *App) runServiceSyncLoop(ctx context.Context, interval time.Duration) {
 	}
 }
 
+func (a *App) runNodeLivenessLoop(ctx context.Context, interval time.Duration) {
+	refreshOnce := func() {
+		transitions, err := a.bridge.NodeStore().RefreshLiveness(a.bridge.NodeTTL())
+		if err != nil {
+			minilog.Warn("node-liveness-sync", "error=%v", err)
+			return
+		}
+		for _, transition := range transitions {
+			if transition.To != node.NodeUnknown {
+				continue
+			}
+			minilog.Warn("node-disconnect", "node=%s lastHeartbeat=%s", transition.Name, shortDuration(time.Since(transition.LastHeartbeat)))
+		}
+	}
+	refreshOnce()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refreshOnce()
+		}
+	}
+}
+
 type kubesailerOptions struct {
 	nodeName   string
 	kubeharbor string
+	nodeIP     string
+	podCIDR    string
 	interval   time.Duration
+	vxlanID    int
+	vxlanPort  int
+	vxlanName  string
 	once       bool
 }
 
@@ -904,10 +859,19 @@ func (a *App) kubesailer(ctx context.Context, args []string, out io.Writer) erro
 		NodeName: options.nodeName,
 		Runtime:  a.runtime,
 		Network:  a.network,
-		Client:   kubesailer.NewHTTPPodClient(options.kubeharbor, nil),
+		Client:   kubesailer.NewHTTPPodClient(options.kubeharbor, a.httpClient),
 		Interval: options.interval,
 	})
+	networkAgent, err := a.kubesailerNetworkAgent(options)
+	if err != nil {
+		return err
+	}
 	if options.once {
+		if networkAgent != nil {
+			if err := networkAgent.Sync(ctx); err != nil {
+				return err
+			}
+		}
 		if err := k.SyncOnce(ctx); err != nil {
 			return err
 		}
@@ -916,11 +880,56 @@ func (a *App) kubesailer(ctx context.Context, args []string, out io.Writer) erro
 	if err := writes(out, cliui.InfoLine("kubesailer started node=%s kubeharbor=%s", options.nodeName, options.kubeharbor)); err != nil {
 		return err
 	}
+	if networkAgent != nil {
+		return runKubesailerWithNetwork(ctx, k, networkAgent, options.interval)
+	}
 	return k.Run(ctx)
 }
 
+func (a *App) kubesailerNetworkAgent(options kubesailerOptions) (*netagent.Agent, error) {
+	if options.nodeIP == "" && options.podCIDR == "" {
+		return nil, nil
+	}
+	if options.nodeIP == "" {
+		return nil, fmt.Errorf("--node-ip is required when --pod-cidr is set")
+	}
+	if options.podCIDR == "" {
+		return nil, fmt.Errorf("--pod-cidr is required when --node-ip is set")
+	}
+	return netagent.New(netagent.Options{
+		NodeName:  options.nodeName,
+		NodeIP:    options.nodeIP,
+		PodCIDR:   options.podCIDR,
+		VXLANID:   options.vxlanID,
+		VXLANPort: options.vxlanPort,
+		VXLANName: options.vxlanName,
+		Registry:  netregistry.NewClientWithHTTPClient(options.kubeharbor, a.httpClient),
+		Runner:    a.netRunner,
+	}), nil
+}
+
+func runKubesailerWithNetwork(ctx context.Context, k *kubesailer.Kubesailer, agent *netagent.Agent, interval time.Duration) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- agent.Run(runCtx, interval)
+	}()
+	go func() {
+		errCh <- k.Run(runCtx)
+	}()
+	err := <-errCh
+	cancel()
+	return err
+}
+
 func parseKubesailerOptions(args []string) (kubesailerOptions, error) {
-	options := kubesailerOptions{interval: 5 * time.Second}
+	options := kubesailerOptions{
+		interval:  5 * time.Second,
+		vxlanID:   42,
+		vxlanPort: 4789,
+		vxlanName: "mk8s-vxlan",
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--node-name":
@@ -935,6 +944,18 @@ func parseKubesailerOptions(args []string) (kubesailerOptions, error) {
 				return options, fmt.Errorf("missing value for --kubeharbor")
 			}
 			options.kubeharbor = args[i]
+		case "--node-ip":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --node-ip")
+			}
+			options.nodeIP = args[i]
+		case "--pod-cidr":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --pod-cidr")
+			}
+			options.podCIDR = args[i]
 		case "--interval":
 			i++
 			if i >= len(args) {
@@ -945,6 +966,35 @@ func parseKubesailerOptions(args []string) (kubesailerOptions, error) {
 				return options, fmt.Errorf("invalid --interval %q: %w", args[i], err)
 			}
 			options.interval = interval
+		case "--vxlan-id":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-id")
+			}
+			id, err := strconv.Atoi(args[i])
+			if err != nil || id <= 0 {
+				return options, fmt.Errorf("invalid --vxlan-id %q", args[i])
+			}
+			options.vxlanID = id
+		case "--vxlan-port":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-port")
+			}
+			port, err := strconv.Atoi(args[i])
+			if err != nil || port <= 0 || port > 65535 {
+				return options, fmt.Errorf("invalid --vxlan-port %q", args[i])
+			}
+			options.vxlanPort = port
+		case "--vxlan-name":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-name")
+			}
+			if strings.TrimSpace(args[i]) == "" {
+				return options, fmt.Errorf("invalid --vxlan-name %q", args[i])
+			}
+			options.vxlanName = args[i]
 		case "--once":
 			options.once = true
 		default:
@@ -958,11 +1008,6 @@ func parseKubesailerOptions(args []string) (kubesailerOptions, error) {
 		return options, fmt.Errorf("--kubeharbor is required")
 	}
 	return options, nil
-}
-
-func (a *App) usage(out io.Writer) error {
-	_, err := fmt.Fprint(out, cliui.InfoLine("usage: minik8s kubebridge [--listen :18080] [--service-sync-interval 5s] | kubesailer --node-name <node> --kubeharbor <url> | apply -f <manifest.yaml> | get pods|services|nodes | delete pod|service <name> | doctor docker|network | cni init (set MINIK8S_KUBEHARBOR for apply/get/delete)"))
-	return err
 }
 
 func valueFlag(args []string, name string) (string, error) {

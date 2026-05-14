@@ -258,10 +258,12 @@ func newNetRegistryCommand(app *App, out io.Writer) *cobra.Command {
 
 func newNetDCommand(app *App, out io.Writer) *cobra.Command {
 	var nodeName, nodeIP, podCIDR, registry, interval string
+	var vxlanID, vxlanPort int
+	var vxlanName string
 	var once bool
 	cmd := &cobra.Command{
 		Use:   "netd",
-		Short: "Run the host-gw route sync agent",
+		Short: "Run the VXLAN route sync agent",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			legacy := []string{}
 			appendFlag := func(name, value string) {
@@ -269,11 +271,19 @@ func newNetDCommand(app *App, out io.Writer) *cobra.Command {
 					legacy = append(legacy, name, value)
 				}
 			}
+			appendIntFlag := func(name string, value int) {
+				if value != 0 {
+					legacy = append(legacy, name, fmt.Sprintf("%d", value))
+				}
+			}
 			appendFlag("--node-name", nodeName)
 			appendFlag("--node-ip", nodeIP)
 			appendFlag("--pod-cidr", podCIDR)
 			appendFlag("--registry", registry)
 			appendFlag("--interval", interval)
+			appendIntFlag("--vxlan-id", vxlanID)
+			appendIntFlag("--vxlan-port", vxlanPort)
+			appendFlag("--vxlan-name", vxlanName)
 			if once {
 				legacy = append(legacy, "--once")
 			}
@@ -285,6 +295,9 @@ func newNetDCommand(app *App, out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&podCIDR, "pod-cidr", "", "Pod CIDR")
 	cmd.Flags().StringVar(&registry, "registry", "", "Network registry URL")
 	cmd.Flags().StringVar(&interval, "interval", "", "Sync interval")
+	cmd.Flags().IntVar(&vxlanID, "vxlan-id", 0, "VXLAN network identifier")
+	cmd.Flags().IntVar(&vxlanPort, "vxlan-port", 0, "VXLAN UDP port")
+	cmd.Flags().StringVar(&vxlanName, "vxlan-name", "", "VXLAN device name")
 	cmd.Flags().BoolVar(&once, "once", false, "Run one sync and exit")
 	return cmd
 }
@@ -307,7 +320,9 @@ func newKubebridgeCommand(app *App, out io.Writer) *cobra.Command {
 }
 
 func newKubesailerCommand(app *App, out io.Writer) *cobra.Command {
-	var nodeName, kubeharbor, interval string
+	var nodeName, kubeharbor, nodeIP, podCIDR, interval string
+	var vxlanID, vxlanPort int
+	var vxlanName string
 	var once bool
 	cmd := &cobra.Command{
 		Use:   "kubesailer",
@@ -319,9 +334,19 @@ func newKubesailerCommand(app *App, out io.Writer) *cobra.Command {
 					legacy = append(legacy, name, value)
 				}
 			}
+			appendIntFlag := func(name string, value int) {
+				if value != 0 {
+					legacy = append(legacy, name, fmt.Sprintf("%d", value))
+				}
+			}
 			appendFlag("--node-name", nodeName)
 			appendFlag("--kubeharbor", kubeharbor)
+			appendFlag("--node-ip", nodeIP)
+			appendFlag("--pod-cidr", podCIDR)
 			appendFlag("--interval", interval)
+			appendIntFlag("--vxlan-id", vxlanID)
+			appendIntFlag("--vxlan-port", vxlanPort)
+			appendFlag("--vxlan-name", vxlanName)
 			if once {
 				legacy = append(legacy, "--once")
 			}
@@ -330,7 +355,12 @@ func newKubesailerCommand(app *App, out io.Writer) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&nodeName, "node-name", "", "Node name")
 	cmd.Flags().StringVar(&kubeharbor, "kubeharbor", "", "Kubeharbor URL")
+	cmd.Flags().StringVar(&nodeIP, "node-ip", "", "Node host IP")
+	cmd.Flags().StringVar(&podCIDR, "pod-cidr", "", "Pod CIDR")
 	cmd.Flags().StringVar(&interval, "interval", "", "Sync interval")
+	cmd.Flags().IntVar(&vxlanID, "vxlan-id", 0, "VXLAN network identifier")
+	cmd.Flags().IntVar(&vxlanPort, "vxlan-port", 0, "VXLAN UDP port")
+	cmd.Flags().StringVar(&vxlanName, "vxlan-name", "", "VXLAN device name")
 	cmd.Flags().BoolVar(&once, "once", false, "Run one sync and exit")
 	return cmd
 }

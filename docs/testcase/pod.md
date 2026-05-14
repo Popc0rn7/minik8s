@@ -1,6 +1,24 @@
 # Pod 测试用例
 
-本文档覆盖 v0.1.0 的 Pod 生命周期、状态展示、资源映射、重启策略，以及双 worker 心跳调度。双机前置步骤见 `docs/testcase/two-node.md`。
+本文档覆盖 v0.1.0 的 Pod 生命周期、状态展示、资源映射、重启策略，以及双 worker 心跳调度。双机公共启动流程见 `docs/testcase/two-node.md`。
+
+## 公共前置
+
+在 node-a 的测试终端设置一次公共变量。后续命令默认在仓库根目录执行，并复用这些环境变量；如果另开 daemon 终端，也先执行同一组变量。
+
+```bash
+export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
+```
+
+确认控制面已在 node-a 运行；`kubebridge` 是 `apply/get/delete` 和 `kubesailer` 拉取 Pod 的 API 入口，不能省略。
+
+```bash
+./minik8s version --server ${KUBEHARBOR}
+```
+
+如果从 `two-node.md` 连续执行到本文档，通常已经有 node-a/node-b 的 CNI 和 kubesailer。`POD-01` 会临时停掉 node-a 当前 kubesailer，并以禁用 CNI 的方式重启 node-a kubesailer；`POD-02` 到 `POD-04` 再恢复启用 CNI 的 kubesailer。
+
+本文默认以 root 用户执行测试命令；另开 daemon 终端时，按对应步骤重新设置需要的环境变量。
 
 ## 覆盖矩阵
 
@@ -16,14 +34,13 @@
 
 目标：验证 `kind: Pod`、metadata、container image/tag、command/args、hostPort、`apply/get/delete`。
 
-机器：node-a。此 case 使用 hostPort，建议临时禁用 CNI，避免已有 CNI 配置影响 Docker hostPort 行为。
+机器：node-a。此 case 使用 hostPort，建议临时禁用 CNI，避免已有 CNI 配置影响 Docker hostPort 行为。此 case 仍然需要 node-a 的 `kubebridge` 运行，但不需要 node-b。
 
-前置：停止 node-a 上当前 kubesailer，临时在单独终端用禁用 CNI 的环境重新启动一个 kubesailer。
+前置：停止 node-a 上当前 kubesailer，临时在 node-a 的单独终端用禁用 CNI 的环境重新启动一个 kubesailer。
 
 ```bash
 export MINIK8S_CNI_DISABLED=1
-export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
-sudo env MINIK8S_PLAIN=1 NO_COLOR=1 MINIK8S_CNI_DISABLED=1 ./minik8s kubesailer \
+./minik8s kubesailer \
   --node-name node-a \
   --kubeharbor ${KUBEHARBOR}
 ```
@@ -38,7 +55,7 @@ docker ps --filter label=minik8s.pod.name=nginx-pod
 docker inspect nginx-pod-nginx --format '{{json .Config.Image}} {{json .Config.Entrypoint}} {{json .Config.Cmd}}'
 ./minik8s delete pod nginx-pod
 sleep 6
-docker ps -a --filter label=minik8s.pod.name=nginx-pod
+docker ps -a --filter label=minik8s.pod.name=nginx-pod --format '{{.Names}} {{.Status}}'
 ```
 
 期望：
@@ -52,7 +69,7 @@ docker ps -a --filter label=minik8s.pod.name=nginx-pod
 失败排查：
 
 - `curl 127.0.0.1:8080` 失败：确认 node-a 的 kubesailer 正在运行，且没有其他进程占用 8080。
-- 删除后容器仍在：等待 kubesailer 下一轮同步，或临时执行 `sudo ./minik8s kubesailer --node-name node-a --kubeharbor ${KUBEHARBOR} --once`。
+- 删除后容器仍在：等待 kubesailer 下一轮同步，或临时执行 `./minik8s kubesailer --node-name node-a --kubeharbor ${KUBEHARBOR} --once`。
 
 清理：
 
@@ -60,7 +77,20 @@ docker ps -a --filter label=minik8s.pod.name=nginx-pod
 ./minik8s delete pod nginx-pod || true
 ```
 
-清理后停止这个临时 kubesailer，并按 `two-node.md` 重新启动启用 CNI 的 node-a kubesailer，再继续后续 CNI/Service case。
+清理后停止这个临时 kubesailer，并在 node-a kubesailer 终端恢复 CNI：
+
+```bash
+unset MINIK8S_CNI_DISABLED
+./minik8s kubesailer \
+  --node-name node-a \
+  --kubeharbor ${KUBEHARBOR}
+```
+
+确认 node-a 回到 Ready 后再继续后续 case：
+
+```bash
+./minik8s get nodes
+```
 
 ## POD-02：volume 与资源限制
 
@@ -74,6 +104,7 @@ docker ps -a --filter label=minik8s.pod.name=nginx-pod
 mkdir -p /tmp/minik8s-case-data
 rm -f /tmp/minik8s-case-data/marker
 ./minik8s apply -f manifest/testdata/pod_volume_resource.yaml
+sleep 6
 ./minik8s get pods -n demo
 cat /tmp/minik8s-case-data/marker
 docker inspect volume-resource-pod-writer --format '{{json .HostConfig.Mounts}} {{.HostConfig.NanoCpus}} {{.HostConfig.Memory}}'
@@ -108,6 +139,7 @@ rm -f /tmp/minik8s-case-data/marker
 
 ```bash
 ./minik8s apply -f manifest/testdata/pod_busybox_client.yaml
+sleep 6
 CLIENT_CID=$(docker ps -q --filter label=minik8s.pod.name=busybox-client --filter label=minik8s.container.name=client)
 docker kill "${CLIENT_CID}"
 docker inspect "${CLIENT_CID}" --format '{{.State.Status}}'
@@ -137,6 +169,8 @@ docker inspect "${CLIENT_CID}" --format '{{.State.Status}}'
 目标：验证 node-a、node-b 都能注册为 Ready；未指定 `spec.nodeName` 的 Pod 会在节点心跳后被 Kubenavigator 分配。
 
 机器：node-a 执行 CLI；node-a/node-b 的 kubesailer 都需运行。
+
+前置：node-a/node-b 均按 `two-node.md` 启动启用 CNI 的 kubesailer，且 node-a 已退出 `POD-01` 使用的 `MINIK8S_CNI_DISABLED=1` 临时模式。
 
 流程：
 
