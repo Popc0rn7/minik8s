@@ -17,6 +17,7 @@ import (
 
 	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/kubebridge/kubeharbor"
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 	"minik8s/test/mock"
@@ -470,6 +471,27 @@ func TestCLIGetNodesShowsHeartbeatNodes(t *testing.T) {
 	assert.Contains(t, out.String(), "node-a")
 	assert.Contains(t, out.String(), "Worker")
 	assert.Contains(t, out.String(), "Ready")
+}
+
+func TestCLIGetNodesShowsExpiredHeartbeatNodesUnknown(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	now := time.Unix(100, 0)
+	nodeStore := store.NewInMemoryNodeStore()
+	nodeStore.SetNow(func() time.Time { return now })
+	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}))
+	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: nodeStore,
+		NodeTTL:   30 * time.Second,
+	}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"get", "nodes"}, &out))
+
+	assert.Contains(t, out.String(), "node-a")
+	assert.Contains(t, out.String(), "Unknown")
+	assert.NotContains(t, out.String(), "Ready")
 }
 
 func TestCLIDoctorNetworkShowsCNIPaths(t *testing.T) {

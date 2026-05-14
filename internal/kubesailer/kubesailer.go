@@ -75,7 +75,6 @@ func (k *Kubesailer) SyncOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	minilog.Info("kubesailer-sync", "node=%s assigned=%d", k.nodeName, len(desired))
 	desiredByKey := make(map[string]*pod.Pod, len(desired))
 	syncPods := make([]*pod.Pod, 0, len(desired))
 	for _, p := range desired {
