@@ -221,9 +221,21 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 		return
 	}
+	if err := s.refreshNodeLiveness(); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	shouldLogConnect, err := s.shouldLogNodeConnect(nodeName)
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
 	if err := s.nodes.UpsertHeartbeat(nodeName); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
+	}
+	if shouldLogConnect {
+		minilog.Info("node-connect", "node=%s", nodeName)
 	}
 	if err := s.scheduleUnassignedPods(); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
@@ -241,13 +253,16 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 		}
 	}
 	sortPods(items)
-	minilog.Info("node-heartbeat", "node=%s assigned=%d", nodeName, len(items))
 	writeJSON(w, http.StatusOK, map[string]any{"kind": "PodList", "apiVersion": "v1", "items": items})
 }
 
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string) {
 	if r.Method != http.MethodGet {
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	if err := s.refreshNodeLiveness(); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
 	if name == "" {
@@ -438,6 +453,22 @@ func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (
 func (s *Server) syncServices(ctx context.Context) error {
 	ctrl := kubecaptain.NewServiceKubecaptain(s.pods, s.services, s.proxy)
 	return ctrl.Sync(ctx)
+}
+
+func (s *Server) refreshNodeLiveness() error {
+	_, err := s.nodes.RefreshLiveness(s.nodeTTL)
+	return err
+}
+
+func (s *Server) shouldLogNodeConnect(nodeName string) (bool, error) {
+	n, err := s.nodes.Get(nodeName)
+	if err == nil {
+		return n.Status != node.NodeReady, nil
+	}
+	if errors.Is(err, store.ErrNodeNotFound) {
+		return true, nil
+	}
+	return false, err
 }
 
 func (s *Server) schedulePodIfPossible(p *pod.Pod) error {

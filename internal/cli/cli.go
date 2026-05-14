@@ -822,6 +822,7 @@ func (a *App) kubebridge(ctx context.Context, args []string, out io.Writer) erro
 	if options.serviceSyncInterval > 0 {
 		go a.runServiceSyncLoop(ctx, options.serviceSyncInterval)
 	}
+	go a.runNodeLivenessLoop(ctx, 5*time.Second)
 	if err := writes(out, cliui.InfoLine("kubebridge listening on %s", options.listen)); err != nil {
 		return err
 	}
@@ -884,6 +885,33 @@ func (a *App) runServiceSyncLoop(ctx context.Context, interval time.Duration) {
 			return
 		case <-ticker.C:
 			syncOnce()
+		}
+	}
+}
+
+func (a *App) runNodeLivenessLoop(ctx context.Context, interval time.Duration) {
+	refreshOnce := func() {
+		transitions, err := a.bridge.NodeStore().RefreshLiveness(a.bridge.NodeTTL())
+		if err != nil {
+			minilog.Warn("node-liveness-sync", "error=%v", err)
+			return
+		}
+		for _, transition := range transitions {
+			if transition.To != node.NodeUnknown {
+				continue
+			}
+			minilog.Warn("node-disconnect", "node=%s lastHeartbeat=%s", transition.Name, shortDuration(time.Since(transition.LastHeartbeat)))
+		}
+	}
+	refreshOnce()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refreshOnce()
 		}
 	}
 }

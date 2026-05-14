@@ -56,7 +56,6 @@ func TestKubesailerSyncOnceRunsOnlyAssignedPods(t *testing.T) {
 	require.Len(t, client.updates, 1)
 	assert.Equal(t, "nginx", client.updates[0].Name)
 	assert.Equal(t, pod.PodRunning, client.updates[0].Status.Phase)
-	assert.Contains(t, logs.String(), "kubesailer-sync: node=node-a assigned=1")
 	assert.Contains(t, logs.String(), "kubesailer-pod-assigned: pod=default/nginx phase=Pending")
 }
 

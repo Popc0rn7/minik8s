@@ -19,9 +19,17 @@ var ErrNodeNotFound = errors.New("node not found")
 type NodeStore interface {
 	Upsert(n *node.Node) error
 	UpsertHeartbeat(name string) error
+	RefreshLiveness(ttl time.Duration) ([]NodeTransition, error)
 	Get(name string) (*node.Node, error)
 	List() ([]node.Node, error)
 	ListReady(ttl time.Duration) ([]node.Node, error)
+}
+
+type NodeTransition struct {
+	Name          string
+	From          node.NodeStatus
+	To            node.NodeStatus
+	LastHeartbeat time.Time
 }
 
 type InMemoryNodeStore struct {
@@ -70,6 +78,12 @@ func (s *InMemoryNodeStore) UpsertHeartbeat(name string) error {
 	}
 	s.nodes[n.Name] = n
 	return nil
+}
+
+func (s *InMemoryNodeStore) RefreshLiveness(ttl time.Duration) ([]NodeTransition, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return refreshNodeLiveness(s.nodes, s.now(), ttl), nil
 }
 
 func (s *InMemoryNodeStore) Get(name string) (*node.Node, error) {
@@ -155,6 +169,19 @@ func (s *FileNodeStore) UpsertHeartbeat(name string) error {
 	}
 	s.nodes[n.Name] = n
 	return s.saveLocked()
+}
+
+func (s *FileNodeStore) RefreshLiveness(ttl time.Duration) ([]NodeTransition, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadLocked(); err != nil {
+		return nil, err
+	}
+	transitions := refreshNodeLiveness(s.nodes, s.now(), ttl)
+	if len(transitions) == 0 {
+		return transitions, nil
+	}
+	return transitions, s.saveLocked()
 }
 
 func (s *FileNodeStore) Get(name string) (*node.Node, error) {
@@ -295,6 +322,32 @@ func filterReadyNodes(nodes []node.Node, now time.Time, ttl time.Duration) []nod
 		result = append(result, n)
 	}
 	return result
+}
+
+func refreshNodeLiveness(nodes map[string]*node.Node, now time.Time, ttl time.Duration) []NodeTransition {
+	if ttl <= 0 {
+		return nil
+	}
+	transitions := make([]NodeTransition, 0)
+	for _, n := range nodes {
+		if n == nil || n.Status != node.NodeReady || n.LastHeartbeat.IsZero() {
+			continue
+		}
+		if now.Sub(n.LastHeartbeat) <= ttl {
+			continue
+		}
+		transitions = append(transitions, NodeTransition{
+			Name:          n.Name,
+			From:          n.Status,
+			To:            node.NodeUnknown,
+			LastHeartbeat: n.LastHeartbeat,
+		})
+		n.Status = node.NodeUnknown
+	}
+	sort.Slice(transitions, func(i, j int) bool {
+		return transitions[i].Name < transitions[j].Name
+	})
+	return transitions
 }
 
 func copyLabels(labels map[string]string) map[string]string {

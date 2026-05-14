@@ -85,3 +85,7 @@ func (k *Kubebridge) ServiceProxy() kubeproxy.Proxy {
 func (k *Kubebridge) NodeStore() store.NodeStore {
 	return k.nodeStore
 }
+
+func (k *Kubebridge) NodeTTL() time.Duration {
+	return k.nodeTTL
+}

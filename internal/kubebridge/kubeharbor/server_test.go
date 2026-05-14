@@ -8,12 +8,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/minilog"
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 )
@@ -252,7 +254,68 @@ func TestKubeharborGetNode(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"name":"node-a"`)
 }
 
-func TestKubeharborLogsNodePollAndPodStatusUpdate(t *testing.T) {
+func TestKubeharborListNodesRefreshesExpiredNodesToUnknown(t *testing.T) {
+	now := time.Unix(100, 0)
+	nodeStore := store.NewInMemoryNodeStore()
+	nodeStore.SetNow(func() time.Time { return now })
+	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}))
+	srv := New(Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: nodeStore,
+		NodeTTL:   30 * time.Second,
+	})
+
+	rec := serve(t, srv, http.MethodGet, "/api/v1/nodes", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"name":"node-a"`)
+	assert.Contains(t, rec.Body.String(), `"status":"Unknown"`)
+}
+
+func TestKubeharborLogsNodeConnectOnlyOnStateTransition(t *testing.T) {
+	var logs bytes.Buffer
+	restore := minilog.SetOutput(&logs)
+	defer restore()
+	now := time.Unix(100, 0)
+	nodeStore := store.NewInMemoryNodeStore()
+	nodeStore.SetNow(func() time.Time { return now })
+	srv := New(Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: nodeStore,
+	})
+
+	first := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
+	require.Equal(t, http.StatusOK, first.Code)
+	second := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
+	require.Equal(t, http.StatusOK, second.Code)
+
+	assert.Equal(t, 1, strings.Count(logs.String(), "node-connect: node=node-a"))
+	assert.NotContains(t, logs.String(), "node-heartbeat")
+}
+
+func TestKubeharborLogsNodeReconnectFromUnknown(t *testing.T) {
+	var logs bytes.Buffer
+	restore := minilog.SetOutput(&logs)
+	defer restore()
+	now := time.Unix(100, 0)
+	nodeStore := store.NewInMemoryNodeStore()
+	nodeStore.SetNow(func() time.Time { return now })
+	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeUnknown, LastHeartbeat: now.Add(-time.Minute)}))
+	srv := New(Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: nodeStore,
+	})
+
+	rec := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, 1, strings.Count(logs.String(), "node-connect: node=node-a"))
+	got, err := nodeStore.Get("node-a")
+	require.NoError(t, err)
+	assert.Equal(t, node.NodeReady, got.Status)
+}
+
+func TestKubeharborLogsPodStatusUpdate(t *testing.T) {
 	var logs bytes.Buffer
 	restore := minilog.SetOutput(&logs)
 	defer restore()
@@ -273,7 +336,6 @@ func TestKubeharborLogsNodePollAndPodStatusUpdate(t *testing.T) {
 	update := serve(t, srv, http.MethodPut, "/api/v1/namespaces/default/pods/nginx/status", string(data))
 	require.Equal(t, http.StatusOK, update.Code)
 
-	assert.Contains(t, logs.String(), "node-heartbeat: node=node-a assigned=1")
 	assert.Contains(t, logs.String(), "pod-status-update: node=node-a pod=default/nginx phase=Running")
 }
 
