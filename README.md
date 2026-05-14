@@ -20,10 +20,9 @@ assigned Pods.
 - List Pod name, status, IP, uptime, namespace, and labels.
 - Delete Pod desired state from the control plane; kubesailer cleans up local containers.
 - Restart crashed containers according to `restartPolicy`.
-- CLI logs use Nerd Font status icons and tree guides, for example
+- CLI logs use Nerd Font status icons, ANSI styling, and tree guides, for example
   `22:38:02 INFO  󰋽  cli-delete: start pod=default/nginx-pod`.
-  Set `MINIK8S_PLAIN=1` for ASCII output, or `NO_COLOR=1` to keep icons
-  while disabling ANSI color. Image pull falls back to `docker pull`.
+  Image pull falls back to `docker pull`.
 
 Control-plane code lives under `internal/kubebridge/`: the exported
 Kubebridge kernel owns the long-running control-plane service, with Kubeharbor,
@@ -32,7 +31,6 @@ file-backed state, kubecaptains, and kubenavigator kept as internal components.
 ```bash
 make build
 ./minik8s cni init
-go build -o .minik8s/cni/bin/minik8s-bridge ./cmd/minik8s-bridge
 export MINIK8S_KUBEHARBOR=http://127.0.0.1:18080
 ./minik8s kubebridge --listen :18080
 ```
@@ -40,7 +38,7 @@ export MINIK8S_KUBEHARBOR=http://127.0.0.1:18080
 In another shell on a worker node:
 
 ```bash
-sudo ./minik8s kubesailer --node-name node-a --kubeharbor http://127.0.0.1:18080
+./minik8s kubesailer --node-name node-a --kubeharbor http://127.0.0.1:18080
 ```
 
 In a third shell on the control node:

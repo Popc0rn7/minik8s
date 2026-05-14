@@ -16,6 +16,7 @@ import (
 	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/minilog"
 	"minik8s/internal/node"
+	"minik8s/internal/netregistry"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 )
@@ -92,6 +93,24 @@ func TestKubeharborDiscoveryIncludesServices(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"name":"pods"`)
 	assert.Contains(t, rec.Body.String(), `"name":"services"`)
 	assert.Contains(t, rec.Body.String(), `"name":"nodes"`)
+}
+
+func TestKubeharborServesNetRegistryNodesEndpoint(t *testing.T) {
+	srv := newTestServer()
+	body := `{"name":"node-a","nodeIP":"192.168.1.8","podCIDR":"10.244.0.0/24"}`
+
+	register := serve(t, srv, http.MethodPost, "/nodes", body)
+	require.Equal(t, http.StatusNoContent, register.Code, register.Body.String())
+
+	list := serve(t, srv, http.MethodGet, "/nodes", "")
+	require.Equal(t, http.StatusOK, list.Code, list.Body.String())
+	var nodes []netregistry.Node
+	require.NoError(t, json.Unmarshal(list.Body.Bytes(), &nodes))
+	require.Len(t, nodes, 1)
+	assert.Equal(t, "node-a", nodes[0].Name)
+	assert.Equal(t, "192.168.1.8", nodes[0].NodeIP)
+	assert.Equal(t, "10.244.0.0/24", nodes[0].PodCIDR)
+	assert.NotZero(t, nodes[0].UpdatedAt)
 }
 
 func TestKubeharborPodCRUDLogsControlPlaneEvents(t *testing.T) {

@@ -307,7 +307,7 @@ func newKubebridgeCommand(app *App, out io.Writer) *cobra.Command {
 }
 
 func newKubesailerCommand(app *App, out io.Writer) *cobra.Command {
-	var nodeName, kubeharbor, interval string
+	var nodeName, kubeharbor, nodeIP, podCIDR, interval string
 	var once bool
 	cmd := &cobra.Command{
 		Use:   "kubesailer",
@@ -321,6 +321,8 @@ func newKubesailerCommand(app *App, out io.Writer) *cobra.Command {
 			}
 			appendFlag("--node-name", nodeName)
 			appendFlag("--kubeharbor", kubeharbor)
+			appendFlag("--node-ip", nodeIP)
+			appendFlag("--pod-cidr", podCIDR)
 			appendFlag("--interval", interval)
 			if once {
 				legacy = append(legacy, "--once")
@@ -330,6 +332,8 @@ func newKubesailerCommand(app *App, out io.Writer) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&nodeName, "node-name", "", "Node name")
 	cmd.Flags().StringVar(&kubeharbor, "kubeharbor", "", "Kubeharbor URL")
+	cmd.Flags().StringVar(&nodeIP, "node-ip", "", "Node host IP")
+	cmd.Flags().StringVar(&podCIDR, "pod-cidr", "", "Pod CIDR")
 	cmd.Flags().StringVar(&interval, "interval", "", "Sync interval")
 	cmd.Flags().BoolVar(&once, "once", false, "Run one sync and exit")
 	return cmd

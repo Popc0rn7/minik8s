@@ -328,6 +328,69 @@ func TestNetDOptionsRequireNodeName(t *testing.T) {
 	assert.Contains(t, err.Error(), "--node-name is required")
 }
 
+func TestKubesailerOptionsParseNetworkConfig(t *testing.T) {
+	options, err := parseKubesailerOptions([]string{
+		"--node-name", "node-a",
+		"--kubeharbor", "http://192.168.1.8:18080",
+		"--node-ip", "192.168.1.8",
+		"--pod-cidr", "10.244.0.0/24",
+		"--interval", "2s",
+		"--once",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "node-a", options.nodeName)
+	assert.Equal(t, "http://192.168.1.8:18080", options.kubeharbor)
+	assert.Equal(t, "192.168.1.8", options.nodeIP)
+	assert.Equal(t, "10.244.0.0/24", options.podCIDR)
+	assert.Equal(t, 2*time.Second, options.interval)
+	assert.True(t, options.once)
+}
+
+func TestKubesailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {
+	var registered map[string]string
+	httpClient := &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		rec := httptestResponseRecorder(req)
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/nodes/node-a/pods":
+			_ = json.NewEncoder(rec).Encode(map[string]any{"items": []any{}})
+		case req.Method == http.MethodPost && req.URL.Path == "/nodes":
+			require.NoError(t, json.NewDecoder(req.Body).Decode(&registered))
+			rec.WriteHeader(http.StatusNoContent)
+		case req.Method == http.MethodGet && req.URL.Path == "/nodes":
+			_ = json.NewEncoder(rec).Encode([]any{})
+		default:
+			rec.WriteHeader(http.StatusNotFound)
+		}
+		return rec.Result(), nil
+	})}
+	app := New(Config{
+		Runtime:    mock.NewMockRuntime(),
+		Store:      store.NewInMemoryPodStore(),
+		HTTPClient: httpClient,
+		NetRunner: func(name string, args ...string) error {
+			return nil
+		},
+	})
+	var out bytes.Buffer
+
+	err := app.Run(context.Background(), []string{
+		"kubesailer",
+		"--node-name", "node-a",
+		"--kubeharbor", "http://minik8s.test",
+		"--node-ip", "192.168.1.8",
+		"--pod-cidr", "10.244.0.0/24",
+		"--once",
+	}, &out)
+
+	require.NoError(t, err)
+	require.NotNil(t, registered)
+	assert.Equal(t, "node-a", registered["name"])
+	assert.Equal(t, "192.168.1.8", registered["nodeIP"])
+	assert.Equal(t, "10.244.0.0/24", registered["podCIDR"])
+	assert.Contains(t, out.String(), "kubesailer synced node=node-a")
+}
+
 func TestNetRegistryOptionsUseDefaults(t *testing.T) {
 	options, err := parseNetRegistryOptions(nil)
 
