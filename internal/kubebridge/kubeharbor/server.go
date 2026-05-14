@@ -19,6 +19,7 @@ import (
 	"minik8s/internal/kubebridge/kubenavigator"
 	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
+	"minik8s/internal/netregistry"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
@@ -32,6 +33,7 @@ type Config struct {
 	Kubenavigator kubenavigator.Kubenavigator
 	ServiceProxy  kubeproxy.Proxy
 	NodeTTL       time.Duration
+	NetRegistry   *netregistry.Store
 }
 
 type Server struct {
@@ -41,6 +43,7 @@ type Server struct {
 	kubenavigator kubenavigator.Kubenavigator
 	proxy         kubeproxy.Proxy
 	nodeTTL       time.Duration
+	netRegistry   *netregistry.Store
 }
 
 func New(config Config) *Server {
@@ -64,6 +67,10 @@ func New(config Config) *Server {
 	if nodeTTL == 0 {
 		nodeTTL = kubenavigator.DefaultNodeTTL
 	}
+	netRegistryStore := config.NetRegistry
+	if netRegistryStore == nil {
+		netRegistryStore = netregistry.NewStore(time.Minute)
+	}
 	return &Server{
 		pods:          podStore,
 		services:      serviceStore,
@@ -71,6 +78,7 @@ func New(config Config) *Server {
 		kubenavigator: podKubenavigator,
 		proxy:         config.ServiceProxy,
 		nodeTTL:       nodeTTL,
+		netRegistry:   netRegistryStore,
 	}
 }
 
@@ -107,6 +115,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"verbs":      []string{"get", "list"},
 			}},
 		})
+	case r.URL.Path == "/nodes":
+		s.handleNetRegistryNodes(w, r)
 	case len(parts) == 3 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes":
 		s.handleNodes(w, r, "")
 	case len(parts) == 4 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes" && parts[3] != "":
@@ -125,6 +135,27 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("path %q not found", r.URL.Path))
+	}
+}
+
+func (s *Server) handleNetRegistryNodes(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.netRegistry.List())
+	case http.MethodPost:
+		var n netregistry.Node
+		if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("decode node: %v", err))
+			return
+		}
+		if err := s.netRegistry.Register(n); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		minilog.Info("net-node-register", "node=%s nodeIP=%s podCIDR=%s", n.Name, n.NodeIP, n.PodCIDR)
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 	}
 }
 

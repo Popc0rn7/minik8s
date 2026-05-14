@@ -14,7 +14,7 @@ docker version
 which ip
 which iptables
 which nsenter
-sudo iptables-save -t nat >/tmp/minik8s-iptables-a.txt
+iptables-save -t nat >/tmp/minik8s-iptables-a.txt
 ```
 
 在 node-b：
@@ -25,7 +25,7 @@ docker version
 which ip
 which iptables
 which nsenter
-sudo iptables-save -t nat >/tmp/minik8s-iptables-b.txt
+iptables-save -t nat >/tmp/minik8s-iptables-b.txt
 ```
 
 期望：
@@ -33,12 +33,12 @@ sudo iptables-save -t nat >/tmp/minik8s-iptables-b.txt
 - 两台机器互 ping 成功。
 - Docker client/server 正常。
 - `ip`、`iptables`、`nsenter` 均存在。
-- `iptables-save` 可用，说明 sudo 权限足够。
+- `iptables-save` 可用，说明网络规则检查能力正常。
 
 失败排查：
 
 - ping 失败时先修复局域网、防火墙或 VM 网络模式。
-- Docker 失败时确认当前用户可访问 Docker daemon，或后续命令统一使用 `sudo`。
+- Docker 失败时确认 Docker daemon 正常运行，且当前 root 环境可访问。
 
 ## 构建二进制
 
@@ -57,20 +57,20 @@ make build
 
 ```bash
 unset MINIK8S_CNI_DISABLED
-sudo env MINIK8S_PLAIN=1 NO_COLOR=1 ./minik8s cni init \
+./minik8s cni init \
   --pod-cidr ${POD_CIDR_A} \
   --gateway 10.244.0.1
-sudo ./minik8s doctor network
+./minik8s doctor network
 ```
 
 在 node-b：
 
 ```bash
 unset MINIK8S_CNI_DISABLED
-sudo env MINIK8S_PLAIN=1 NO_COLOR=1 ./minik8s cni init \
+./minik8s cni init \
   --pod-cidr ${POD_CIDR_B} \
   --gateway 10.244.1.1
-sudo ./minik8s doctor network
+./minik8s doctor network
 ```
 
 期望：
@@ -79,7 +79,7 @@ sudo ./minik8s doctor network
 - `bridge: mk8s0`。
 - node-a 的 `podCIDR` 为 `10.244.0.0/24`，node-b 为 `10.244.1.0/24`。
 
-## 启动控制面和网络注册表
+## 启动控制面
 
 在 node-a 终端 1：
 
@@ -89,42 +89,37 @@ export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
 ./minik8s kubebridge --listen :18080 --service-sync-interval 5s
 ```
 
-在 node-a 终端 2：
-
-```bash
-./minik8s net-registry --listen :8088
-```
-
 期望：
 
 - kubebridge 输出 `kubebridge listening on :18080`。
-- net-registry 输出 `net-registry listening on :8088`。
 - node-b 可访问 `curl -fsS ${KUBEHARBOR}/version`。
+- node-b 可访问 `curl -fsS ${KUBEHARBOR}/nodes`，返回网络节点注册列表。
 
-## 启动 netd
+## 启动两个 kubesailer
 
 在 node-a 终端 3：
 
 ```bash
-sudo env MINIK8S_PLAIN=1 NO_COLOR=1 ./minik8s netd \
+./minik8s kubesailer \
   --node-name node-a \
+  --kubeharbor ${KUBEHARBOR} \
   --node-ip ${NODE_A_IP} \
-  --pod-cidr ${POD_CIDR_A} \
-  --registry ${REGISTRY}
+  --pod-cidr ${POD_CIDR_A}
 ```
 
 在 node-b 终端 1：
 
 ```bash
-sudo env MINIK8S_PLAIN=1 NO_COLOR=1 ./minik8s netd \
+./minik8s kubesailer \
   --node-name node-b \
+  --kubeharbor ${KUBEHARBOR} \
   --node-ip ${NODE_B_IP} \
-  --pod-cidr ${POD_CIDR_B} \
-  --registry ${REGISTRY}
+  --pod-cidr ${POD_CIDR_B}
 ```
 
 期望：
 
+- `kubesailer` 同时注册节点心跳、同步 assigned Pods，并通过 Kubeharbor `/nodes` 同步 host-gw route。
 - 两边 `ip route` 能看到对端 PodCIDR：
 
 ```bash
@@ -133,26 +128,8 @@ ip route | grep 10.244
 
 失败排查：
 
-- 如果没有对端 route，先确认 `REGISTRY` 指向 node-a 局域网 IP。
-- 可先执行一次 `netd --once`，便于快速暴露错误。
-
-## 启动两个 kubesailer
-
-在 node-a 终端 4：
-
-```bash
-sudo env MINIK8S_PLAIN=1 NO_COLOR=1 ./minik8s kubesailer \
-  --node-name node-a \
-  --kubeharbor ${KUBEHARBOR}
-```
-
-在 node-b 终端 2：
-
-```bash
-sudo env MINIK8S_PLAIN=1 NO_COLOR=1 ./minik8s kubesailer \
-  --node-name node-b \
-  --kubeharbor ${KUBEHARBOR}
-```
+- 如果没有对端 route，先确认 `KUBEHARBOR` 指向 node-a 局域网 IP，且 node-b 可以访问 `${KUBEHARBOR}/nodes`。
+- 可先执行一次 `kubesailer --once`，便于快速暴露错误。
 
 在 node-a 的 CLI 终端验证：
 
@@ -172,12 +149,12 @@ sudo env MINIK8S_PLAIN=1 NO_COLOR=1 ./minik8s kubesailer \
 
 ## 可选：静态 route 模式
 
-如果不运行 `net-registry/netd`，也可以在 CNI 初始化时写静态 route。
+如果启动 `kubesailer` 时不带 `--node-ip` 和 `--pod-cidr`，也可以在 CNI 初始化时写静态 route。
 
 node-a：
 
 ```bash
-sudo ./minik8s cni init \
+./minik8s cni init \
   --pod-cidr ${POD_CIDR_A} \
   --gateway 10.244.0.1 \
   --route ${POD_CIDR_B}=${NODE_B_IP}
@@ -186,10 +163,10 @@ sudo ./minik8s cni init \
 node-b：
 
 ```bash
-sudo ./minik8s cni init \
+./minik8s cni init \
   --pod-cidr ${POD_CIDR_B} \
   --gateway 10.244.1.1 \
   --route ${POD_CIDR_A}=${NODE_A_IP}
 ```
 
-v0.1.0 推荐使用 `netd`，因为 route 会周期性恢复。
+v0.1.0 推荐使用带 `--node-ip` 和 `--pod-cidr` 的 `kubesailer`，因为 route 会周期性恢复。

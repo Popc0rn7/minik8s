@@ -21,8 +21,8 @@
 安装：
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y etcd etcd-client
+apt-get update
+apt-get install -y etcd etcd-client
 which etcd
 which etcdctl
 etcd --version
@@ -34,10 +34,10 @@ etcdctl version
 创建目录和配置：
 
 ```bash
-sudo useradd --system --home /var/lib/minik8s/etcd --shell /usr/sbin/nologin etcd || true
-sudo mkdir -p /etc/etcd /var/lib/minik8s/etcd
-sudo chown -R etcd:etcd /var/lib/minik8s/etcd
-sudo tee /etc/etcd/minik8s-etcd.yaml >/dev/null <<'EOF'
+useradd --system --home /var/lib/minik8s/etcd --shell /usr/sbin/nologin etcd || true
+mkdir -p /etc/etcd /var/lib/minik8s/etcd
+chown -R etcd:etcd /var/lib/minik8s/etcd
+tee /etc/etcd/minik8s-etcd.yaml >/dev/null <<'EOF'
 name: minik8s-kubecaptain
 data-dir: /var/lib/minik8s/etcd
 
@@ -62,7 +62,7 @@ EOF
 创建 systemd service：
 
 ```bash
-sudo tee /etc/systemd/system/minik8s-etcd.service >/dev/null <<'EOF'
+tee /etc/systemd/system/minik8s-etcd.service >/dev/null <<'EOF'
 [Unit]
 Description=Minik8s local etcd
 After=network-online.target
@@ -87,9 +87,9 @@ EOF
 启动：
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now minik8s-etcd
-sudo systemctl status minik8s-etcd --no-pager
+systemctl daemon-reload
+systemctl enable --now minik8s-etcd
+systemctl status minik8s-etcd --no-pager
 curl http://127.0.0.1:2379/health
 etcdctl --endpoints=http://127.0.0.1:2379 endpoint health
 ```
@@ -101,7 +101,7 @@ etcdctl --endpoints=http://127.0.0.1:2379 endpoint health
 
 失败排查：
 
-- service 起不来：查看 `sudo journalctl -u minik8s-etcd -n 100 --no-pager`。
+- service 起不来：查看 `journalctl -u minik8s-etcd -n 100 --no-pager`。
 - `ExecStart` 路径错误：用 `which etcd` 修正 service 文件。
 
 ## ETCD-02：kubebridge 使用 etcd
@@ -115,8 +115,6 @@ etcdctl --endpoints=http://127.0.0.1:2379 endpoint health
 ```bash
 export MINIK8S_ETCD_ENDPOINTS=http://127.0.0.1:2379
 export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
-export MINIK8S_PLAIN=1
-export NO_COLOR=1
 etcdctl --endpoints="${MINIK8S_ETCD_ENDPOINTS}" del --prefix /registry
 ```
 
@@ -207,8 +205,8 @@ export MINIK8S_ETCD_ENDPOINTS=http://127.0.0.1:2379
 在 node-a 和 node-b 确认 kubesailer 仍在运行；如果已退出，重新启动：
 
 ```bash
-sudo env MINIK8S_PLAIN=1 NO_COLOR=1 ./minik8s kubesailer --node-name node-a --kubeharbor ${KUBEHARBOR}
-sudo env MINIK8S_PLAIN=1 NO_COLOR=1 ./minik8s kubesailer --node-name node-b --kubeharbor ${KUBEHARBOR}
+./minik8s kubesailer --node-name node-a --kubeharbor ${KUBEHARBOR}
+./minik8s kubesailer --node-name node-b --kubeharbor ${KUBEHARBOR}
 ```
 
 重新检查：
