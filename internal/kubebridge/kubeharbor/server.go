@@ -216,11 +216,17 @@ func (s *Server) handlePods(w http.ResponseWriter, r *http.Request, namespace st
 			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "update must target a pod")
 			return
 		}
+		existing, err := s.pods.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "pods", name)
+			return
+		}
 		p, err := readPod(r.Body, namespace, name)
 		if err != nil {
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
+		p.Status = existing.Status.DeepCopy()
 		if err := s.schedulePodIfPossible(p); err != nil {
 			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 			return

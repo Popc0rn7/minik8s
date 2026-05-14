@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -45,7 +46,7 @@ func (c *HTTPPodClient) ListAssignedPods(ctx context.Context, nodeName string) (
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list assigned pods: %s", resp.Status)
+		return nil, fmt.Errorf("list assigned pods: %s", responseError(resp))
 	}
 	var list struct {
 		Items []*pod.Pod `json:"items"`
@@ -76,7 +77,7 @@ func (c *HTTPPodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("update pod status: %s", resp.Status)
+		return fmt.Errorf("update pod status: %s", responseError(resp))
 	}
 	return nil
 }
@@ -96,7 +97,7 @@ func (c *HTTPPodClient) GetPod(ctx context.Context, name, namespace string) (*po
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("get pod: %s", resp.Status)
+		return nil, fmt.Errorf("get pod: %s", responseError(resp))
 	}
 	var p pod.Pod
 	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
@@ -119,4 +120,13 @@ func podNamespace(namespace string) string {
 		return "default"
 	}
 	return namespace
+}
+
+func responseError(resp *http.Response) string {
+	data, _ := io.ReadAll(resp.Body)
+	body := strings.TrimSpace(string(data))
+	if body == "" {
+		return resp.Status
+	}
+	return fmt.Sprintf("%s: %s", resp.Status, body)
 }

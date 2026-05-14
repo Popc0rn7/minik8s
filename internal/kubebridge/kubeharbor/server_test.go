@@ -137,6 +137,36 @@ func TestKubeharborPodCRUDLogsControlPlaneEvents(t *testing.T) {
 	assert.Contains(t, logs.String(), "pod-delete: pod=default/nginx")
 }
 
+func TestKubeharborPodSpecUpdatePreservesStatus(t *testing.T) {
+	srv := newTestServer()
+	body := `{
+		"kind":"Pod",
+		"apiVersion":"v1",
+		"metadata":{"name":"nginx","namespace":"default","labels":{"app":"nginx"}},
+		"spec":{"nodeName":"node-a","containers":[{"name":"nginx","image":"nginx","imageTag":"alpine"}]}
+	}`
+
+	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/pods", body)
+	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
+
+	status := pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.0.2", SandboxID: "sandbox-1"}
+	data, err := json.Marshal(status)
+	require.NoError(t, err)
+	updateStatus := serve(t, srv, http.MethodPut, "/api/v1/namespaces/default/pods/nginx/status", string(data))
+	require.Equal(t, http.StatusOK, updateStatus.Code, updateStatus.Body.String())
+
+	updateSpec := serve(t, srv, http.MethodPut, "/api/v1/namespaces/default/pods/nginx", body)
+	require.Equal(t, http.StatusOK, updateSpec.Code, updateSpec.Body.String())
+
+	get := serve(t, srv, http.MethodGet, "/api/v1/namespaces/default/pods/nginx", "")
+	require.Equal(t, http.StatusOK, get.Code, get.Body.String())
+	var got pod.Pod
+	require.NoError(t, json.Unmarshal(get.Body.Bytes(), &got))
+	assert.Equal(t, pod.PodRunning, got.Status.Phase)
+	assert.Equal(t, "10.244.0.2", got.Status.PodIP)
+	assert.Equal(t, "sandbox-1", got.Status.SandboxID)
+}
+
 func TestKubeharborServiceCRUD(t *testing.T) {
 	var logs bytes.Buffer
 	restore := minilog.SetOutput(&logs)
