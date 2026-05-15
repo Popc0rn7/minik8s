@@ -3,13 +3,13 @@
 Minik8s is a small Kubernetes-like lab project.
 
 Current milestone: a
-kubebridge control plane plus an independent node-local kubesailer loop for
+bridge control plane plus an independent node-local sailer loop for
 assigned Pods.
 
 - Load `kind: Pod` YAML manifests.
 - Store Pod desired state through the control plane.
-- Run assigned Pods from a separate `minik8s kubesailer` process.
-- Start Pod containers through Docker from kubesailer.
+- Run assigned Pods from a separate `minik8s sailer` process.
+- Start Pod containers through Docker from sailer.
 - Use a pause container as the Pod sandbox.
 - Share one Pod network namespace across workload containers.
 - Support command, args, ports, hostPort, volumes, CPU, and memory limits.
@@ -18,27 +18,27 @@ assigned Pods.
   `.minik8s/state/services.json`.
 - Configure Pod sandbox networking through CNI-compatible plugins.
 - List Pod name, status, IP, uptime, namespace, and labels.
-- Delete Pod desired state from the control plane; kubesailer cleans up local containers.
+- Delete Pod desired state from the control plane; sailer cleans up local containers.
 - Restart crashed containers according to `restartPolicy`.
 - CLI logs use Nerd Font status icons, ANSI styling, and tree guides, for example
   `22:38:02 INFO  󰋽  cli-delete: start pod=default/nginx-pod`.
   Image pull falls back to `docker pull`.
 
-Control-plane code lives under `internal/kubebridge/`: the exported
-Kubebridge kernel owns the long-running control-plane service, with Kubeharbor,
-file-backed state, kubecaptains, and kubenavigator kept as internal components.
+Control-plane code lives under `internal/bridge/`: the exported
+Bridge kernel owns the long-running control-plane service, with Harbor,
+file-backed state, sailers, and navigator kept as internal components.
 
 ```bash
 make build
 ./minik8s cni init
-export MINIK8S_KUBEHARBOR=http://127.0.0.1:18080
-./minik8s kubebridge --listen :18080
+export MINIK8S_HARBOR=http://127.0.0.1:18080
+./minik8s bridge --listen :18080
 ```
 
 In another shell on a worker node:
 
 ```bash
-./minik8s kubesailer --node-name node-a --kubeharbor http://127.0.0.1:18080
+./minik8s sailer --node-name node-a --harbor http://127.0.0.1:18080
 ```
 
 In a third shell on the control node:

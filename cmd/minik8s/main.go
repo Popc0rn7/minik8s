@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 
+	bridge "minik8s/internal/bridge"
+	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/cli"
 	"minik8s/internal/cliui"
-	kubebridge "minik8s/internal/kubebridge"
-	store "minik8s/internal/kubebridge/etcd"
 	"minik8s/internal/kubeproxy"
 	dockerruntime "minik8s/internal/runtime/docker"
 )
@@ -20,13 +20,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer closeStores()
-	bridge := kubebridge.New(newKubebridgeConfig(podStore, serviceStore, nodeStore))
+	controlBridge := bridge.New(newBridgeConfig(podStore, serviceStore, nodeStore))
 
 	config := cli.Config{
 		Store:        podStore,
 		ServiceStore: serviceStore,
 		NodeStore:    nodeStore,
-		Bridge:       bridge,
+		Bridge:       controlBridge,
 	}
 	if needsDockerRuntime(os.Args[1:]) {
 		runtime, err := dockerruntime.NewDockerRuntime()
@@ -55,7 +55,7 @@ func needsDockerRuntime(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	if args[0] == "kubesailer" {
+	if args[0] == "sailer" {
 		return true
 	}
 	if args[0] == "doctor" && len(args) > 1 && args[1] == "docker" {
@@ -65,7 +65,7 @@ func needsDockerRuntime(args []string) bool {
 }
 
 func openStores() (store.PodStore, store.ServiceStore, store.NodeStore, func(), error) {
-	endpoints := store.ParseEndpoints(os.Getenv("MINIK8S_ETCD_ENDPOINTS"))
+	endpoints := store.ParseEndpoints(os.Getenv("MINIK8S_LOGBOOK_ENDPOINTS"))
 	if len(endpoints) > 0 {
 		client, err := store.NewClient(endpoints)
 		if err != nil {
@@ -89,8 +89,8 @@ func openStores() (store.PodStore, store.ServiceStore, store.NodeStore, func(), 
 	return podStore, serviceStore, nodeStore, func() {}, nil
 }
 
-func newKubebridgeConfig(podStore store.PodStore, serviceStore store.ServiceStore, nodeStore store.NodeStore) kubebridge.Config {
-	config := kubebridge.Config{
+func newBridgeConfig(podStore store.PodStore, serviceStore store.ServiceStore, nodeStore store.NodeStore) bridge.Config {
+	config := bridge.Config{
 		PodStore:     podStore,
 		ServiceStore: serviceStore,
 		NodeStore:    nodeStore,

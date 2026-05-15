@@ -16,30 +16,30 @@
 
 ```mermaid
 flowchart LR
-  CLI[mkctl / minik8s CLI] --> Kubeharbor[Kubeharbor]
+  CLI[mkctl / minik8s CLI] --> Harbor[Harbor]
 
   subgraph ControlPlane[控制平面]
-    Kubeharbor --> Store[(etcd)]
-    Kubenavigator[Kubenavigator] --> Store
-    PodCtrl[Pod Kubecaptain] --> Store
-    RSCtrl[ReplicaSet Kubecaptain] --> Store
-    ServiceCtrl[Service / Endpoint Kubecaptain] --> Store
-    HPACtrl[HPA Kubecaptain] --> Store
-    DNSCtrl[DNS Kubecaptain] --> Store
+    Harbor --> Store[(etcd)]
+    Navigator[Navigator] --> Store
+    PodCtrl[Pod Sailer] --> Store
+    RSCtrl[ReplicaSet Sailer] --> Store
+    ServiceCtrl[Service / Endpoint Sailer] --> Store
+    HPACtrl[HPA Sailer] --> Store
+    DNSCtrl[DNS Sailer] --> Store
 
-    FnCtrl[Function Kubecaptain] --> Store
+    FnCtrl[Function Sailer] --> Store
     Workflow[Workflow Engine] --> Store
     Activator[Serverless Activator / Gateway] --> FnCtrl
     EventBus[(RabbitMQ)] --> Activator
   end
 
-  Kubeharbor --> NodeA
-  Kubenavigator --> NodeA
-  Kubenavigator --> NodeB
-  Kubenavigator --> NodeC
+  Harbor --> NodeA
+  Navigator --> NodeA
+  Navigator --> NodeB
+  Navigator --> NodeC
 
   subgraph NodeA[Worker Node]
-    KubesailerA[minikubesailer]
+    SailerA[minisailer]
     ProxyA[kube-proxy]
     NetdA[netd route sync]
     RuntimeA[Docker Runtime]
@@ -47,14 +47,14 @@ flowchart LR
     MetricsA[cAdvisor / Docker stats]
     PodsA[Pods / Function Pods]
 
-    KubesailerA --> RuntimeA
-    KubesailerA --> CNIA
+    SailerA --> RuntimeA
+    SailerA --> CNIA
     ProxyA --> PodsA
     MetricsA --> HPACtrl
   end
 
   subgraph NodeB[Worker Node]
-    KubesailerB[minikubesailer]
+    SailerB[minisailer]
     ProxyB[kube-proxy]
     NetdB[netd route sync]
     RuntimeB[Docker Runtime]
@@ -63,7 +63,7 @@ flowchart LR
   end
 
   subgraph NodeC[Worker Node]
-    KubesailerC[minikubesailer]
+    SailerC[minisailer]
     ProxyC[kube-proxy]
     NetdC[netd route sync]
     RuntimeC[Docker Runtime]
@@ -74,9 +74,9 @@ flowchart LR
 
 ## Key Components
 
-- **CLI / Kubeharbor**
-  - CLI 只负责解析命令、读取 YAML、向 Kubeharbor 发请求。
-  - Kubeharbor 负责对象校验、默认值填充、REST API、watch 事件和持久化。
+- **CLI / Harbor**
+  - CLI 只负责解析命令、读取 YAML、向 Harbor 发请求。
+  - Harbor 负责对象校验、默认值填充、REST API、watch 事件和持久化。
   - 支持对象：Pod、Service、ReplicaSet、HPA、DNS、Node、Function、Workflow。
 
 - **etcd Store**
@@ -84,12 +84,12 @@ flowchart LR
   - key 设计按资源划分，例如 `/registry/pods/{namespace}/{name}`。
   - 现有 file store 可作为单机开发模式保留。
 
-- **Kubenavigator**
+- **Navigator**
   - 监听 `spec.nodeName` 为空的 Pod。
   - 第一阶段使用 Round Robin / Least Pods 调度。
   - 跳过 NotReady 节点，后续可加入 CPU、Memory request 过滤。
 
-- **minikubesailer**
+- **minisailer**
   - 每个 Worker 节点运行一个。
   - 负责拉取本节点 Pod、创建 pause sandbox、启动业务容器、挂载 volume、调用 CNI、更新 Pod 状态。
   - 通过 heartbeat 向控制面汇报 Node 状态。
@@ -102,7 +102,7 @@ flowchart LR
   - 满足同节点和跨节点 Pod IP 直连。
 
 - **Service / kube-proxy**
-  - Service Kubecaptain 根据 selector 生成 endpoints。
+  - Service Sailer 根据 selector 生成 endpoints。
   - kube-proxy 在每个节点同步 ClusterIP / NodePort 转发规则。
   - 实现优先级：iptables DNAT/RR 优先，IPVS 作为增强方案。
   - Service 屏蔽 Pod 所在节点位置。
@@ -115,14 +115,14 @@ flowchart LR
 - **HPA**
   - 资源数据来自 cAdvisor 或 Docker stats。
   - 必选 CPU，第二指标建议选 Memory。
-  - HPA Kubecaptain 周期计算目标副本数，并更新 ReplicaSet `spec.replicas`。
+  - HPA Sailer 周期计算目标副本数，并更新 ReplicaSet `spec.replicas`。
   - 默认策略：每 15s 最多扩/缩 1 个副本，避免抖动。
 
 ## Serverless Extension
 
 - **Function 抽象**
   - 用户上传 Python 文件或 zip。
-  - Function Kubecaptain 将 Function 转换成运行时 Pod 模板、ReplicaSet 和 Service。
+  - Function Sailer 将 Function 转换成运行时 Pod 模板、ReplicaSet 和 Service。
   - 默认 runtime 镜像：Python + HTTP wrapper。
   - 每个函数暴露统一 HTTP invoke endpoint。
 
@@ -167,7 +167,7 @@ flowchart LR
 ## Public Interfaces
 
 - `minik8s [--server http://127.0.0.1:18080] [-n namespace] apply -f xxx.yaml`
-  - 通过 Kubeharbor 提交 Pod、Service 等声明对象；默认 server 来自 `MINIK8S_KUBEHARBOR`。
+  - 通过 Harbor 提交 Pod、Service 等声明对象；默认 server 来自 `MINIK8S_HARBOR`。
 
 - `minik8s get pods|po|services|svc|nodes|no [name] [-o table|json|yaml]`
   - 输出名称、namespace、labels、状态和关键运行信息；当前已实现 Pod、Service、Node。
@@ -179,7 +179,7 @@ flowchart LR
   - 删除声明对象，并清理关联运行状态；同时支持 `delete pod/<name>`、`delete service/<name>`。
 
 - `minik8s api-resources` / `minik8s version`
-  - 通过 Kubeharbor discovery endpoint 查看当前支持的资源和 API 版本。
+  - 通过 Harbor discovery endpoint 查看当前支持的资源和 API 版本。
 
 - `minik8s invoke function <name> --data ...`
   - HTTP 触发函数。

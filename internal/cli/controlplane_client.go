@@ -36,7 +36,7 @@ func (e controlPlaneError) Error() string {
 
 func newControlPlaneClient(baseURL string, client *http.Client) (*controlPlaneClient, error) {
 	if strings.TrimSpace(baseURL) == "" {
-		return nil, fmt.Errorf("MINIK8S_KUBEHARBOR is required for apply/get/delete")
+		return nil, fmt.Errorf("MINIK8S_HARBOR is required for apply/get/delete")
 	}
 	if client == nil {
 		client = http.DefaultClient

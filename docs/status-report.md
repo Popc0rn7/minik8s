@@ -6,9 +6,9 @@
 
 当前 Minik8s 已经不是纯玩具脚手架，已经形成了一个可测试的最小控制面和节点执行闭环：
 
-- Kubeharbor 提供 HTTP API，支持 Pod、Service、Node 的基本 CRUD/查询。
-- Kubenavigator 能把未分配 Pod 调度到 Ready Node，策略是很轻量的轮询。
-- Kubesailer 能按节点轮询 assigned Pods，创建 Docker sandbox/workload 容器，并回写 Pod status。
+- Harbor 提供 HTTP API，支持 Pod、Service、Node 的基本 CRUD/查询。
+- Navigator 能把未分配 Pod 调度到 Ready Node，策略是很轻量的轮询。
+- Sailer 能按节点轮询 assigned Pods，创建 Docker sandbox/workload 容器，并回写 Pod status。
 - Pod 生命周期、hostPort、volume、CPU/memory limit、restartPolicy、CNI bridge、Service endpoint、iptables proxy 都有代码和单元测试覆盖。
 - `go test ./...` 当前通过。
 
@@ -20,17 +20,17 @@
 
 | 模块 | 对标 Kubernetes | 当前状态 | 稳定度 | 说明 |
 | --- | --- | --- | --- | --- |
-| CLI | `kubectl` 子集 | 部分实现 | 中 | 支持 `apply/get/describe/delete/api-resources/version/doctor/cni/kubebridge/kubesailer`，仅 Pod/Service/Node。 |
-| Kubeharbor | kube-apiserver 子集 | 部分实现 | 中 | HTTP API、默认值、状态存储、status 更新可用，但没有 auth、watch、admission、resourceVersion。 |
-| Store | etcd/local store | 部分实现 | 中 | Pod/Service 支持 file store 与 etcd store；Node 主要是 file/in-memory，etcd Node store 未作为统一集群状态闭环。 |
-| Node | Node API / kubelet heartbeat | 部分实现 | 中低 | Kubesailer 通过 `/nodes/{name}/pods` 心跳注册 Ready；没有 capacity、allocatable、conditions、taints。 |
-| Kubenavigator | scheduler | 部分实现 | 中低 | 只按 Ready Node 轮询；不使用 requests、NodeSelector、亲和性、资源过滤。 |
-| Kubesailer | kubelet 子集 | 部分实现 | 中 | 能拉 assigned Pod、创建/删除容器、回写 status；没有完整 pod worker、probe、日志、exec、资源上报。 |
-| Pod Kubecaptain | kubelet pod lifecycle | 部分实现 | 中 | Docker sandbox、workload、volume、resource limit、restartPolicy 可用；probe 字段有类型但未执行。 |
+| CLI | `kubectl` 子集 | 部分实现 | 中 | 支持 `apply/get/describe/delete/api-resources/version/doctor/cni/bridge/sailer`，仅 Pod/Service/Node。 |
+| Harbor | kube-apiserver 子集 | 部分实现 | 中 | HTTP API、默认值、状态存储、status 更新可用，但没有 auth、watch、admission、resourceVersion。 |
+| Store | Logbook/local store | 部分实现 | 中 | Pod/Service/Node 支持 file store 与 etcd-backed Logbook store；没有 revision/lease 语义。 |
+| Node | Node API / kubelet heartbeat | 部分实现 | 中低 | Sailer 通过 `/nodes/{name}/pods` 心跳注册 Ready；没有 capacity、allocatable、conditions、taints。 |
+| Navigator | scheduler | 部分实现 | 中低 | 只按 Ready Node 轮询；不使用 requests、NodeSelector、亲和性、资源过滤。 |
+| Sailer | kubelet 子集 | 部分实现 | 中 | 能拉 assigned Pod、创建/删除容器、回写 status；没有完整 pod worker、probe、日志、exec、资源上报。 |
+| Pod Sailer | kubelet pod lifecycle | 部分实现 | 中 | Docker sandbox、workload、volume、resource limit、restartPolicy 可用；probe 字段有类型但未执行。 |
 | Docker runtime | CRI runtime 子集 | 部分实现 | 中 | 使用 Docker SDK，不是 CRI；pause 默认用 `alpine:3.20` 模拟。 |
-| CNI runner/plugin | CNI + bridge | 部分实现 | 中低 | 单节点 bridge、veth、IPAM、NAT 可用；跨节点可通过 kubesailer 内置 host-gw 同步或手工 route。 |
-| kubeharbor 网络注册表 + kubesailer 网络同步 | flannel host-gw 类似组件 | 部分实现 | 中低 | Kubeharbor 暴露网络节点注册表，kubesailer 通过同一控制面端口注册 node 与同步 host-gw route。 |
-| Service Kubecaptain | endpoint controller | 部分实现 | 中 | 根据 selector + Running PodIP 生成 endpoints；没有独立 EndpointSlice 对象。 |
+| CNI runner/plugin | CNI + bridge | 部分实现 | 中低 | 单节点 bridge、veth、IPAM、NAT 可用；跨节点可通过 sailer 内置 host-gw 同步或手工 route。 |
+| harbor 网络注册表 + sailer 网络同步 | flannel host-gw 类似组件 | 部分实现 | 中低 | Harbor 暴露网络节点注册表，sailer 通过同一控制面端口注册 node 与同步 host-gw route。 |
+| Service Sailer | endpoint controller | 部分实现 | 中 | 根据 selector + Running PodIP 生成 endpoints；没有独立 EndpointSlice 对象。 |
 | kube-proxy | kube-proxy iptables mode | 部分实现 | 中低 | iptables 规则生成有单测；真实运行需要 root/network 权限，主入口注入 proxy 存在风险。 |
 | ReplicaSet | replicaset-controller | 未实现 | 无 | 没有类型、API、controller。 |
 | HPA | hpa-controller + metrics | 未实现 | 无 | 没有 metrics pipeline、ReplicaSet 对接。 |
@@ -41,7 +41,7 @@
 
 ## 已部分实现的模块
 
-### 1. Kubeharbor API
+### 1. Harbor API
 
 当前支持：
 
@@ -60,8 +60,8 @@
 稳定版建议：
 
 - 保持当前 API 范围，不扩新资源。
-- 明确文档：这是 Kubeharbor API，不兼容 Kubernetes API。
-- 给所有 CLI demo 固定 `MINIK8S_KUBEHARBOR=http://127.0.0.1:18080`。
+- 明确文档：这是 Harbor API，不兼容 Kubernetes API。
+- 给所有 CLI demo 固定 `MINIK8S_HARBOR=http://127.0.0.1:18080`。
 
 ### 2. Pod 生命周期
 
@@ -78,7 +78,7 @@
 主要缺口：
 
 - readiness/liveness probe 字段存在，但没有执行。
-- Pod 删除是“删除 desired state 后由 kubesailer 下一轮清理”，不是同步删除。
+- Pod 删除是“删除 desired state 后由 sailer 下一轮清理”，不是同步删除。
 - terminal Pod 清理逻辑比较粗糙，`Succeeded/Failed` 后直接清理 runtime，但 status 与对象保留语义不完全像 Kubernetes。
 - 没有 init containers、multi-container readiness 聚合、日志/exec/cp。
 
@@ -86,15 +86,15 @@
 
 - 把 probe 标为未实现。
 - demo 只使用长期运行容器、hostPath/emptyDir、restartPolicy。
-- 增加一个“删除后等待 kubesailer 同步”的说明，避免看起来像 delete 不生效。
+- 增加一个“删除后等待 sailer 同步”的说明，避免看起来像 delete 不生效。
 
 ### 3. Node 与调度
 
 当前支持：
 
-- Kubesailer 请求 `/nodes/{node}/pods` 时自动 heartbeat。
+- Sailer 请求 `/nodes/{node}/pods` 时自动 heartbeat。
 - NodeStore 保存 Ready Node。
-- Kubeharbor 会在 Pod 创建或心跳时尝试调度未分配 Pod。
+- Harbor 会在 Pod 创建或心跳时尝试调度未分配 Pod。
 - Scheduler 按 Ready Node 轮询。
 
 主要缺口：
@@ -107,7 +107,7 @@
 稳定版建议：
 
 - 稳定版只承诺“多 worker 轮询分配”，不承诺资源感知调度。
-- 如果要演示多节点，手动启动多个 kubesailer，并手工配置每个节点 CNI/route。
+- 如果要演示多节点，手动启动多个 sailer，并手工配置每个节点 CNI/route。
 - 最好补一个很小的 bugfix：调度时尊重 `nodeSelector` 或在文档中明确不支持。
 
 ### 4. CNI 与网络
@@ -119,12 +119,12 @@
 - `minik8s-bridge` 插件创建 bridge、veth、Pod IP、默认路由、NAT。
 - IPAM 用 JSON 文件持久化 allocation。
 - 支持静态 host-gw routes。
-- Kubeharbor 内置网络注册表，带 `--node-ip`、`--pod-cidr` 的 `kubesailer` 能动态注册并同步 host-gw route。
+- Harbor 内置网络注册表，带 `--node-ip`、`--pod-cidr` 的 `sailer` 能动态注册并同步 host-gw route。
 
 主要缺口：
 
 - CNI 配置路径是项目内 `.minik8s/cni/...` 风格，不是系统级 `/etc/cni/net.d`。
-- 跨节点网络和 Kubeharbor Node API 未打通：Node 没有 NodeIP/PodCIDR 字段。
+- 跨节点网络和 Harbor Node API 未打通：Node 没有 NodeIP/PodCIDR 字段。
 - PodCIDR 分配、route 下发、CNI 配置生成需要人工维护。
 - 真实 CNI 依赖 root、`ip`、`iptables`、`nsenter`，环境敏感。
 
@@ -146,8 +146,8 @@
 
 主要缺口：
 
-- 没有独立 kube-proxy daemon；proxy 是由 ServiceKubecaptain 同步时直接调用。
-- 当前 `cmd/minik8s/main.go` 手动创建 `kubebridge.New(...)` 时没有传入 `ServiceProxy`，这会让真实 `minik8s kubebridge` 的 Service 数据面规则可能不生效，只更新 endpoints。
+- 没有独立 kube-proxy daemon；proxy 是由 ServiceSailer 同步时直接调用。
+- 当前 `cmd/minik8s/main.go` 手动创建 `bridge.New(...)` 时没有传入 `ServiceProxy`，这会让真实 `minik8s bridge` 的 Service 数据面规则可能不生效，只更新 endpoints。
 - ClusterIP 默认/分配逻辑很简化，未完整处理冲突、回收、Service CIDR。
 - 没有 sessionAffinity、externalTrafficPolicy、EndpointSlice。
 
@@ -163,13 +163,12 @@
 当前支持：
 
 - 默认本地 JSON：Pods、Services、Nodes。
-- `MINIK8S_ETCD_ENDPOINTS` 存在时 Pod/Service 使用 etcd。
-- `doctor etcd` 能探测 etcd 连接。
+- `MINIK8S_LOGBOOK_ENDPOINTS` 存在时 Pod/Service/Node 使用 etcd-backed Logbook。
+- `doctor logbook` 能探测 etcd 连接。
 - store 有单元测试。
 
 主要缺口：
 
-- Node store 没有在 `openStores()` 中接入 etcd，仍使用 file node store。
 - 没有 watch、lease、revision，因此控制器不能像 Kubernetes 那样基于 etcd revision 工作。
 - file store 靠每次 reload/save，适合 demo，不适合高并发。
 
@@ -214,16 +213,16 @@
 
 1. 固定启动流程
    - `make build`
-   - `./minik8s kubebridge --listen :18080`
-   - `./minik8s kubesailer --node-name node-a --kubeharbor http://127.0.0.1:18080`
+   - `./minik8s bridge --listen :18080`
+   - `./minik8s sailer --node-name node-a --harbor http://127.0.0.1:18080`
    - `./minik8s apply/get/delete`
 
 2. Service proxy 注入风险
-   - 修复 `cmd/minik8s/main.go` 中 `kubebridge.New` 未传入 `ServiceProxy` 的问题。
+   - 修复 `cmd/minik8s/main.go` 中 `bridge.New` 未传入 `ServiceProxy` 的问题。
    - 否则 Service 文档中的 iptables 规则演示可能无法真实生效。
 
 3. 删除语义风险
-   - `delete pod` 只删除控制面期望状态，runtime 清理由 kubesailer 下一轮执行。
+   - `delete pod` 只删除控制面期望状态，runtime 清理由 sailer 下一轮执行。
    - 文档和 demo 脚本要加等待/重试。
 
 4. 环境风险
@@ -233,7 +232,7 @@
 ### P1：把“部分实现”补到可信
 
 1. Scheduler 尊重 `nodeSelector`，或者移除/标注该字段。
-2. Node 类型补 `NodeIP`、`PodCIDR`，让 kubesailer 网络同步/CNI 和 Node API 语义统一。
+2. Node 类型补 `NodeIP`、`PodCIDR`，让 sailer 网络同步/CNI 和 Node API 语义统一。
 3. NodeStore etcd 化，避免“Pod/Service 在 etcd，Node 在 file”的混合状态。
 4. 给 Service 数据面加一个真实 smoke test 脚本，失败时能自动清理 iptables chain。
 
@@ -253,7 +252,7 @@
 必须承诺：
 
 - Pod YAML apply 后进入 Pending。
-- Kubesailer 同步后创建 Docker sandbox/workload，并回写 Running/Failed。
+- Sailer 同步后创建 Docker sandbox/workload，并回写 Running/Failed。
 - `get/describe/delete pod` 可用。
 - 容器崩溃后按 restartPolicy 重启。
 - CNI 单节点 Pod IP 分配可用。
@@ -279,14 +278,14 @@
 
 第 2 步：修最影响演示的缺口。
 
-- 给 `kubebridge` 注入默认 `ServiceProxy`，让 Service 数据面和文档一致。
+- 给 `bridge` 注入默认 `ServiceProxy`，让 Service 数据面和文档一致。
 - 或者反过来明确 stable 只保证 endpoints，iptables proxy 是实验项。
 - 给 delete demo 加 `wait until docker ps no residue` 的脚本。
 
 第 3 步：补最小一致性。
 
 - Node 加 `NodeIP`、`PodCIDR` 字段。
-- kubesailer 网络注册可以复用 Node 信息，至少文档上统一。
+- sailer 网络注册可以复用 Node 信息，至少文档上统一。
 - Scheduler 对 `nodeSelector` 做最小匹配。
 
 第 4 步：建立稳定验收脚本。
@@ -302,7 +301,7 @@ iptables ClusterIP/NodePort smoke 建议作为增强验收，不作为阻塞项�
 
 第 5 步：文档对齐实际能力。
 
-- `docs/kubeharbor-api.md` 已经比较准确，可保留。
+- `docs/harbor-api.md` 已经比较准确，可保留。
 - `docs/testcase/*.md` 可以作为测试说明，但要标出哪些需要 root、哪些只是设计映射。
 - `docs/PLAN.md` 当前像最终愿景，不像当前状态；建议追加一节 “Current Stable Scope”。
 
