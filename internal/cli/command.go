@@ -36,7 +36,7 @@ func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 	}
 	root.SetOut(out)
 	root.SetErr(out)
-	root.PersistentFlags().StringVar(&server, "server", "", "Kubeharbor API server URL")
+	root.PersistentFlags().StringVar(&server, "server", "", "Harbor API server URL")
 	root.PersistentFlags().StringVarP(&namespace, "namespace", "n", "default", "Namespace for namespaced resources")
 
 	bind := func() {
@@ -54,8 +54,8 @@ func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 	root.AddCommand(newCNICommand(app, out))
 	root.AddCommand(newNetRegistryCommand(app, out))
 	root.AddCommand(newNetDCommand(app, out))
-	root.AddCommand(newKubebridgeCommand(app, out))
-	root.AddCommand(newKubesailerCommand(app, out))
+	root.AddCommand(newBridgeCommand(app, out))
+	root.AddCommand(newSailerCommand(app, out))
 	return root
 }
 
@@ -179,7 +179,7 @@ func newAPIResourcesCommand(app *App, out io.Writer, bind func()) *cobra.Command
 func newVersionCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print Kubeharbor version",
+		Short: "Print Harbor version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bind()
@@ -198,7 +198,7 @@ func newVersionCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDoctorCommand(app *App, out io.Writer) *cobra.Command {
 	return &cobra.Command{
-		Use:   "doctor docker|network|etcd",
+		Use:   "doctor docker|network|logbook",
 		Short: "Run diagnostics",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -302,30 +302,30 @@ func newNetDCommand(app *App, out io.Writer) *cobra.Command {
 	return cmd
 }
 
-func newKubebridgeCommand(app *App, out io.Writer) *cobra.Command {
+func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 	var listen string
 	cmd := &cobra.Command{
-		Use:   "kubebridge",
+		Use:   "bridge",
 		Short: "Run the control plane",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			legacy := []string{}
 			if listen != "" {
 				legacy = append(legacy, "--listen", listen)
 			}
-			return app.kubebridge(cmd.Context(), legacy, out)
+			return app.bridge(cmd.Context(), legacy, out)
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", "", "Listen address")
 	return cmd
 }
 
-func newKubesailerCommand(app *App, out io.Writer) *cobra.Command {
-	var nodeName, kubeharbor, nodeIP, podCIDR, interval string
+func newSailerCommand(app *App, out io.Writer) *cobra.Command {
+	var nodeName, harbor, nodeIP, podCIDR, interval string
 	var vxlanID, vxlanPort int
 	var vxlanName string
 	var once bool
 	cmd := &cobra.Command{
-		Use:   "kubesailer",
+		Use:   "sailer",
 		Short: "Run the worker node agent",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			legacy := []string{}
@@ -340,7 +340,7 @@ func newKubesailerCommand(app *App, out io.Writer) *cobra.Command {
 				}
 			}
 			appendFlag("--node-name", nodeName)
-			appendFlag("--kubeharbor", kubeharbor)
+			appendFlag("--harbor", harbor)
 			appendFlag("--node-ip", nodeIP)
 			appendFlag("--pod-cidr", podCIDR)
 			appendFlag("--interval", interval)
@@ -350,11 +350,11 @@ func newKubesailerCommand(app *App, out io.Writer) *cobra.Command {
 			if once {
 				legacy = append(legacy, "--once")
 			}
-			return app.kubesailer(cmd.Context(), legacy, out)
+			return app.sailer(cmd.Context(), legacy, out)
 		},
 	}
 	cmd.Flags().StringVar(&nodeName, "node-name", "", "Node name")
-	cmd.Flags().StringVar(&kubeharbor, "kubeharbor", "", "Kubeharbor URL")
+	cmd.Flags().StringVar(&harbor, "harbor", "", "Harbor URL")
 	cmd.Flags().StringVar(&nodeIP, "node-ip", "", "Node host IP")
 	cmd.Flags().StringVar(&podCIDR, "pod-cidr", "", "Pod CIDR")
 	cmd.Flags().StringVar(&interval, "interval", "", "Sync interval")

@@ -1,10 +1,10 @@
 MINIK8S ?= ./minik8s
 CNI_PLUGIN ?= .minik8s/cni/bin/minik8s-bridge
-KUBEHARBOR ?= http://127.0.0.1:18080
-CTL ?= env MINIK8S_KUBEHARBOR=$(KUBEHARBOR) $(MINIK8S)
+HARBOR ?= http://127.0.0.1:18080
+CTL ?= env MINIK8S_HARBOR=$(HARBOR) $(MINIK8S)
 RUN ?= $(MINIK8S)
 
-.PHONY: build test kubebridge kubesailer-once kubesailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
+.PHONY: build test bridge sailer-once sailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
 
 build:
 	go build -o $(MINIK8S) ./cmd/minik8s
@@ -13,14 +13,14 @@ build:
 test:
 	go test ./...
 
-kubebridge: build
-	$(MINIK8S) kubebridge --listen :18080
+bridge: build
+	$(MINIK8S) bridge --listen :18080
 
-kubesailer-once: build
-	$(RUN) kubesailer --node-name $(or $(NODE_NAME),node-a) --kubeharbor $(KUBEHARBOR) $(if $(NODE_IP),--node-ip $(NODE_IP),) $(if $(POD_CIDR),--pod-cidr $(POD_CIDR),) --once
+sailer-once: build
+	$(RUN) sailer --node-name $(or $(NODE_NAME),node-a) --harbor $(HARBOR) $(if $(NODE_IP),--node-ip $(NODE_IP),) $(if $(POD_CIDR),--pod-cidr $(POD_CIDR),) --once
 
-kubesailer: build
-	$(RUN) kubesailer --node-name $(or $(NODE_NAME),node-a) --kubeharbor $(KUBEHARBOR) $(if $(NODE_IP),--node-ip $(NODE_IP),) $(if $(POD_CIDR),--pod-cidr $(POD_CIDR),)
+sailer: build
+	$(RUN) sailer --node-name $(or $(NODE_NAME),node-a) --harbor $(HARBOR) $(if $(NODE_IP),--node-ip $(NODE_IP),) $(if $(POD_CIDR),--pod-cidr $(POD_CIDR),)
 
 cni-init: build
 	$(RUN) cni init

@@ -7,16 +7,16 @@
 在 node-a 的测试终端设置一次公共变量。后续命令默认在仓库根目录执行，并复用这些环境变量；如果另开 daemon 终端，也先执行同一组变量。
 
 ```bash
-export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
+export MINIK8S_HARBOR=${HARBOR}
 ```
 
-确认控制面已在 node-a 运行；`kubebridge` 是 `apply/get/delete` 和 `kubesailer` 拉取 Pod 的 API 入口，不能省略。
+确认控制面已在 node-a 运行；`bridge` 是 `apply/get/delete` 和 `sailer` 拉取 Pod 的 API 入口，不能省略。
 
 ```bash
-./minik8s version --server ${KUBEHARBOR}
+./minik8s version --server ${HARBOR}
 ```
 
-如果从 `two-node.md` 连续执行到本文档，通常已经有 node-a/node-b 的 CNI 和 kubesailer。`POD-01` 会临时停掉 node-a 当前 kubesailer，并以禁用 CNI 的方式重启 node-a kubesailer；`POD-02` 到 `POD-05` 再恢复启用 CNI 的 kubesailer。
+如果从 `two-node.md` 连续执行到本文档，通常已经有 node-a/node-b 的 CNI 和 sailer。`POD-01` 会临时停掉 node-a 当前 sailer，并以禁用 CNI 的方式重启 node-a sailer；`POD-02` 到 `POD-05` 再恢复启用 CNI 的 sailer。
 
 本文默认以 root 用户执行测试命令；另开 daemon 终端时，按对应步骤重新设置需要的环境变量。
 
@@ -35,15 +35,15 @@ export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
 
 目标：验证 `kind: Pod`、metadata、container image/tag、command/args、hostPort、`apply/get/delete`。
 
-机器：node-a。此 case 使用 hostPort，建议临时禁用 CNI，避免已有 CNI 配置影响 Docker hostPort 行为。此 case 仍然需要 node-a 的 `kubebridge` 运行，但不需要 node-b。
+机器：node-a。此 case 使用 hostPort，建议临时禁用 CNI，避免已有 CNI 配置影响 Docker hostPort 行为。此 case 仍然需要 node-a 的 `bridge` 运行，但不需要 node-b。
 
-前置：停止 node-a 上当前 kubesailer，临时在 node-a 的单独终端用禁用 CNI 的环境重新启动一个 kubesailer。
+前置：停止 node-a 上当前 sailer，临时在 node-a 的单独终端用禁用 CNI 的环境重新启动一个 sailer。
 
 ```bash
 export MINIK8S_CNI_DISABLED=1
-./minik8s kubesailer \
+./minik8s sailer \
   --node-name node-a \
-  --kubeharbor ${KUBEHARBOR}
+  --harbor ${HARBOR}
 ```
 
 流程：
@@ -69,8 +69,8 @@ docker ps -a --filter label=minik8s.pod.name=nginx-pod --format '{{.Names}} {{.S
 
 失败排查：
 
-- `curl 127.0.0.1:8080` 失败：确认 node-a 的 kubesailer 正在运行，且没有其他进程占用 8080。
-- 删除后容器仍在：等待 kubesailer 下一轮同步，或临时执行 `./minik8s kubesailer --node-name node-a --kubeharbor ${KUBEHARBOR} --once`。
+- `curl 127.0.0.1:8080` 失败：确认 node-a 的 sailer 正在运行，且没有其他进程占用 8080。
+- 删除后容器仍在：等待 sailer 下一轮同步，或临时执行 `./minik8s sailer --node-name node-a --harbor ${HARBOR} --once`。
 
 清理：
 
@@ -78,13 +78,13 @@ docker ps -a --filter label=minik8s.pod.name=nginx-pod --format '{{.Names}} {{.S
 ./minik8s delete pod nginx-pod || true
 ```
 
-清理后停止这个临时 kubesailer，并在 node-a kubesailer 终端恢复 CNI：
+清理后停止这个临时 sailer，并在 node-a sailer 终端恢复 CNI：
 
 ```bash
 unset MINIK8S_CNI_DISABLED
-./minik8s kubesailer \
+./minik8s sailer \
   --node-name node-a \
-  --kubeharbor ${KUBEHARBOR}
+  --harbor ${HARBOR}
 ```
 
 确认 node-a 回到 Ready 后再继续后续 case：
@@ -132,7 +132,7 @@ rm -f /tmp/minik8s-case-data/marker
 
 ## POD-03：崩溃后重启
 
-目标：验证 `restartPolicy: Always` 下容器退出后，kubesailer 下一轮同步会重启同一容器。
+目标：验证 `restartPolicy: Always` 下容器退出后，sailer 下一轮同步会重启同一容器。
 
 机器：node-a。
 
@@ -152,12 +152,12 @@ docker inspect "${CLIENT_CID}" --format '{{.State.Status}}'
 期望：
 
 - kill 后第一次 inspect 显示 `exited`。
-- 等待 kubesailer 同步后 inspect 显示 `running`。
+- 等待 sailer 同步后 inspect 显示 `running`。
 - `get pods` 中 `busybox-client` 仍为 `Running`。
 
 失败排查：
 
-- 容器没有重启：确认 kubesailer 没退出，并检查 Pod 的 `restartPolicy`。
+- 容器没有重启：确认 sailer 没退出，并检查 Pod 的 `restartPolicy`。
 
 清理：
 
@@ -167,11 +167,11 @@ docker inspect "${CLIENT_CID}" --format '{{.State.Status}}'
 
 ## POD-04：双 worker 心跳与调度
 
-目标：验证 node-a、node-b 都能注册为 Ready；未指定 `spec.nodeName` 的 Pod 会在节点心跳后被 Kubenavigator 分配。
+目标：验证 node-a、node-b 都能注册为 Ready；未指定 `spec.nodeName` 的 Pod 会在节点心跳后被 Navigator 分配。
 
-机器：node-a 执行 CLI；node-a/node-b 的 kubesailer 都需运行。
+机器：node-a 执行 CLI；node-a/node-b 的 sailer 都需运行。
 
-前置：node-a/node-b 均按 `two-node.md` 启动启用 CNI 的 kubesailer，且 node-a 已退出 `POD-01` 使用的 `MINIK8S_CNI_DISABLED=1` 临时模式。
+前置：node-a/node-b 均按 `two-node.md` 启动启用 CNI 的 sailer，且 node-a 已退出 `POD-01` 使用的 `MINIK8S_CNI_DISABLED=1` 临时模式。
 
 流程：
 
@@ -191,8 +191,8 @@ sleep 6
 
 失败排查：
 
-- `spec.nodeName` 为空：确认至少一个 kubesailer 正在心跳，默认 TTL 为 30s。
-- Pod 被分到 node-b 但没 Running：到 node-b 查看 kubesailer 日志和 Docker 状态。
+- `spec.nodeName` 为空：确认至少一个 sailer 正在心跳，默认 TTL 为 30s。
+- Pod 被分到 node-b 但没 Running：到 node-b 查看 sailer 日志和 Docker 状态。
 
 清理：
 
@@ -263,14 +263,14 @@ sleep 35
 流程：
 
 ```bash
-go test ./internal/kubebridge/kubecaptain ./internal/kubesailer -run 'SandboxCreationFailure|SyncOnce' -count=1 -v
+go test ./internal/bridge/sailer ./internal/sailer -run 'SandboxCreationFailure|SyncOnce' -count=1 -v
 ```
 
 期望：
 
-- kubecaptain 测试断言 Pod 进入 `Failed`。
-- kubesailer 测试断言只处理本节点 assigned Pods，并回写 status。
+- sailer 测试断言 Pod 进入 `Failed`。
+- sailer 测试断言只处理本节点 assigned Pods，并回写 status。
 
 失败排查：
 
-- 若测试失败，优先查看 PodKubecaptain 的状态转换和 Kubesailer 的 status API 回写逻辑。
+- 若测试失败，优先查看 PodSailer 的状态转换和 Sailer 的 status API 回写逻辑。

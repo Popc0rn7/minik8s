@@ -2,7 +2,7 @@
 
 本文档覆盖 v0.1.0 的 Service endpoints、ClusterIP、NodePort、多 endpoint 负载均衡和 iptables 清理。双机公共启动流程见 `docs/testcase/two-node.md`。
 
-注意：v0.1.0 的 iptables proxy 由 `kubebridge` 进程所在节点同步，因此必测数据面入口是 node-a。node-b 访问 NodePort 可以作为观察项；若 node-b 没有运行 proxy 规则，node-b 的 NodePort 不作为失败。
+注意：v0.1.0 的 iptables proxy 由 `bridge` 进程所在节点同步，因此必测数据面入口是 node-a。node-b 访问 NodePort 可以作为观察项；若 node-b 没有运行 proxy 规则，node-b 的 NodePort 不作为失败。
 
 ## 覆盖矩阵
 
@@ -18,7 +18,7 @@
 
 ## SVC-01：Service endpoints
 
-目标：验证 ServiceKubecaptain 根据 selector 选中 Running Pod，并写入 endpoints。
+目标：验证 ServiceSailer 根据 selector 选中 Running Pod，并写入 endpoints。
 
 机器：node-a 执行 CLI。
 
@@ -42,11 +42,11 @@ sleep 6
 失败排查：
 
 - endpoints 为空：确认 Pod 已 Running 且 label `app=nginx` 存在。
-- Service 不存在：确认 `MINIK8S_KUBEHARBOR=${KUBEHARBOR}`。
+- Service 不存在：确认 `MINIK8S_HARBOR=${HARBOR}`。
 
 ## SVC-02：ClusterIP 规则与数据面
 
-目标：验证 kubebridge 节点上的 ServiceProxy 写入 iptables NAT 规则，并能从 node-a Pod 内访问 ClusterIP。
+目标：验证 bridge 节点上的 ServiceProxy 写入 iptables NAT 规则，并能从 node-a Pod 内访问 ClusterIP。
 
 机器：node-a。
 
@@ -72,7 +72,7 @@ head -n 1 /tmp/minik8s-service-clusterip.html
 
 失败排查：
 
-- 没有 `MK8S-SVC`：确认 kubebridge 没有设置 `MINIK8S_SERVICE_PROXY_DISABLED=1`，并且使用的是包含 P0 修复后的二进制。
+- 没有 `MK8S-SVC`：确认 bridge 没有设置 `MINIK8S_SERVICE_PROXY_DISABLED=1`，并且使用的是包含 P0 修复后的二进制。
 - 有规则但访问失败：检查 CNI PodIP、`ip route` 和 Docker container 网络命名空间。
 
 ## SVC-03：NodePort 规则与宿主机访问
@@ -137,7 +137,7 @@ iptables-save -t nat | grep MK8S-SVC
 
 失败排查：
 
-- 只有一个 endpoint：检查另一个节点的 kubesailer 是否运行，Pod 是否 Running。
+- 只有一个 endpoint：检查另一个节点的 sailer 是否运行，Pod 是否 Running。
 - 有 node-b endpoint 但访问失败：检查 node-a 到 `10.244.1.0/24` 的 route。
 
 ## SVC-05：endpoint 动态更新
@@ -174,7 +174,7 @@ iptables-save -t nat | grep MK8S-SVC
 失败排查：
 
 - endpoints 延迟不变：等待 service sync 默认周期，通常约 5s。
-- 删除后旧 DNAT 仍在：检查 kubebridge 日志是否有 `service-periodic-sync` 错误。
+- 删除后旧 DNAT 仍在：检查 bridge 日志是否有 `service-periodic-sync` 错误。
 
 ## SVC-06：删除 Service 清理规则
 
@@ -224,14 +224,14 @@ iptables-save -t nat | grep MK8S-SVC || true
 流程：
 
 ```bash
-go test ./cmd/minik8s ./internal/kubeproxy ./internal/kubebridge/kubecaptain ./internal/cli -count=1
+go test ./cmd/minik8s ./internal/kubeproxy ./internal/bridge/sailer ./internal/cli -count=1
 ```
 
 期望：
 
 - `cmd/minik8s` 测试确认默认注入 iptables ServiceProxy，并尊重 `MINIK8S_SERVICE_PROXY_DISABLED=1`。
 - `internal/kubeproxy` 测试确认 ClusterIP、NodePort、多 endpoint、delete 规则生成。
-- ServiceKubecaptain 和 CLI 测试通过。
+- ServiceSailer 和 CLI 测试通过。
 
 失败排查：
 

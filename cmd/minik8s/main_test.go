@@ -13,14 +13,14 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
 
-	store "minik8s/internal/kubebridge/etcd"
+	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/kubeproxy"
 )
 
-func TestNewKubebridgeConfigInjectsDefaultServiceProxy(t *testing.T) {
+func TestNewBridgeConfigInjectsDefaultServiceProxy(t *testing.T) {
 	t.Setenv("MINIK8S_SERVICE_PROXY_DISABLED", "")
 
-	config := newKubebridgeConfig(
+	config := newBridgeConfig(
 		store.NewInMemoryPodStore(),
 		store.NewInMemoryServiceStore(),
 		store.NewInMemoryNodeStore(),
@@ -31,10 +31,10 @@ func TestNewKubebridgeConfigInjectsDefaultServiceProxy(t *testing.T) {
 	assert.True(t, ok)
 }
 
-func TestNewKubebridgeConfigHonorsServiceProxyDisabled(t *testing.T) {
+func TestNewBridgeConfigHonorsServiceProxyDisabled(t *testing.T) {
 	t.Setenv("MINIK8S_SERVICE_PROXY_DISABLED", "1")
 
-	config := newKubebridgeConfig(
+	config := newBridgeConfig(
 		store.NewInMemoryPodStore(),
 		store.NewInMemoryServiceStore(),
 		store.NewInMemoryNodeStore(),
@@ -43,9 +43,9 @@ func TestNewKubebridgeConfigHonorsServiceProxyDisabled(t *testing.T) {
 	assert.Nil(t, config.ServiceProxy)
 }
 
-func TestOpenStoresUsesEtcdForPodServiceAndNodeStores(t *testing.T) {
+func TestOpenStoresUsesEtcdBackendForPodServiceAndNodeStores(t *testing.T) {
 	endpoint := newEmbeddedEtcdEndpoint(t)
-	t.Setenv("MINIK8S_ETCD_ENDPOINTS", endpoint)
+	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", endpoint)
 
 	podStore, serviceStore, nodeStore, closeStores, err := openStores()
 	require.NoError(t, err)

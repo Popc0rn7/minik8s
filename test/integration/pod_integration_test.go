@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	store "minik8s/internal/kubebridge/etcd"
-	"minik8s/internal/kubebridge/kubecaptain"
+	store "minik8s/internal/bridge/logbook"
+	"minik8s/internal/bridge/sailer"
 	"minik8s/internal/pod"
 	"minik8s/pkg/yaml"
 	"minik8s/test/mock"
@@ -85,8 +85,8 @@ func TestPodLifecycleWithYAML(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := store.NewInMemoryPodStore()
 
-	// Create kubecaptain
-	ctrl := kubecaptain.NewPodKubecaptain(mockRuntime, podStore)
+	// Create sailer
+	ctrl := sailer.NewPodSailer(mockRuntime, podStore)
 
 	// Add Pod to store
 	err = podStore.Create(p)
@@ -130,7 +130,7 @@ func TestPodRestartPolicyEnforcement(t *testing.T) {
 
 	mockRuntime := mock.NewMockRuntime()
 	podStore := store.NewInMemoryPodStore()
-	ctrl := kubecaptain.NewPodKubecaptain(mockRuntime, podStore)
+	ctrl := sailer.NewPodSailer(mockRuntime, podStore)
 
 	// Create and start the pod first
 	p.Status.Phase = pod.PodRunning
@@ -191,7 +191,7 @@ func TestPodTerminationWithYAML(t *testing.T) {
 
 	mockRuntime := mock.NewMockRuntime()
 	podStore := store.NewInMemoryPodStore()
-	ctrl := kubecaptain.NewPodKubecaptain(mockRuntime, podStore)
+	ctrl := sailer.NewPodSailer(mockRuntime, podStore)
 
 	err = podStore.Create(p)
 	require.NoError(t, err)
@@ -225,7 +225,7 @@ func TestPodFailureRecovery(t *testing.T) {
 	mockRuntime.ShouldFailCreateContainer = true
 
 	podStore := store.NewInMemoryPodStore()
-	ctrl := kubecaptain.NewPodKubecaptain(mockRuntime, podStore)
+	ctrl := sailer.NewPodSailer(mockRuntime, podStore)
 
 	err = podStore.Create(p)
 	require.NoError(t, err)

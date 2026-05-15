@@ -15,8 +15,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	store "minik8s/internal/kubebridge/etcd"
-	"minik8s/internal/kubebridge/kubeharbor"
+	store "minik8s/internal/bridge/logbook"
+	"minik8s/internal/bridge/harbor"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
@@ -64,7 +64,7 @@ func (m *mockServiceProxy) appliedCount() int {
 func TestCLIApplyGetDeletePod(t *testing.T) {
 	serverStore := store.NewInMemoryPodStore()
 	localStore := store.NewInMemoryPodStore()
-	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{PodStore: serverStore, NodeStore: store.NewInMemoryNodeStore()}), localStore, store.NewInMemoryServiceStore())
+	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: serverStore, NodeStore: store.NewInMemoryNodeStore()}), localStore, store.NewInMemoryServiceStore())
 
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")
 	var out bytes.Buffer
@@ -95,7 +95,7 @@ func TestCLIApplyGetDeletePod(t *testing.T) {
 	assert.Contains(t, out.String(), "pod/nginx-pod deleted")
 }
 
-func TestCLIApplyGetDeleteRequireKubeharbor(t *testing.T) {
+func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
 	app := New(Config{
 		Runtime:      mock.NewMockRuntime(),
 		Store:        store.NewInMemoryPodStore(),
@@ -115,12 +115,12 @@ func TestCLIApplyGetDeleteRequireKubeharbor(t *testing.T) {
 	} {
 		err := app.Run(context.Background(), args, &out)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "MINIK8S_KUBEHARBOR is required for apply/get/delete")
+		assert.Contains(t, err.Error(), "MINIK8S_HARBOR is required for apply/get/delete")
 	}
 }
 
-func TestCLIDoctorEtcdWarnsWhenEndpointsUnset(t *testing.T) {
-	t.Setenv("MINIK8S_ETCD_ENDPOINTS", "")
+func TestCLIDoctorLogbookWarnsWhenEndpointsUnset(t *testing.T) {
+	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", "")
 	app := New(Config{
 		Runtime:      mock.NewMockRuntime(),
 		Store:        store.NewInMemoryPodStore(),
@@ -129,9 +129,9 @@ func TestCLIDoctorEtcdWarnsWhenEndpointsUnset(t *testing.T) {
 	})
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), []string{"doctor", "etcd"}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"doctor", "logbook"}, &out))
 	assert.Contains(t, out.String(), "WARN")
-	assert.Contains(t, out.String(), "MINIK8S_ETCD_ENDPOINTS is not set")
+	assert.Contains(t, out.String(), "MINIK8S_LOGBOOK_ENDPOINTS is not set")
 }
 
 func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
@@ -348,10 +348,10 @@ func TestNetDOptionsRequireNodeName(t *testing.T) {
 	assert.Contains(t, err.Error(), "--node-name is required")
 }
 
-func TestKubesailerOptionsParseNetworkConfig(t *testing.T) {
-	options, err := parseKubesailerOptions([]string{
+func TestSailerOptionsParseNetworkConfig(t *testing.T) {
+	options, err := parseSailerOptions([]string{
 		"--node-name", "node-a",
-		"--kubeharbor", "http://192.168.1.8:18080",
+		"--harbor", "http://192.168.1.8:18080",
 		"--node-ip", "192.168.1.8",
 		"--pod-cidr", "10.244.0.0/24",
 		"--interval", "2s",
@@ -363,7 +363,7 @@ func TestKubesailerOptionsParseNetworkConfig(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "node-a", options.nodeName)
-	assert.Equal(t, "http://192.168.1.8:18080", options.kubeharbor)
+	assert.Equal(t, "http://192.168.1.8:18080", options.harbor)
 	assert.Equal(t, "192.168.1.8", options.nodeIP)
 	assert.Equal(t, "10.244.0.0/24", options.podCIDR)
 	assert.Equal(t, 2*time.Second, options.interval)
@@ -373,10 +373,10 @@ func TestKubesailerOptionsParseNetworkConfig(t *testing.T) {
 	assert.True(t, options.once)
 }
 
-func TestKubesailerOptionsUseDefaultVXLANConfig(t *testing.T) {
-	options, err := parseKubesailerOptions([]string{
+func TestSailerOptionsUseDefaultVXLANConfig(t *testing.T) {
+	options, err := parseSailerOptions([]string{
 		"--node-name", "node-a",
-		"--kubeharbor", "http://192.168.1.8:18080",
+		"--harbor", "http://192.168.1.8:18080",
 	})
 
 	require.NoError(t, err)
@@ -385,7 +385,7 @@ func TestKubesailerOptionsUseDefaultVXLANConfig(t *testing.T) {
 	assert.Equal(t, "mk8s-vxlan", options.vxlanName)
 }
 
-func TestKubesailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {
+func TestSailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {
 	var registered map[string]string
 	httpClient := &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		rec := httptestResponseRecorder(req)
@@ -413,9 +413,9 @@ func TestKubesailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {
 	var out bytes.Buffer
 
 	err := app.Run(context.Background(), []string{
-		"kubesailer",
+		"sailer",
 		"--node-name", "node-a",
-		"--kubeharbor", "http://minik8s.test",
+		"--harbor", "http://minik8s.test",
 		"--node-ip", "192.168.1.8",
 		"--pod-cidr", "10.244.0.0/24",
 		"--once",
@@ -426,7 +426,7 @@ func TestKubesailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {
 	assert.Equal(t, "node-a", registered["name"])
 	assert.Equal(t, "192.168.1.8", registered["nodeIP"])
 	assert.Equal(t, "10.244.0.0/24", registered["podCIDR"])
-	assert.Contains(t, out.String(), "kubesailer synced node=node-a")
+	assert.Contains(t, out.String(), "sailer synced node=node-a")
 }
 
 func TestNetRegistryOptionsUseDefaults(t *testing.T) {
@@ -472,7 +472,7 @@ func TestCLIDoctorDockerPullsImage(t *testing.T) {
 
 func TestCLIGetPodsShowsPodIP(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
-	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{PodStore: podStore, NodeStore: store.NewInMemoryNodeStore()}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore, NodeStore: store.NewInMemoryNodeStore()}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")
 	var out bytes.Buffer
 
@@ -494,7 +494,7 @@ func TestCLIGetNodesShowsHeartbeatNodes(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	nodeStore := store.NewInMemoryNodeStore()
 	require.NoError(t, nodeStore.UpsertHeartbeat("node-a"))
-	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{
+	app := newHTTPTestApp(t, harbor.New(harbor.Config{
 		PodStore:  store.NewInMemoryPodStore(),
 		NodeStore: nodeStore,
 	}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
@@ -518,7 +518,7 @@ func TestCLIGetNodesShowsExpiredHeartbeatNodesUnknown(t *testing.T) {
 	nodeStore := store.NewInMemoryNodeStore()
 	nodeStore.SetNow(func() time.Time { return now })
 	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}))
-	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{
+	app := newHTTPTestApp(t, harbor.New(harbor.Config{
 		PodStore:  store.NewInMemoryPodStore(),
 		NodeStore: nodeStore,
 		NodeTTL:   30 * time.Second,
@@ -552,7 +552,7 @@ func TestCLIApplyStoresPendingPodWithoutRuntimeSync(t *testing.T) {
 	runtime := mock.NewMockRuntime()
 	runtime.ShouldFailCreateSandbox = true
 	podStore := store.NewInMemoryPodStore()
-	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")
 	var out bytes.Buffer
 
@@ -590,7 +590,7 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	serviceStore := store.NewInMemoryServiceStore()
 	localServiceStore := store.NewInMemoryServiceStore()
 	proxy := &mockServiceProxy{}
-	server := kubeharbor.New(kubeharbor.Config{PodStore: podStore, ServiceStore: serviceStore})
+	server := harbor.New(harbor.Config{PodStore: podStore, ServiceStore: serviceStore})
 	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), localServiceStore)
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "service_clusterip_nginx.yaml")
 	var out bytes.Buffer
@@ -615,17 +615,17 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	assert.Empty(t, proxy.deleted)
 }
 
-func TestParseKubebridgeOptionsServiceSyncInterval(t *testing.T) {
-	defaults, err := parseKubebridgeOptions(nil)
+func TestParseBridgeOptionsServiceSyncInterval(t *testing.T) {
+	defaults, err := parseBridgeOptions(nil)
 	require.NoError(t, err)
 	assert.Equal(t, ":8080", defaults.listen)
 	assert.Equal(t, 5*time.Second, defaults.serviceSyncInterval)
 
-	disabled, err := parseKubebridgeOptions([]string{"--service-sync-interval", "0"})
+	disabled, err := parseBridgeOptions([]string{"--service-sync-interval", "0"})
 	require.NoError(t, err)
 	assert.Equal(t, time.Duration(0), disabled.serviceSyncInterval)
 
-	_, err = parseKubebridgeOptions([]string{"--service-sync-interval", "nope"})
+	_, err = parseBridgeOptions([]string{"--service-sync-interval", "nope"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid --service-sync-interval")
 }
@@ -663,7 +663,7 @@ func TestCLICobraResourceAliasesAndNamedGet(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
-	server := kubeharbor.New(kubeharbor.Config{PodStore: podStore, ServiceStore: serviceStore, NodeStore: store.NewInMemoryNodeStore()})
+	server := harbor.New(harbor.Config{PodStore: podStore, ServiceStore: serviceStore, NodeStore: store.NewInMemoryNodeStore()})
 	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	var out bytes.Buffer
 
@@ -685,7 +685,7 @@ func TestCLIDeleteResourceSlashName(t *testing.T) {
 	t.Setenv("MINIK8S_PLAIN", "1")
 	t.Setenv("NO_COLOR", "1")
 	podStore := store.NewInMemoryPodStore()
-	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")}, &out))
@@ -699,7 +699,7 @@ func TestCLIDeleteResourceSlashName(t *testing.T) {
 
 func TestCLIOutputJSONAndYAML(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
-	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")}, &out))
@@ -718,9 +718,9 @@ func TestCLIOutputJSONAndYAML(t *testing.T) {
 func TestCLIDescribeAPIResourcesVersionAndServerFlag(t *testing.T) {
 	t.Setenv("MINIK8S_PLAIN", "1")
 	t.Setenv("NO_COLOR", "1")
-	t.Setenv("MINIK8S_KUBEHARBOR", "http://wrong.example")
+	t.Setenv("MINIK8S_HARBOR", "http://wrong.example")
 	podStore := store.NewInMemoryPodStore()
-	app := newHTTPTestApp(t, kubeharbor.New(kubeharbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"--server", "http://minik8s.test", "apply", "-f", filepath.Join("..", "..", "manifest", "testdata", "pod_nginx.yaml")}, &out))
@@ -736,12 +736,12 @@ func TestCLIDescribeAPIResourcesVersionAndServerFlag(t *testing.T) {
 
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"--server", "http://minik8s.test", "version"}, &out))
-	assert.Contains(t, out.String(), "kubeharbor")
+	assert.Contains(t, out.String(), "harbor")
 }
 
 func newHTTPTestApp(t *testing.T, handler http.Handler, podStore store.PodStore, serviceStore store.ServiceStore) *App {
 	t.Helper()
-	t.Setenv("MINIK8S_KUBEHARBOR", "http://minik8s.test")
+	t.Setenv("MINIK8S_HARBOR", "http://minik8s.test")
 	return New(Config{
 		Runtime:      mock.NewMockRuntime(),
 		Store:        podStore,

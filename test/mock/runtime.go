@@ -8,7 +8,7 @@ import (
 	"minik8s/pkg/runtime"
 )
 
-// MockRuntime implements runtime.ContainerRuntime for kubecaptain and CLI tests.
+// MockRuntime implements runtime.ContainerRuntime for sailer and CLI tests.
 type MockRuntime struct {
 	CreateSandboxCalls   []string
 	StartSandboxCalls    []string
