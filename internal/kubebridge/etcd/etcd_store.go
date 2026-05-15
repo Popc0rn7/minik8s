@@ -9,6 +9,7 @@ import (
 
 	"go.etcd.io/etcd/client/v3"
 
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 )
@@ -16,6 +17,7 @@ import (
 const (
 	podPrefix     = "/registry/pods/"
 	servicePrefix = "/registry/services/"
+	nodePrefix    = "/registry/nodes/"
 	defaultOpTTL  = 5 * time.Second
 )
 
@@ -288,12 +290,146 @@ func (s *EtcdServiceStore) Delete(name, namespace string) error {
 	return nil
 }
 
+// EtcdNodeStore persists Node state in real etcd.
+type EtcdNodeStore struct {
+	client *clientv3.Client
+	now    func() time.Time
+}
+
+func NewEtcdNodeStore(client *clientv3.Client) *EtcdNodeStore {
+	return &EtcdNodeStore{
+		client: client,
+		now:    time.Now,
+	}
+}
+
+func (s *EtcdNodeStore) SetNow(now func() time.Time) {
+	if now == nil {
+		s.now = time.Now
+		return
+	}
+	s.now = now
+}
+
+func (s *EtcdNodeStore) Upsert(n *node.Node) error {
+	ncopy, err := normalizeNode(n)
+	if err != nil {
+		return err
+	}
+	return s.putNode(ncopy)
+}
+
+func (s *EtcdNodeStore) UpsertHeartbeat(name string) error {
+	n, err := heartbeatNode(name, s.now)
+	if err != nil {
+		return err
+	}
+	existing, err := s.Get(n.Name)
+	if err != nil && err != ErrNodeNotFound {
+		return err
+	}
+	if err == nil && existing.Labels != nil {
+		n.Labels = copyLabels(existing.Labels)
+	}
+	return s.putNode(n)
+}
+
+func (s *EtcdNodeStore) RefreshLiveness(ttl time.Duration) ([]NodeTransition, error) {
+	nodes, err := s.listNodeMap()
+	if err != nil {
+		return nil, err
+	}
+	transitions := refreshNodeLiveness(nodes, s.now(), ttl)
+	for _, transition := range transitions {
+		n := nodes[transition.Name]
+		if n == nil {
+			continue
+		}
+		if err := s.putNode(n); err != nil {
+			return nil, err
+		}
+	}
+	return transitions, nil
+}
+
+func (s *EtcdNodeStore) Get(name string) (*node.Node, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Get(ctx, etcdNodeKey(name))
+	if err != nil {
+		return nil, fmt.Errorf("getting node from etcd: %w", err)
+	}
+	if len(resp.Kvs) == 0 {
+		return nil, ErrNodeNotFound
+	}
+	var n node.Node
+	if err := json.Unmarshal(resp.Kvs[0].Value, &n); err != nil {
+		return nil, fmt.Errorf("decoding node: %w", err)
+	}
+	return normalizeNode(&n)
+}
+
+func (s *EtcdNodeStore) List() ([]node.Node, error) {
+	nodes, err := s.listNodeMap()
+	if err != nil {
+		return nil, err
+	}
+	return sortedNodeValues(nodes), nil
+}
+
+func (s *EtcdNodeStore) ListReady(ttl time.Duration) ([]node.Node, error) {
+	nodes, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	return filterReadyNodes(nodes, s.now(), ttl), nil
+}
+
+func (s *EtcdNodeStore) putNode(n *node.Node) error {
+	data, err := json.Marshal(n)
+	if err != nil {
+		return fmt.Errorf("encoding node: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	if _, err := s.client.Put(ctx, etcdNodeKey(n.Name), string(data)); err != nil {
+		return fmt.Errorf("putting node in etcd: %w", err)
+	}
+	return nil
+}
+
+func (s *EtcdNodeStore) listNodeMap() (map[string]*node.Node, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Get(ctx, nodePrefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, fmt.Errorf("listing nodes from etcd: %w", err)
+	}
+	nodes := make(map[string]*node.Node, len(resp.Kvs))
+	for _, kv := range resp.Kvs {
+		var n node.Node
+		if err := json.Unmarshal(kv.Value, &n); err != nil {
+			return nil, fmt.Errorf("decoding node %q: %w", string(kv.Key), err)
+		}
+		ncopy, err := normalizeNode(&n)
+		if err != nil {
+			return nil, err
+		}
+		nodes[ncopy.Name] = ncopy
+	}
+	return nodes, nil
+}
+
 func etcdPodKey(namespace, name string) string {
 	return podPrefix + podNamespace(namespace) + "/" + name
 }
 
 func etcdServiceKey(namespace, name string) string {
 	return servicePrefix + podNamespace(namespace) + "/" + name
+}
+
+func etcdNodeKey(name string) string {
+	return nodePrefix + name
 }
 
 func podNamespace(namespace string) string {
