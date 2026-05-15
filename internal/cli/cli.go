@@ -813,7 +813,7 @@ func (a *App) runServiceSyncLoop(ctx context.Context, interval time.Duration) {
 
 func (a *App) runNodeLivenessLoop(ctx context.Context, interval time.Duration) {
 	refreshOnce := func() {
-		transitions, err := a.bridge.NodeStore().RefreshLiveness(a.bridge.NodeTTL())
+		transitions, err := a.bridge.RefreshNodeLiveness(ctx)
 		if err != nil {
 			minilog.Warn("node-liveness-sync", "error=%v", err)
 			return

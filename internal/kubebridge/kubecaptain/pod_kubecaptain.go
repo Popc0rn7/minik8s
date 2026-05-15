@@ -162,9 +162,30 @@ func (pc *PodKubecaptain) reconcilePod(ctx context.Context, p *pod.Pod) error {
 		return pc.handleRunningPod(ctx, p)
 	case pod.PodSucceeded, pod.PodFailed:
 		return pc.handleTerminalPod(ctx, p)
+	case pod.PodUnknown:
+		return pc.handleUnknownPod(ctx, p)
 	default:
 		return pc.handlePendingPod(ctx, p)
 	}
+}
+
+func (pc *PodKubecaptain) handleUnknownPod(ctx context.Context, p *pod.Pod) error {
+	if p.Status.Reason == pod.PodReasonNodeLost && hasRuntimeStatus(p) {
+		return pc.handleRunningPod(ctx, p)
+	}
+	return pc.store.Update(p)
+}
+
+func hasRuntimeStatus(p *pod.Pod) bool {
+	if p.Status.SandboxID != "" {
+		return true
+	}
+	for _, containerStatus := range p.Status.Containers {
+		if containerStatus.ContainerID != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // handlePendingPod creates and starts containers for a pending Pod

@@ -1,6 +1,6 @@
 # Pod 测试用例
 
-本文档覆盖 v0.1.0 的 Pod 生命周期、状态展示、资源映射、重启策略，以及双 worker 心跳调度。双机公共启动流程见 `docs/testcase/two-node.md`。
+本文档覆盖 v0.1.0 的 Pod 生命周期、状态展示、资源映射、重启策略、双 worker 心跳调度，以及 NodeLost 时 Pod 状态级联更新。双机公共启动流程见 `docs/testcase/two-node.md`。
 
 ## 公共前置
 
@@ -16,7 +16,7 @@ export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
 ./minik8s version --server ${KUBEHARBOR}
 ```
 
-如果从 `two-node.md` 连续执行到本文档，通常已经有 node-a/node-b 的 CNI 和 kubesailer。`POD-01` 会临时停掉 node-a 当前 kubesailer，并以禁用 CNI 的方式重启 node-a kubesailer；`POD-02` 到 `POD-04` 再恢复启用 CNI 的 kubesailer。
+如果从 `two-node.md` 连续执行到本文档，通常已经有 node-a/node-b 的 CNI 和 kubesailer。`POD-01` 会临时停掉 node-a 当前 kubesailer，并以禁用 CNI 的方式重启 node-a kubesailer；`POD-02` 到 `POD-05` 再恢复启用 CNI 的 kubesailer。
 
 本文默认以 root 用户执行测试命令；另开 daemon 终端时，按对应步骤重新设置需要的环境变量。
 
@@ -28,7 +28,8 @@ export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
 | POD-02 | hostPath volume 与 CPU/memory limit | node-a | 是 |
 | POD-03 | restartPolicy 崩溃重启 | node-a | 是 |
 | POD-04 | 双 worker 心跳与未指定 nodeName 的调度 | node-a + node-b | 是 |
-| POD-05 | mock runtime 失败原因回写 | 任意开发机 | 是 |
+| POD-05 | NodeLost 后 Pod Unknown 与 Service endpoint 移除 | node-a + node-b | 是 |
+| POD-06 | mock runtime 失败原因回写 | 任意开发机 | 是 |
 
 ## POD-01：基础 Pod 生命周期
 
@@ -199,7 +200,61 @@ sleep 6
 ./minik8s delete pod nginx-pod-2 || true
 ```
 
-## POD-05：失败原因回写
+## POD-05：NodeLost 状态级联
+
+目标：验证 node-b heartbeat 超时后，控制面将该节点上的非终态 Pod 从 `Running` 标为 `Unknown`，写入 `reason: NodeLost`，并从匹配的 Service endpoints 中移除该 PodIP。
+
+机器：node-a 执行 CLI；node-b 需要先运行 kubesailer，再在流程中手动停止。
+
+前置：node-a/node-b 均按 `two-node.md` 启动启用 CNI 的 kubesailer，且 `./minik8s get nodes` 能看到两个节点为 `Ready`。
+
+流程：
+
+```bash
+./minik8s delete service nginx-service || true
+./minik8s delete pod nginx-node-b || true
+
+./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
+sleep 8
+./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+sleep 6
+./minik8s get pod nginx-node-b -o yaml
+./minik8s describe service nginx-service
+```
+
+在 node-b 的 kubesailer 终端按 `Ctrl-C` 停止 kubesailer，等待超过默认 Node TTL：
+
+```bash
+sleep 35
+./minik8s get nodes
+./minik8s get pod nginx-node-b -o yaml
+./minik8s describe service nginx-service
+```
+
+期望：
+
+- 停止 node-b kubesailer 前，`nginx-node-b` 为 `Running`，有非空 `podIP`。
+- 停止 node-b kubesailer 前，`nginx-service` endpoints 包含 `nginx-node-b` 对应 PodIP。
+- `get nodes` 触发 liveness refresh 后，`node-b` 状态为 `Unknown`。
+- `nginx-node-b` 的 `status.phase` 为 `Unknown`，`status.reason` 为 `NodeLost`。
+- `nginx-node-b` 的 `status.podIP` 仍保留，用于诊断。
+- `nginx-service` endpoints 不再包含 `nginx-node-b` 的 PodIP；如果没有其他 Running 且 label `app=nginx` 的 Pod，endpoints 应为空。
+
+失败排查：
+
+- Pod 仍为 `Running`：确认等待时间超过 Node TTL，且执行过 `./minik8s get nodes` 或 node liveness loop 正在运行。
+- Service endpoint 仍包含 node-b PodIP：确认使用的是包含 NodeLost 级联修复后的 `kubebridge`，并等待一次 service sync。
+- node-b 重新出现 Ready：确认 node-b kubesailer 已停止，且没有 systemd/supervisor 自动拉起。
+
+清理：重新启动 node-b kubesailer，使节点回到 Ready，然后删除测试对象。
+
+```bash
+./minik8s delete service nginx-service || true
+./minik8s delete pod nginx-node-b || true
+./minik8s get nodes
+```
+
+## POD-06：失败原因回写
 
 目标：用 mock runtime 稳定验证 sandbox/container 创建失败时 Pod 进入 Failed，并写入 reason。
 

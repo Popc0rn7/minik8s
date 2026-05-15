@@ -265,6 +265,35 @@ func TestPodKubecaptain_ReconcileRunningPod(t *testing.T) {
 	assert.Equal(t, pod.PodRunning, updatedPod.Status.Phase)
 }
 
+func TestPodKubecaptain_ReconcileUnknownNodeLostPodDoesNotCreateSandbox(t *testing.T) {
+	mockRuntime := mock.NewMockRuntime()
+	podStore := NewMockPodStore()
+	kubecaptain := NewPodKubecaptain(mockRuntime, podStore)
+	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
+	testPod.Status = pod.PodStatus{
+		Phase:     pod.PodUnknown,
+		Reason:    pod.PodReasonNodeLost,
+		SandboxID: "sandbox-1",
+		PodIP:     "10.244.0.2",
+		Containers: []pod.ContainerStatus{{
+			Name:        "test-pod-container",
+			ContainerID: "container-1",
+			Ready:       true,
+		}},
+	}
+	mockRuntime.SetContainerState("container-1", "running", 0)
+	require.NoError(t, podStore.Create(testPod))
+
+	err := kubecaptain.reconcilePod(context.Background(), testPod)
+
+	require.NoError(t, err)
+	assert.Empty(t, mockRuntime.CreateSandboxCalls)
+	assert.Empty(t, mockRuntime.CreateContainerCalls)
+	updatedPod, err := podStore.Get("test-pod", "default")
+	require.NoError(t, err)
+	assert.Equal(t, pod.PodRunning, updatedPod.Status.Phase)
+}
+
 func TestPodKubecaptain_ReconcileRunningPod_ContainerRestart(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
