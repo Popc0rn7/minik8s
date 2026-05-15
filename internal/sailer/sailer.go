@@ -6,7 +6,6 @@ import (
 	"time"
 
 	store "minik8s/internal/bridge/logbook"
-	bridgeSailer "minik8s/internal/bridge/sailer"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	"minik8s/pkg/runtime"
@@ -15,7 +14,7 @@ import (
 type Config struct {
 	NodeName string
 	Runtime  runtime.ContainerRuntime
-	Network  bridgeSailer.PodNetworkManager
+	Network  PodNetworkManager
 	Client   PodClient
 	Interval time.Duration
 }
@@ -23,7 +22,7 @@ type Config struct {
 type Sailer struct {
 	nodeName string
 	runtime  runtime.ContainerRuntime
-	network  bridgeSailer.PodNetworkManager
+	network  PodNetworkManager
 	client   PodClient
 	interval time.Duration
 	local    store.PodStore
@@ -104,7 +103,7 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 		syncPods = append(syncPods, localPod)
 	}
 
-	ctrl := bridgeSailer.NewPodSailerWithNetwork(k.runtime, k.local, k.network)
+	ctrl := NewPodControllerWithNetwork(k.runtime, k.local, k.network)
 	ctrl.SyncPods(ctx, syncPods)
 
 	for _, p := range syncPods {

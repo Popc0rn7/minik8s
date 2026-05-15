@@ -14,9 +14,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/bridge/navigator"
-	"minik8s/internal/bridge/sailer"
 	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/netregistry"
@@ -434,7 +434,7 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request, namespac
 			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target a service")
 			return
 		}
-		ctrl := sailer.NewServiceSailer(s.pods, s.services, s.proxy)
+		ctrl := captain.NewServiceController(s.pods, s.services, s.proxy)
 		if err := ctrl.DeleteService(r.Context(), name, namespace); err != nil {
 			writeStoreError(w, err, "services", name)
 			return
@@ -488,7 +488,7 @@ func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (
 }
 
 func (s *Server) syncServices(ctx context.Context) error {
-	ctrl := sailer.NewServiceSailer(s.pods, s.services, s.proxy)
+	ctrl := captain.NewServiceController(s.pods, s.services, s.proxy)
 	return ctrl.Sync(ctx)
 }
 

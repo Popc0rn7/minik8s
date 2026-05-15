@@ -24,9 +24,29 @@ assigned Pods.
   `22:38:02 INFO  󰋽  cli-delete: start pod=default/nginx-pod`.
   Image pull falls back to `docker pull`.
 
-Control-plane code lives under `internal/bridge/`: the exported
-Bridge kernel owns the long-running control-plane service, with Harbor,
-file-backed state, sailers, and navigator kept as internal components.
+## Component layout
+
+The recent rename groups the control-plane pieces around a fleet-style
+vocabulary:
+
+- `internal/bridge/` is the control-plane boundary. The exported `Bridge`
+  wires state stores, scheduling, Service proxying, and the HTTP API into one
+  long-running control-plane service.
+- `internal/bridge/harbor/` is the API harbor. It serves the Kubernetes-like
+  Pod, Service, Node, and node-scoped Pod endpoints used by the CLI and by
+  node agents.
+- `internal/bridge/logbook/` owns persisted cluster state. File stores are the
+  local default, while `MINIK8S_LOGBOOK_ENDPOINTS` switches Pod, Service, and
+  Node state to the etcd-backed Logbook store.
+- `internal/bridge/navigator/` is reserved for scheduling policy. Today Pods
+  are selected mainly through `spec.nodeName`; future navigators can assign
+  unscheduled Pods to nodes.
+- `internal/bridge/captain/` contains control-plane controllers such as the
+  Service controller, which turns desired Service state into endpoints and
+  proxy state.
+- `internal/sailer/` is the node-local loop run by `minik8s sailer`. It polls
+  Harbor for Pods assigned to its node, uses the Pod controller to reconcile
+  local containers and networking, and posts status back to the control plane.
 
 ```bash
 make build

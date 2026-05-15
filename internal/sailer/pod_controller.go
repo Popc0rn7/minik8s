@@ -20,8 +20,8 @@ const (
 	SyncInterval = 10 * time.Second
 )
 
-// PodSailer manages Pod lifecycle using a container runtime
-type PodSailer struct {
+// PodController manages Pod lifecycle using a container runtime
+type PodController struct {
 	runtime runtime.ContainerRuntime
 	store   store.PodStore
 	network PodNetworkManager
@@ -49,14 +49,14 @@ type PodNetworkManager interface {
 	Del(ctx context.Context, req PodNetworkRequest) error
 }
 
-// NewPodSailer creates a new Pod sailer
-func NewPodSailer(r runtime.ContainerRuntime, s store.PodStore) *PodSailer {
-	return NewPodSailerWithNetwork(r, s, nil)
+// NewPodController creates a new Pod controller
+func NewPodController(r runtime.ContainerRuntime, s store.PodStore) *PodController {
+	return NewPodControllerWithNetwork(r, s, nil)
 }
 
-// NewPodSailerWithNetwork creates a Pod sailer with optional CNI support.
-func NewPodSailerWithNetwork(r runtime.ContainerRuntime, s store.PodStore, network PodNetworkManager) *PodSailer {
-	return &PodSailer{
+// NewPodControllerWithNetwork creates a Pod controller with optional CNI support.
+func NewPodControllerWithNetwork(r runtime.ContainerRuntime, s store.PodStore, network PodNetworkManager) *PodController {
+	return &PodController{
 		runtime: r,
 		store:   s,
 		network: network,
@@ -65,11 +65,11 @@ func NewPodSailerWithNetwork(r runtime.ContainerRuntime, s store.PodStore, netwo
 }
 
 // Start begins the reconciliation loop
-func (pc *PodSailer) Start(ctx context.Context) error {
+func (pc *PodController) Start(ctx context.Context) error {
 	pc.mu.Lock()
 	if pc.running {
 		pc.mu.Unlock()
-		return fmt.Errorf("sailer already running")
+		return fmt.Errorf("controller already running")
 	}
 	pc.running = true
 	pc.mu.Unlock()
@@ -79,7 +79,7 @@ func (pc *PodSailer) Start(ctx context.Context) error {
 }
 
 // Stop stops the reconciliation loop
-func (pc *PodSailer) Stop() {
+func (pc *PodController) Stop() {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	if pc.running {
@@ -88,23 +88,23 @@ func (pc *PodSailer) Stop() {
 	}
 }
 
-// IsRunning returns whether the sailer is running
-func (pc *PodSailer) IsRunning() bool {
+// IsRunning returns whether the controller is running
+func (pc *PodController) IsRunning() bool {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	return pc.running
 }
 
 // Sync triggers an immediate reconciliation of all pods
-func (pc *PodSailer) Sync(ctx context.Context) {
-	minilog.Info("sailer-sync", "start")
+func (pc *PodController) Sync(ctx context.Context) {
+	minilog.Info("controller-sync", "start")
 	pc.reconcile(ctx)
 }
 
-// SyncPods reconciles the provided Pods only. Sailer uses this after fetching
+// SyncPods reconciles the provided Pods only. Controller uses this after fetching
 // the set of Pods assigned to one node from the API server.
-func (pc *PodSailer) SyncPods(ctx context.Context, pods []*pod.Pod) {
-	minilog.Info("sailer-sync-pods", "count=%d", len(pods))
+func (pc *PodController) SyncPods(ctx context.Context, pods []*pod.Pod) {
+	minilog.Info("controller-sync-pods", "count=%d", len(pods))
 	for _, p := range pods {
 		if p == nil {
 			continue
@@ -117,19 +117,19 @@ func (pc *PodSailer) SyncPods(ctx context.Context, pods []*pod.Pod) {
 }
 
 // reconcileLoop runs the main reconciliation loop
-func (pc *PodSailer) reconcileLoop(ctx context.Context) {
+func (pc *PodController) reconcileLoop(ctx context.Context) {
 	ticker := time.NewTicker(SyncInterval)
 	defer ticker.Stop()
 
-	minilog.Info("sailer-loop", "started interval=%v", SyncInterval)
+	minilog.Info("controller-loop", "started interval=%v", SyncInterval)
 
 	for {
 		select {
 		case <-ctx.Done():
-			minilog.Info("sailer-loop", "stopped reason=context-cancelled")
+			minilog.Info("controller-loop", "stopped reason=context-cancelled")
 			return
 		case <-pc.stopCh:
-			minilog.Info("sailer-loop", "stopped reason=stop-signal")
+			minilog.Info("controller-loop", "stopped reason=stop-signal")
 			return
 		case <-ticker.C:
 			pc.reconcile(ctx)
@@ -138,10 +138,10 @@ func (pc *PodSailer) reconcileLoop(ctx context.Context) {
 }
 
 // reconcile performs one iteration of reconciliation
-func (pc *PodSailer) reconcile(ctx context.Context) {
+func (pc *PodController) reconcile(ctx context.Context) {
 	pods, err := pc.store.List("", nil)
 	if err != nil {
-		minilog.Error("sailer-sync", "list pods failed error=%v", err)
+		minilog.Error("controller-sync", "list pods failed error=%v", err)
 		return
 	}
 
@@ -154,7 +154,7 @@ func (pc *PodSailer) reconcile(ctx context.Context) {
 }
 
 // reconcilePod reconciles a single Pod's desired state with actual state
-func (pc *PodSailer) reconcilePod(ctx context.Context, p *pod.Pod) error {
+func (pc *PodController) reconcilePod(ctx context.Context, p *pod.Pod) error {
 	switch p.Status.Phase {
 	case pod.PodPending:
 		return pc.handlePendingPod(ctx, p)
@@ -169,7 +169,7 @@ func (pc *PodSailer) reconcilePod(ctx context.Context, p *pod.Pod) error {
 	}
 }
 
-func (pc *PodKubecaptain) handleUnknownPod(ctx context.Context, p *pod.Pod) error {
+func (pc *PodController) handleUnknownPod(ctx context.Context, p *pod.Pod) error {
 	if p.Status.Reason == pod.PodReasonNodeLost && hasRuntimeStatus(p) {
 		return pc.handleRunningPod(ctx, p)
 	}
@@ -189,7 +189,7 @@ func hasRuntimeStatus(p *pod.Pod) bool {
 }
 
 // handlePendingPod creates and starts containers for a pending Pod
-func (pc *PodSailer) handlePendingPod(ctx context.Context, p *pod.Pod) error {
+func (pc *PodController) handlePendingPod(ctx context.Context, p *pod.Pod) error {
 	minilog.Info("pod-pending", "pod=%s/%s create sandbox", p.Namespace, p.Name)
 	// Create sandbox for Pod
 	sandboxID, err := pc.runtime.CreateSandbox(ctx, &runtime.SandboxConfig{
@@ -291,7 +291,7 @@ func (pc *PodSailer) handlePendingPod(ctx context.Context, p *pod.Pod) error {
 }
 
 // handleRunningPod checks and enforces restart policy
-func (pc *PodSailer) handleRunningPod(ctx context.Context, p *pod.Pod) error {
+func (pc *PodController) handleRunningPod(ctx context.Context, p *pod.Pod) error {
 	allRunning := true
 	allStopped := true
 
@@ -370,7 +370,7 @@ func (pc *PodSailer) handleRunningPod(ctx context.Context, p *pod.Pod) error {
 }
 
 // handleTerminalPod cleans up resources for terminal Pods
-func (pc *PodSailer) handleTerminalPod(ctx context.Context, p *pod.Pod) error {
+func (pc *PodController) handleTerminalPod(ctx context.Context, p *pod.Pod) error {
 	if p.Status.SandboxID == "" && len(p.Status.Containers) == 0 {
 		return nil
 	}
@@ -424,7 +424,7 @@ func (pc *PodSailer) handleTerminalPod(ctx context.Context, p *pod.Pod) error {
 	return nil
 }
 
-func (pc *PodSailer) sandboxNetNSPath(ctx context.Context, sandboxID string) (string, error) {
+func (pc *PodController) sandboxNetNSPath(ctx context.Context, sandboxID string) (string, error) {
 	provider, ok := pc.runtime.(runtime.SandboxNetNSProvider)
 	if !ok {
 		return "", fmt.Errorf("runtime does not expose sandbox network namespace")
@@ -432,14 +432,14 @@ func (pc *PodSailer) sandboxNetNSPath(ctx context.Context, sandboxID string) (st
 	return provider.GetSandboxNetNSPath(ctx, sandboxID)
 }
 
-func (pc *PodSailer) sandboxNetworkMode() string {
+func (pc *PodController) sandboxNetworkMode() string {
 	if pc.network != nil {
 		return "none"
 	}
 	return ""
 }
 
-func (pc *PodSailer) cleanupNetwork(ctx context.Context, p *pod.Pod, sandboxID string) {
+func (pc *PodController) cleanupNetwork(ctx context.Context, p *pod.Pod, sandboxID string) {
 	if pc.network == nil {
 		return
 	}
@@ -453,7 +453,7 @@ func (pc *PodSailer) cleanupNetwork(ctx context.Context, p *pod.Pod, sandboxID s
 }
 
 // DeletePod stops runtime resources and removes the Pod from the store.
-func (pc *PodSailer) DeletePod(ctx context.Context, name, namespace string) error {
+func (pc *PodController) DeletePod(ctx context.Context, name, namespace string) error {
 	minilog.Info("pod-delete", "start pod=%s/%s", namespace, name)
 	p, err := pc.store.Get(name, namespace)
 	if err != nil {
@@ -471,7 +471,7 @@ func (pc *PodSailer) DeletePod(ctx context.Context, name, namespace string) erro
 }
 
 // shouldRestart determines if a container should be restarted based on restart policy
-func (pc *PodSailer) shouldRestart(p *pod.Pod, exitCode int32) bool {
+func (pc *PodController) shouldRestart(p *pod.Pod, exitCode int32) bool {
 	switch p.Spec.RestartPolicy {
 	case pod.RestartPolicyAlways:
 		return true
@@ -485,7 +485,7 @@ func (pc *PodSailer) shouldRestart(p *pod.Pod, exitCode int32) bool {
 }
 
 // updateContainerStatus updates the status for a container
-func (pc *PodSailer) updateContainerStatus(p *pod.Pod, containerName, containerID string) {
+func (pc *PodController) updateContainerStatus(p *pod.Pod, containerName, containerID string) {
 	for i := range p.Status.Containers {
 		if p.Status.Containers[i].Name == containerName {
 			p.Status.Containers[i].ContainerID = containerID
@@ -608,7 +608,7 @@ func imageWithTag(c pod.ContainerSpec) string {
 }
 
 // cleanupContainers stops and deletes all containers in a sandbox
-func (pc *PodSailer) cleanupContainers(ctx context.Context, sandboxID string) {
+func (pc *PodController) cleanupContainers(ctx context.Context, sandboxID string) {
 	containers, err := pc.runtime.ListContainers(ctx, sandboxID)
 	if err != nil {
 		minilog.Warn("container-cleanup", "list sandbox=%s error=%v", sandboxID, err)

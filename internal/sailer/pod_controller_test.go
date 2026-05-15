@@ -102,47 +102,47 @@ func newTestPod(name, namespace string, restartPolicy pod.RestartPolicy) *pod.Po
 	}
 }
 
-func TestPodSailer_StartStop(t *testing.T) {
+func TestPodController_StartStop(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	mockRuntime.NetNSPath = "/proc/101/ns/net"
 	podStore := NewMockPodStore()
-	sailer := NewPodSailer(mockRuntime, podStore)
+	controller := NewPodController(mockRuntime, podStore)
 
-	// Start sailer
+	// Start controller
 	ctx := context.Background()
-	err := sailer.Start(ctx)
+	err := controller.Start(ctx)
 	require.NoError(t, err)
-	assert.True(t, sailer.IsRunning())
+	assert.True(t, controller.IsRunning())
 
-	// Stop sailer
-	sailer.Stop()
-	assert.False(t, sailer.IsRunning())
+	// Stop controller
+	controller.Stop()
+	assert.False(t, controller.IsRunning())
 }
 
-func TestPodSailer_StartTwice(t *testing.T) {
+func TestPodController_StartTwice(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	mockRuntime.NetNSPath = "/proc/101/ns/net"
 	podStore := NewMockPodStore()
-	sailer := NewPodSailer(mockRuntime, podStore)
+	controller := NewPodController(mockRuntime, podStore)
 
 	ctx := context.Background()
-	err := sailer.Start(ctx)
+	err := controller.Start(ctx)
 	require.NoError(t, err)
 
 	// Starting again should fail
-	err = sailer.Start(ctx)
+	err = controller.Start(ctx)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already running")
 
-	sailer.Stop()
+	controller.Stop()
 }
 
-func TestPodSailer_ReconcilePendingPod(t *testing.T) {
+func TestPodController_ReconcilePendingPod(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	mockRuntime.NetNSPath = "/proc/101/ns/net"
 	podStore := NewMockPodStore()
 	podNetwork := &mockPodNetwork{setupIP: "10.244.0.2"}
-	sailer := NewPodSailerWithNetwork(mockRuntime, podStore, podNetwork)
+	controller := NewPodControllerWithNetwork(mockRuntime, podStore, podNetwork)
 
 	// Create a pending pod
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
@@ -152,7 +152,7 @@ func TestPodSailer_ReconcilePendingPod(t *testing.T) {
 	ctx := context.Background()
 
 	// Manually trigger reconciliation
-	err = sailer.reconcilePod(ctx, testPod)
+	err = controller.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Verify pod is now running
@@ -173,35 +173,35 @@ func TestPodSailer_ReconcilePendingPod(t *testing.T) {
 	assert.NotEmpty(t, mockRuntime.StartContainerCalls)
 }
 
-func TestPodSailer_DeletePodTearsDownNetworkBeforeRemovingSandbox(t *testing.T) {
+func TestPodController_DeletePodTearsDownNetworkBeforeRemovingSandbox(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	mockRuntime.NetNSPath = "/proc/101/ns/net"
 	podStore := NewMockPodStore()
 	podNetwork := &mockPodNetwork{setupIP: "10.244.0.2"}
-	sailer := NewPodSailerWithNetwork(mockRuntime, podStore, podNetwork)
+	controller := NewPodControllerWithNetwork(mockRuntime, podStore, podNetwork)
 
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
 	require.NoError(t, podStore.Create(testPod))
-	require.NoError(t, sailer.reconcilePod(context.Background(), testPod))
+	require.NoError(t, controller.reconcilePod(context.Background(), testPod))
 
-	require.NoError(t, sailer.DeletePod(context.Background(), "test-pod", "default"))
+	require.NoError(t, controller.DeletePod(context.Background(), "test-pod", "default"))
 
 	assert.Equal(t, []string{"sandbox-1|/proc/101/ns/net"}, podNetwork.teardownCalls)
 	assert.NotEmpty(t, mockRuntime.RemoveSandboxCalls)
 }
 
-func TestPodSailer_ReconcilePendingPod_SandboxCreationFailure(t *testing.T) {
+func TestPodController_ReconcilePendingPod_SandboxCreationFailure(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	mockRuntime.ShouldFailCreateSandbox = true
 	podStore := NewMockPodStore()
-	sailer := NewPodSailer(mockRuntime, podStore)
+	controller := NewPodController(mockRuntime, podStore)
 
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
 	err := podStore.Create(testPod)
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	err = sailer.reconcilePod(ctx, testPod)
+	err = controller.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Verify pod failed
@@ -211,18 +211,18 @@ func TestPodSailer_ReconcilePendingPod_SandboxCreationFailure(t *testing.T) {
 	assert.Contains(t, updatedPod.Status.Reason, "sandbox")
 }
 
-func TestPodSailer_ReconcilePendingPod_ContainerCreationFailure(t *testing.T) {
+func TestPodController_ReconcilePendingPod_ContainerCreationFailure(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	mockRuntime.ShouldFailCreateContainer = true
 	podStore := NewMockPodStore()
-	sailer := NewPodSailer(mockRuntime, podStore)
+	controller := NewPodController(mockRuntime, podStore)
 
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
 	err := podStore.Create(testPod)
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	err = sailer.reconcilePod(ctx, testPod)
+	err = controller.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Verify pod failed
@@ -232,10 +232,10 @@ func TestPodSailer_ReconcilePendingPod_ContainerCreationFailure(t *testing.T) {
 	assert.Contains(t, updatedPod.Status.Reason, "container")
 }
 
-func TestPodSailer_ReconcileRunningPod(t *testing.T) {
+func TestPodController_ReconcileRunningPod(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	sailer := NewPodSailer(mockRuntime, podStore)
+	controller := NewPodController(mockRuntime, podStore)
 
 	// Create a running pod
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
@@ -256,7 +256,7 @@ func TestPodSailer_ReconcileRunningPod(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	err = sailer.reconcilePod(ctx, testPod)
+	err = controller.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Verify pod is still running
@@ -265,10 +265,10 @@ func TestPodSailer_ReconcileRunningPod(t *testing.T) {
 	assert.Equal(t, pod.PodRunning, updatedPod.Status.Phase)
 }
 
-func TestPodSailer_ReconcileUnknownNodeLostPodDoesNotCreateSandbox(t *testing.T) {
+func TestPodController_ReconcileUnknownNodeLostPodDoesNotCreateSandbox(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	sailer := NewPodSailer(mockRuntime, podStore)
+	controller := NewPodController(mockRuntime, podStore)
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
 	testPod.Status = pod.PodStatus{
 		Phase:     pod.PodUnknown,
@@ -284,7 +284,7 @@ func TestPodSailer_ReconcileUnknownNodeLostPodDoesNotCreateSandbox(t *testing.T)
 	mockRuntime.SetContainerState("container-1", "running", 0)
 	require.NoError(t, podStore.Create(testPod))
 
-	err := sailer.reconcilePod(context.Background(), testPod)
+	err := controller.reconcilePod(context.Background(), testPod)
 
 	require.NoError(t, err)
 	assert.Empty(t, mockRuntime.CreateSandboxCalls)
@@ -294,10 +294,10 @@ func TestPodSailer_ReconcileUnknownNodeLostPodDoesNotCreateSandbox(t *testing.T)
 	assert.Equal(t, pod.PodRunning, updatedPod.Status.Phase)
 }
 
-func TestPodSailer_ReconcileRunningPod_ContainerRestart(t *testing.T) {
+func TestPodController_ReconcileRunningPod_ContainerRestart(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	sailer := NewPodSailer(mockRuntime, podStore)
+	controller := NewPodController(mockRuntime, podStore)
 
 	// Create a running pod with a stopped container
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
@@ -321,17 +321,17 @@ func TestPodSailer_ReconcileRunningPod_ContainerRestart(t *testing.T) {
 	mockRuntime.SetContainerState("container-1", "stopped", 1)
 
 	ctx := context.Background()
-	err = sailer.reconcilePod(ctx, testPod)
+	err = controller.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// With RestartPolicyAlways, container should be restarted
 	assert.Contains(t, mockRuntime.StartContainerCalls, "container-1")
 }
 
-func TestPodSailer_ReconcileRunningPod_NoRestartOnNever(t *testing.T) {
+func TestPodController_ReconcileRunningPod_NoRestartOnNever(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	sailer := NewPodSailer(mockRuntime, podStore)
+	controller := NewPodController(mockRuntime, podStore)
 
 	// Create pod with RestartPolicyNever
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyNever)
@@ -355,17 +355,17 @@ func TestPodSailer_ReconcileRunningPod_NoRestartOnNever(t *testing.T) {
 	mockRuntime.SetContainerState("container-1", "stopped", 1)
 
 	ctx := context.Background()
-	err = sailer.reconcilePod(ctx, testPod)
+	err = controller.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Container should NOT be restarted
 	assert.NotContains(t, mockRuntime.StartContainerCalls, "container-1")
 }
 
-func TestPodSailer_ReconcileRunningPod_RestartOnOnFailure(t *testing.T) {
+func TestPodController_ReconcileRunningPod_RestartOnOnFailure(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	sailer := NewPodSailer(mockRuntime, podStore)
+	controller := NewPodController(mockRuntime, podStore)
 
 	// Create pod with RestartPolicyOnFailure
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyOnFailure)
@@ -389,17 +389,17 @@ func TestPodSailer_ReconcileRunningPod_RestartOnOnFailure(t *testing.T) {
 	mockRuntime.SetContainerState("container-1", "stopped", 1)
 
 	ctx := context.Background()
-	err = sailer.reconcilePod(ctx, testPod)
+	err = controller.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Container SHOULD be restarted (non-zero exit with OnFailure)
 	assert.Contains(t, mockRuntime.StartContainerCalls, "container-1")
 }
 
-func TestPodSailer_ReconcileRunningPod_NoRestartOnOnFailure_Success(t *testing.T) {
+func TestPodController_ReconcileRunningPod_NoRestartOnOnFailure_Success(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	sailer := NewPodSailer(mockRuntime, podStore)
+	controller := NewPodController(mockRuntime, podStore)
 
 	// Create pod with RestartPolicyOnFailure
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyOnFailure)
@@ -423,17 +423,17 @@ func TestPodSailer_ReconcileRunningPod_NoRestartOnOnFailure_Success(t *testing.T
 	mockRuntime.SetContainerState("container-1", "stopped", 0)
 
 	ctx := context.Background()
-	err = sailer.reconcilePod(ctx, testPod)
+	err = controller.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Container should NOT be restarted (zero exit with OnFailure)
 	assert.NotContains(t, mockRuntime.StartContainerCalls, "container-1")
 }
 
-func TestPodSailer_ReconcileTerminalPod(t *testing.T) {
+func TestPodController_ReconcileTerminalPod(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	sailer := NewPodSailer(mockRuntime, podStore)
+	controller := NewPodController(mockRuntime, podStore)
 
 	// Create a terminal pod
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
@@ -453,7 +453,7 @@ func TestPodSailer_ReconcileTerminalPod(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	err = sailer.reconcilePod(ctx, testPod)
+	err = controller.reconcilePod(ctx, testPod)
 	require.NoError(t, err)
 
 	// Verify containers and sandbox were cleaned up
@@ -463,7 +463,7 @@ func TestPodSailer_ReconcileTerminalPod(t *testing.T) {
 	assert.NotEmpty(t, mockRuntime.RemoveSandboxCalls)
 }
 
-func TestPodSailer_ShouldRestart(t *testing.T) {
+func TestPodController_ShouldRestart(t *testing.T) {
 	tests := []struct {
 		name          string
 		restartPolicy pod.RestartPolicy
@@ -482,19 +482,19 @@ func TestPodSailer_ShouldRestart(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mockRuntime := mock.NewMockRuntime()
 			podStore := NewMockPodStore()
-			sailer := NewPodSailer(mockRuntime, podStore)
+			controller := NewPodController(mockRuntime, podStore)
 
 			testPod := newTestPod("test-pod", "default", tt.restartPolicy)
-			result := sailer.shouldRestart(testPod, tt.exitCode)
+			result := controller.shouldRestart(testPod, tt.exitCode)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
 
-func TestPodSailer_MultipleReconciliation(t *testing.T) {
+func TestPodController_MultipleReconciliation(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	sailer := NewPodSailer(mockRuntime, podStore)
+	controller := NewPodController(mockRuntime, podStore)
 
 	// Create multiple pods
 	for i := 0; i < 3; i++ {
@@ -504,7 +504,7 @@ func TestPodSailer_MultipleReconciliation(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	sailer.reconcile(ctx)
+	controller.reconcile(ctx)
 
 	// All pods should be running
 	pods, err := podStore.List("default", nil)
@@ -519,7 +519,7 @@ func TestPodSailer_MultipleReconciliation(t *testing.T) {
 	assert.Len(t, mockRuntime.CreateContainerCalls, 3)
 }
 
-func TestPodSailer_EnvVarsToStrings(t *testing.T) {
+func TestPodController_EnvVarsToStrings(t *testing.T) {
 	envs := []pod.EnvVar{
 		{Name: "FOO", Value: "bar"},
 		{Name: "BAZ", Value: "qux"},

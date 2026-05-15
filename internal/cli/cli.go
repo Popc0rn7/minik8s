@@ -16,8 +16,8 @@ import (
 	"time"
 
 	bridge "minik8s/internal/bridge"
+	bridgeCaptain "minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
-	bridgeSailer "minik8s/internal/bridge/sailer"
 	"minik8s/internal/cliui"
 	"minik8s/internal/cni"
 	"minik8s/internal/kubeproxy"
@@ -40,7 +40,7 @@ type Config struct {
 	ServiceStore store.ServiceStore
 	NodeStore    store.NodeStore
 	Bridge       *bridge.Bridge
-	Network      bridgeSailer.PodNetworkManager
+	Network      nodeSailer.PodNetworkManager
 	ServiceProxy kubeproxy.Proxy
 	HTTPClient   *http.Client
 	NetRunner    netagent.Runner
@@ -53,7 +53,7 @@ type App struct {
 	serviceStore  store.ServiceStore
 	nodeStore     store.NodeStore
 	controlBridge *bridge.Bridge
-	network       bridgeSailer.PodNetworkManager
+	network       nodeSailer.PodNetworkManager
 	serviceProxy  kubeproxy.Proxy
 	httpClient    *http.Client
 	netRunner     netagent.Runner
@@ -793,7 +793,7 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 
 func (a *App) runServiceSyncLoop(ctx context.Context, interval time.Duration) {
 	syncOnce := func() {
-		ctrl := bridgeSailer.NewServiceSailer(a.controlBridge.PodStore(), a.controlBridge.ServiceStore(), a.controlBridge.ServiceProxy())
+		ctrl := bridgeCaptain.NewServiceController(a.controlBridge.PodStore(), a.controlBridge.ServiceStore(), a.controlBridge.ServiceProxy())
 		if err := ctrl.Sync(ctx); err != nil {
 			minilog.Warn("service-periodic-sync", "error=%v", err)
 		}
@@ -1178,7 +1178,7 @@ type cniNetworkManager struct {
 	runner *cni.Runner
 }
 
-func (m cniNetworkManager) Add(ctx context.Context, req bridgeSailer.PodNetworkRequest) (bridgeSailer.PodNetworkResult, error) {
+func (m cniNetworkManager) Add(ctx context.Context, req nodeSailer.PodNetworkRequest) (nodeSailer.PodNetworkResult, error) {
 	result, err := m.runner.Add(ctx, cni.PodNetwork{
 		ContainerID: req.SandboxID,
 		NetNS:       req.NetNSPath,
@@ -1187,12 +1187,12 @@ func (m cniNetworkManager) Add(ctx context.Context, req bridgeSailer.PodNetworkR
 		Namespace:   req.Pod.Namespace,
 	})
 	if err != nil {
-		return bridgeSailer.PodNetworkResult{}, err
+		return nodeSailer.PodNetworkResult{}, err
 	}
-	return bridgeSailer.PodNetworkResult{PodIP: result.PodIP, CNIResult: result.Raw}, nil
+	return nodeSailer.PodNetworkResult{PodIP: result.PodIP, CNIResult: result.Raw}, nil
 }
 
-func (m cniNetworkManager) Del(ctx context.Context, req bridgeSailer.PodNetworkRequest) error {
+func (m cniNetworkManager) Del(ctx context.Context, req nodeSailer.PodNetworkRequest) error {
 	return m.runner.Del(ctx, cni.PodNetwork{
 		ContainerID: req.SandboxID,
 		NetNS:       req.NetNSPath,
@@ -1202,7 +1202,7 @@ func (m cniNetworkManager) Del(ctx context.Context, req bridgeSailer.PodNetworkR
 	})
 }
 
-func defaultNetworkManager() bridgeSailer.PodNetworkManager {
+func defaultNetworkManager() nodeSailer.PodNetworkManager {
 	if os.Getenv("MINIK8S_CNI_DISABLED") == "1" {
 		return nil
 	}

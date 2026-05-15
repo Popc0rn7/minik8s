@@ -11,10 +11,10 @@ import (
 	"minik8s/test/mock"
 )
 
-func TestPodSailerPassesRuntimeConfigFromPodSpec(t *testing.T) {
+func TestPodControllerPassesRuntimeConfigFromPodSpec(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	ctrl := NewPodSailer(mockRuntime, podStore)
+	ctrl := NewPodController(mockRuntime, podStore)
 	p := &pod.Pod{
 		TypeMeta: pod.TypeMeta{Kind: "Pod"},
 		ObjectMeta: pod.ObjectMeta{
@@ -66,10 +66,10 @@ func TestPodSailerPassesRuntimeConfigFromPodSpec(t *testing.T) {
 	assert.Equal(t, "128Mi", call.Config.Resources.Limits.Memory)
 }
 
-func TestPodSailerDeletePodCleansRuntimeAndStore(t *testing.T) {
+func TestPodControllerDeletePodCleansRuntimeAndStore(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	ctrl := NewPodSailer(mockRuntime, podStore)
+	ctrl := NewPodController(mockRuntime, podStore)
 	p := newTestPod("delete-me", "default", pod.RestartPolicyAlways)
 	require.NoError(t, podStore.Create(p))
 
@@ -86,10 +86,10 @@ func TestPodSailerDeletePodCleansRuntimeAndStore(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestPodSailerDeleteFailedPodWithoutRuntimeState(t *testing.T) {
+func TestPodControllerDeleteFailedPodWithoutRuntimeState(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
-	ctrl := NewPodSailer(mockRuntime, podStore)
+	ctrl := NewPodController(mockRuntime, podStore)
 	p := newTestPod("failed-before-create", "default", pod.RestartPolicyAlways)
 	p.Status.Phase = pod.PodFailed
 	p.Status.Containers = nil

@@ -46,17 +46,17 @@ func (n *recordingNetwork) Del(ctx context.Context, req PodNetworkRequest) error
 	return nil
 }
 
-func TestPodSailerConfiguresCNIBeforeCreatingContainers(t *testing.T) {
+func TestPodControllerConfiguresCNIBeforeCreatingContainers(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	mockRuntime.NetNSPath = "/proc/123/ns/net"
 	podStore := NewMockPodStore()
 	network := &recordingNetwork{podIP: "10.244.0.2"}
-	sailer := NewPodSailerWithNetwork(mockRuntime, podStore, network)
+	controller := NewPodControllerWithNetwork(mockRuntime, podStore, network)
 
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
 	require.NoError(t, podStore.Create(testPod))
 
-	require.NoError(t, sailer.reconcilePod(context.Background(), testPod))
+	require.NoError(t, controller.reconcilePod(context.Background(), testPod))
 
 	updatedPod, err := podStore.Get("test-pod", "default")
 	require.NoError(t, err)
@@ -68,11 +68,11 @@ func TestPodSailerConfiguresCNIBeforeCreatingContainers(t *testing.T) {
 	assert.NotEmpty(t, mockRuntime.CreateContainerCalls)
 }
 
-func TestPodSailerTearsDownCNIOnDelete(t *testing.T) {
+func TestPodControllerTearsDownCNIOnDelete(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()
 	network := &recordingNetwork{podIP: "10.244.0.2"}
-	sailer := NewPodSailerWithNetwork(mockRuntime, podStore, network)
+	controller := NewPodControllerWithNetwork(mockRuntime, podStore, network)
 
 	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
 	testPod.Status.Phase = pod.PodRunning
@@ -82,7 +82,7 @@ func TestPodSailerTearsDownCNIOnDelete(t *testing.T) {
 	testPod.Status.Containers = []pod.ContainerStatus{{Name: "test-pod-container", ContainerID: "container-1"}}
 	require.NoError(t, podStore.Create(testPod))
 
-	require.NoError(t, sailer.DeletePod(context.Background(), "test-pod", "default"))
+	require.NoError(t, controller.DeletePod(context.Background(), "test-pod", "default"))
 
 	require.Len(t, network.delCalls, 1)
 	assert.Equal(t, "sandbox-1", network.delCalls[0].sandboxID)

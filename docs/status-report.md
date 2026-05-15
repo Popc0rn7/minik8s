@@ -26,11 +26,11 @@
 | Node | Node API / kubelet heartbeat | 部分实现 | 中低 | Sailer 通过 `/nodes/{name}/pods` 心跳注册 Ready；没有 capacity、allocatable、conditions、taints。 |
 | Navigator | scheduler | 部分实现 | 中低 | 只按 Ready Node 轮询；不使用 requests、NodeSelector、亲和性、资源过滤。 |
 | Sailer | kubelet 子集 | 部分实现 | 中 | 能拉 assigned Pod、创建/删除容器、回写 status；没有完整 pod worker、probe、日志、exec、资源上报。 |
-| Pod Sailer | kubelet pod lifecycle | 部分实现 | 中 | Docker sandbox、workload、volume、resource limit、restartPolicy 可用；probe 字段有类型但未执行。 |
+| Pod Controller | kubelet pod lifecycle | 部分实现 | 中 | Docker sandbox、workload、volume、resource limit、restartPolicy 可用；probe 字段有类型但未执行。 |
 | Docker runtime | CRI runtime 子集 | 部分实现 | 中 | 使用 Docker SDK，不是 CRI；pause 默认用 `alpine:3.20` 模拟。 |
 | CNI runner/plugin | CNI + bridge | 部分实现 | 中低 | 单节点 bridge、veth、IPAM、NAT 可用；跨节点可通过 sailer 内置 host-gw 同步或手工 route。 |
 | harbor 网络注册表 + sailer 网络同步 | flannel host-gw 类似组件 | 部分实现 | 中低 | Harbor 暴露网络节点注册表，sailer 通过同一控制面端口注册 node 与同步 host-gw route。 |
-| Service Sailer | endpoint controller | 部分实现 | 中 | 根据 selector + Running PodIP 生成 endpoints；没有独立 EndpointSlice 对象。 |
+| Service Controller | endpoint controller | 部分实现 | 中 | 根据 selector + Running PodIP 生成 endpoints；没有独立 EndpointSlice 对象。 |
 | kube-proxy | kube-proxy iptables mode | 部分实现 | 中低 | iptables 规则生成有单测；真实运行需要 root/network 权限，主入口注入 proxy 存在风险。 |
 | ReplicaSet | replicaset-controller | 未实现 | 无 | 没有类型、API、controller。 |
 | HPA | hpa-controller + metrics | 未实现 | 无 | 没有 metrics pipeline、ReplicaSet 对接。 |
@@ -146,7 +146,7 @@
 
 主要缺口：
 
-- 没有独立 kube-proxy daemon；proxy 是由 ServiceSailer 同步时直接调用。
+- 没有独立 kube-proxy daemon；proxy 是由 ServiceController 同步时直接调用。
 - 当前 `cmd/minik8s/main.go` 手动创建 `bridge.New(...)` 时没有传入 `ServiceProxy`，这会让真实 `minik8s bridge` 的 Service 数据面规则可能不生效，只更新 endpoints。
 - ClusterIP 默认/分配逻辑很简化，未完整处理冲突、回收、Service CIDR。
 - 没有 sessionAffinity、externalTrafficPolicy、EndpointSlice。

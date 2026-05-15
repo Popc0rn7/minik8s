@@ -1,4 +1,4 @@
-package sailer
+package captain
 
 import (
 	"context"
@@ -37,7 +37,7 @@ func (m *mockServiceProxy) DeleteService(ctx context.Context, svc *service.Servi
 	return nil
 }
 
-func TestServiceSailerBuildsEndpointsAndAppliesProxy(t *testing.T) {
+func TestServiceControllerBuildsEndpointsAndAppliesProxy(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
 	proxy := &mockServiceProxy{}
@@ -60,7 +60,7 @@ func TestServiceSailerBuildsEndpointsAndAppliesProxy(t *testing.T) {
 		Status: service.ServiceStatus{ClusterIP: "10.96.0.1"},
 	}))
 
-	ctrl := NewServiceSailer(podStore, serviceStore, proxy)
+	ctrl := NewServiceController(podStore, serviceStore, proxy)
 	require.NoError(t, ctrl.Sync(context.Background()))
 
 	updated, err := serviceStore.Get("nginx-service", "default")
@@ -72,7 +72,7 @@ func TestServiceSailerBuildsEndpointsAndAppliesProxy(t *testing.T) {
 	assert.Equal(t, updated.Status.Endpoints, proxy.applied[0].Status.Endpoints)
 }
 
-func TestServiceSailerUpdatesEndpointsWhenPodChanges(t *testing.T) {
+func TestServiceControllerUpdatesEndpointsWhenPodChanges(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
 	proxy := &mockServiceProxy{}
@@ -90,7 +90,7 @@ func TestServiceSailerUpdatesEndpointsWhenPodChanges(t *testing.T) {
 		Status: service.ServiceStatus{ClusterIP: "10.96.0.1"},
 	}))
 
-	ctrl := NewServiceSailer(podStore, serviceStore, proxy)
+	ctrl := NewServiceController(podStore, serviceStore, proxy)
 	require.NoError(t, ctrl.Sync(context.Background()))
 	require.NoError(t, podStore.Create(&pod.Pod{
 		ObjectMeta: pod.ObjectMeta{Name: "nginx-b", Namespace: "default", Labels: map[string]string{"app": "nginx"}},
@@ -106,7 +106,7 @@ func TestServiceSailerUpdatesEndpointsWhenPodChanges(t *testing.T) {
 	assert.Len(t, proxy.applied, 2)
 }
 
-func TestServiceSailerDeleteCleansProxyAndStore(t *testing.T) {
+func TestServiceControllerDeleteCleansProxyAndStore(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
 	proxy := &mockServiceProxy{}
@@ -115,7 +115,7 @@ func TestServiceSailerDeleteCleansProxyAndStore(t *testing.T) {
 		Status:     service.ServiceStatus{ClusterIP: "10.96.0.1"},
 	}))
 
-	ctrl := NewServiceSailer(podStore, serviceStore, proxy)
+	ctrl := NewServiceController(podStore, serviceStore, proxy)
 	require.NoError(t, ctrl.DeleteService(context.Background(), "nginx-service", "default"))
 
 	_, err := serviceStore.Get("nginx-service", "default")

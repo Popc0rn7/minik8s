@@ -18,7 +18,7 @@
 
 ## SVC-01：Service endpoints
 
-目标：验证 ServiceSailer 根据 selector 选中 Running Pod，并写入 endpoints。
+目标：验证 ServiceController 根据 selector 选中 Running Pod，并写入 endpoints。
 
 机器：node-a 执行 CLI。
 
@@ -224,14 +224,14 @@ iptables-save -t nat | grep MK8S-SVC || true
 流程：
 
 ```bash
-go test ./cmd/minik8s ./internal/kubeproxy ./internal/bridge/sailer ./internal/cli -count=1
+go test ./cmd/minik8s ./internal/kubeproxy ./internal/bridge/captain ./internal/cli -count=1
 ```
 
 期望：
 
 - `cmd/minik8s` 测试确认默认注入 iptables ServiceProxy，并尊重 `MINIK8S_SERVICE_PROXY_DISABLED=1`。
 - `internal/kubeproxy` 测试确认 ClusterIP、NodePort、多 endpoint、delete 规则生成。
-- ServiceSailer 和 CLI 测试通过。
+- ServiceController 和 CLI 测试通过。
 
 失败排查：
 
