@@ -27,6 +27,10 @@ const (
 	PodUnknown   PodPhase = "Unknown"
 )
 
+const (
+	PodReasonNodeLost = "NodeLost"
+)
+
 // ContainerStatus represents the status of a container
 type ContainerStatus struct {
 	Name         string         `json:"name" yaml:"name"`

@@ -258,7 +258,7 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 		return
 	}
-	if err := s.refreshNodeLiveness(); err != nil {
+	if _, err := s.refreshNodeLiveness(r.Context()); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
@@ -298,7 +298,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 		return
 	}
-	if err := s.refreshNodeLiveness(); err != nil {
+	if _, err := s.refreshNodeLiveness(r.Context()); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
@@ -492,9 +492,56 @@ func (s *Server) syncServices(ctx context.Context) error {
 	return ctrl.Sync(ctx)
 }
 
-func (s *Server) refreshNodeLiveness() error {
-	_, err := s.nodes.RefreshLiveness(s.nodeTTL)
-	return err
+func (s *Server) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransition, error) {
+	return s.refreshNodeLiveness(ctx)
+}
+
+func (s *Server) refreshNodeLiveness(ctx context.Context) ([]store.NodeTransition, error) {
+	transitions, err := s.nodes.RefreshLiveness(s.nodeTTL)
+	if err != nil {
+		return nil, err
+	}
+	updatedPods := 0
+	for _, transition := range transitions {
+		if transition.To != node.NodeUnknown {
+			continue
+		}
+		count, err := s.markPodsNodeLost(transition.Name)
+		if err != nil {
+			return nil, err
+		}
+		updatedPods += count
+	}
+	if updatedPods > 0 {
+		if err := s.syncServices(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return transitions, nil
+}
+
+func (s *Server) markPodsNodeLost(nodeName string) (int, error) {
+	pods, err := s.pods.List("", nil)
+	if err != nil {
+		return 0, fmt.Errorf("listing pods for node liveness: %w", err)
+	}
+	updated := 0
+	for _, p := range pods {
+		if p.Spec.NodeName != nodeName {
+			continue
+		}
+		if p.Status.Phase != pod.PodPending && p.Status.Phase != pod.PodRunning {
+			continue
+		}
+		p.Status.Phase = pod.PodUnknown
+		p.Status.Reason = pod.PodReasonNodeLost
+		p.Status.Message = fmt.Sprintf("Node %s stopped reporting heartbeat", nodeName)
+		if err := s.pods.Update(p); err != nil {
+			return updated, fmt.Errorf("marking pod %s/%s node lost: %w", p.Namespace, p.Name, err)
+		}
+		updated++
+	}
+	return updated, nil
 }
 
 func (s *Server) shouldLogNodeConnect(nodeName string) (bool, error) {

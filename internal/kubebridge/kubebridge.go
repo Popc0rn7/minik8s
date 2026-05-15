@@ -1,6 +1,7 @@
 package kubebridge
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -68,6 +69,17 @@ func (k *Kubebridge) Handler() http.Handler {
 		ServiceProxy:  k.serviceProxy,
 		NodeTTL:       k.nodeTTL,
 	})
+}
+
+func (k *Kubebridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransition, error) {
+	return kubeharbor.New(kubeharbor.Config{
+		PodStore:      k.podStore,
+		ServiceStore:  k.serviceStore,
+		NodeStore:     k.nodeStore,
+		Kubenavigator: k.kubenavigator,
+		ServiceProxy:  k.serviceProxy,
+		NodeTTL:       k.nodeTTL,
+	}).RefreshNodeLiveness(ctx)
 }
 
 func (k *Kubebridge) PodStore() store.PodStore {

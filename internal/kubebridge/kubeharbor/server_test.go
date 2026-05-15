@@ -321,6 +321,103 @@ func TestKubeharborListNodesRefreshesExpiredNodesToUnknown(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"status":"Unknown"`)
 }
 
+func TestKubeharborNodeLostMarksAssignedPodsUnknownAndRefreshesEndpoints(t *testing.T) {
+	now := time.Unix(100, 0)
+	podStore := store.NewInMemoryPodStore()
+	serviceStore := store.NewInMemoryServiceStore()
+	nodeStore := store.NewInMemoryNodeStore()
+	nodeStore.SetNow(func() time.Time { return now })
+	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}))
+	require.NoError(t, podStore.Create(&pod.Pod{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default", Labels: map[string]string{"app": "nginx"}},
+		Spec:       pod.PodSpec{NodeName: "node-a", Containers: []pod.ContainerSpec{{Name: "nginx", Image: "nginx"}}},
+		Status: pod.PodStatus{
+			Phase:     pod.PodRunning,
+			PodIP:     "10.244.0.2",
+			SandboxID: "sandbox-1",
+			Containers: []pod.ContainerStatus{{
+				Name:        "nginx",
+				ContainerID: "container-1",
+				Ready:       true,
+			}},
+		},
+	}))
+	require.NoError(t, podStore.Create(&pod.Pod{
+		ObjectMeta: pod.ObjectMeta{Name: "other", Namespace: "default", Labels: map[string]string{"app": "nginx"}},
+		Spec:       pod.PodSpec{NodeName: "node-b", Containers: []pod.ContainerSpec{{Name: "nginx", Image: "nginx"}}},
+		Status:     pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.1.2", SandboxID: "sandbox-2"},
+	}))
+	require.NoError(t, serviceStore.Create(&service.Service{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx-service", Namespace: "default"},
+		Spec: service.ServiceSpec{
+			Selector: pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}},
+			Ports:    []service.ServicePort{{Port: 80, TargetPort: 80, Protocol: "TCP"}},
+		},
+	}))
+	srv := New(Config{PodStore: podStore, ServiceStore: serviceStore, NodeStore: nodeStore, NodeTTL: 30 * time.Second})
+	require.NoError(t, srv.syncServices(context.Background()))
+
+	rec := serve(t, srv, http.MethodGet, "/api/v1/nodes", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	gotPod, err := podStore.Get("nginx", "default")
+	require.NoError(t, err)
+	assert.Equal(t, pod.PodUnknown, gotPod.Status.Phase)
+	assert.Equal(t, pod.PodReasonNodeLost, gotPod.Status.Reason)
+	assert.Equal(t, "Node node-a stopped reporting heartbeat", gotPod.Status.Message)
+	assert.Equal(t, "10.244.0.2", gotPod.Status.PodIP)
+	assert.Equal(t, "sandbox-1", gotPod.Status.SandboxID)
+	require.Len(t, gotPod.Status.Containers, 1)
+
+	otherPod, err := podStore.Get("other", "default")
+	require.NoError(t, err)
+	assert.Equal(t, pod.PodRunning, otherPod.Status.Phase)
+
+	gotSvc, err := serviceStore.Get("nginx-service", "default")
+	require.NoError(t, err)
+	require.Len(t, gotSvc.Status.Endpoints, 1)
+	assert.Equal(t, "other", gotSvc.Status.Endpoints[0].PodName)
+	assert.Equal(t, "10.244.1.2", gotSvc.Status.Endpoints[0].IP)
+}
+
+func TestKubeharborNodeLostDoesNotChangeTerminalPods(t *testing.T) {
+	now := time.Unix(100, 0)
+	podStore := store.NewInMemoryPodStore()
+	nodeStore := store.NewInMemoryNodeStore()
+	nodeStore.SetNow(func() time.Time { return now })
+	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}))
+	for _, item := range []struct {
+		name  string
+		phase pod.PodPhase
+	}{
+		{name: "done", phase: pod.PodSucceeded},
+		{name: "failed", phase: pod.PodFailed},
+	} {
+		require.NoError(t, podStore.Create(&pod.Pod{
+			ObjectMeta: pod.ObjectMeta{Name: item.name, Namespace: "default"},
+			Spec:       pod.PodSpec{NodeName: "node-a", Containers: []pod.ContainerSpec{{Name: "c", Image: "busybox"}}},
+			Status:     pod.PodStatus{Phase: item.phase, Reason: "existing"},
+		}))
+	}
+	srv := New(Config{PodStore: podStore, NodeStore: nodeStore, NodeTTL: 30 * time.Second})
+
+	rec := serve(t, srv, http.MethodGet, "/api/v1/nodes", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	for _, item := range []struct {
+		name  string
+		phase pod.PodPhase
+	}{
+		{name: "done", phase: pod.PodSucceeded},
+		{name: "failed", phase: pod.PodFailed},
+	} {
+		got, err := podStore.Get(item.name, "default")
+		require.NoError(t, err)
+		assert.Equal(t, item.phase, got.Status.Phase)
+		assert.Equal(t, "existing", got.Status.Reason)
+	}
+}
+
 func TestKubeharborLogsNodeConnectOnlyOnStateTransition(t *testing.T) {
 	var logs bytes.Buffer
 	restore := minilog.SetOutput(&logs)
