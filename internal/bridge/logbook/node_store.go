@@ -18,7 +18,7 @@ var ErrNodeNotFound = errors.New("node not found")
 
 type NodeStore interface {
 	Upsert(n *node.Node) error
-	UpsertHeartbeat(name string) error
+	UpsertHeartbeat(name string, updates ...node.Node) error
 	RefreshLiveness(ttl time.Duration) ([]NodeTransition, error)
 	Get(name string) (*node.Node, error)
 	List() ([]node.Node, error)
@@ -66,15 +66,15 @@ func (s *InMemoryNodeStore) Upsert(n *node.Node) error {
 	return nil
 }
 
-func (s *InMemoryNodeStore) UpsertHeartbeat(name string) error {
+func (s *InMemoryNodeStore) UpsertHeartbeat(name string, updates ...node.Node) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	n, err := heartbeatNode(name, s.now)
+	n, err := heartbeatNode(name, s.now, updates...)
 	if err != nil {
 		return err
 	}
-	if existing, ok := s.nodes[n.Name]; ok && existing.Labels != nil {
-		n.Labels = copyLabels(existing.Labels)
+	if existing, ok := s.nodes[n.Name]; ok {
+		mergeNodeHeartbeat(n, existing)
 	}
 	s.nodes[n.Name] = n
 	return nil
@@ -154,18 +154,18 @@ func (s *FileNodeStore) Upsert(n *node.Node) error {
 	return s.saveLocked()
 }
 
-func (s *FileNodeStore) UpsertHeartbeat(name string) error {
+func (s *FileNodeStore) UpsertHeartbeat(name string, updates ...node.Node) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.reloadLocked(); err != nil {
 		return err
 	}
-	n, err := heartbeatNode(name, s.now)
+	n, err := heartbeatNode(name, s.now, updates...)
 	if err != nil {
 		return err
 	}
-	if existing, ok := s.nodes[n.Name]; ok && existing.Labels != nil {
-		n.Labels = copyLabels(existing.Labels)
+	if existing, ok := s.nodes[n.Name]; ok {
+		mergeNodeHeartbeat(n, existing)
 	}
 	s.nodes[n.Name] = n
 	return s.saveLocked()
@@ -264,18 +264,29 @@ func (s *FileNodeStore) saveLocked() error {
 	return nil
 }
 
-func heartbeatNode(name string, now func() time.Time) (*node.Node, error) {
+func heartbeatNode(name string, now func() time.Time, updates ...node.Node) (*node.Node, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, fmt.Errorf("node name is required")
 	}
-	return &node.Node{
+	n := &node.Node{
 		Name:          name,
 		Role:          node.NodeRoleWorker,
 		Status:        node.NodeReady,
 		LastHeartbeat: now().UTC(),
 		Labels:        map[string]string{},
-	}, nil
+	}
+	if len(updates) > 0 {
+		n.NodeIP = strings.TrimSpace(updates[0].NodeIP)
+		n.PodCIDR = strings.TrimSpace(updates[0].PodCIDR)
+		if updates[0].Labels != nil {
+			n.Labels = copyLabels(updates[0].Labels)
+		}
+		if updates[0].Role != "" {
+			n.Role = updates[0].Role
+		}
+	}
+	return n, nil
 }
 
 func normalizeNode(n *node.Node) (*node.Node, error) {
@@ -296,7 +307,27 @@ func normalizeNode(n *node.Node) (*node.Node, error) {
 	if ncopy.Labels == nil {
 		ncopy.Labels = map[string]string{}
 	}
+	ncopy.NodeIP = strings.TrimSpace(ncopy.NodeIP)
+	ncopy.PodCIDR = strings.TrimSpace(ncopy.PodCIDR)
 	return ncopy, nil
+}
+
+func mergeNodeHeartbeat(next, existing *node.Node) {
+	if existing == nil || next == nil {
+		return
+	}
+	if next.NodeIP == "" {
+		next.NodeIP = existing.NodeIP
+	}
+	if next.PodCIDR == "" {
+		next.PodCIDR = existing.PodCIDR
+	}
+	if len(next.Labels) == 0 && existing.Labels != nil {
+		next.Labels = copyLabels(existing.Labels)
+	}
+	if next.Role == "" {
+		next.Role = existing.Role
+	}
 }
 
 func sortedNodeValues(nodes map[string]*node.Node) []node.Node {

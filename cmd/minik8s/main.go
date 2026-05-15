@@ -9,7 +9,6 @@ import (
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/cli"
 	"minik8s/internal/cliui"
-	"minik8s/internal/kubeproxy"
 	dockerruntime "minik8s/internal/runtime/docker"
 )
 
@@ -90,13 +89,9 @@ func openStores() (store.PodStore, store.ServiceStore, store.NodeStore, func(), 
 }
 
 func newBridgeConfig(podStore store.PodStore, serviceStore store.ServiceStore, nodeStore store.NodeStore) bridge.Config {
-	config := bridge.Config{
+	return bridge.Config{
 		PodStore:     podStore,
 		ServiceStore: serviceStore,
 		NodeStore:    nodeStore,
 	}
-	if os.Getenv("MINIK8S_SERVICE_PROXY_DISABLED") != "1" {
-		config.ServiceProxy = kubeproxy.NewIPTablesProxy(nil)
-	}
-	return config
 }

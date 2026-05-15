@@ -8,58 +8,19 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/bridge/harbor"
+	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 	"minik8s/test/mock"
 )
-
-type mockServiceProxy struct {
-	mu      sync.Mutex
-	applied []*service.Service
-	deleted []*service.Service
-}
-
-func (m *mockServiceProxy) SyncService(ctx context.Context, svc *service.Service) error {
-	_ = ctx
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.applied = append(m.applied, svc.DeepCopy())
-	return nil
-}
-
-func (m *mockServiceProxy) SyncAll(ctx context.Context, services []*service.Service) error {
-	_ = ctx
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, svc := range services {
-		m.applied = append(m.applied, svc.DeepCopy())
-	}
-	return nil
-}
-
-func (m *mockServiceProxy) DeleteService(ctx context.Context, svc *service.Service) error {
-	_ = ctx
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.deleted = append(m.deleted, svc.DeepCopy())
-	return nil
-}
-
-func (m *mockServiceProxy) appliedCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.applied)
-}
 
 func TestCLIApplyGetDeletePod(t *testing.T) {
 	serverStore := store.NewInMemoryPodStore()
@@ -418,6 +379,7 @@ func TestSailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {
 		"--harbor", "http://minik8s.test",
 		"--node-ip", "192.168.1.8",
 		"--pod-cidr", "10.244.0.0/24",
+		"--proxy-disabled",
 		"--once",
 	}, &out)
 
@@ -589,7 +551,6 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
 	localServiceStore := store.NewInMemoryServiceStore()
-	proxy := &mockServiceProxy{}
 	server := harbor.New(harbor.Config{PodStore: podStore, ServiceStore: serviceStore})
 	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), localServiceStore)
 	manifest := filepath.Join("..", "..", "manifest", "testdata", "service_clusterip_nginx.yaml")
@@ -612,7 +573,6 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"delete", "service", "nginx-service"}, &out))
 	assert.Contains(t, out.String(), "service/nginx-service deleted")
-	assert.Empty(t, proxy.deleted)
 }
 
 func TestParseBridgeOptionsServiceSyncInterval(t *testing.T) {
@@ -633,7 +593,10 @@ func TestParseBridgeOptionsServiceSyncInterval(t *testing.T) {
 func TestServiceSyncLoopRunsPeriodically(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
-	proxy := &mockServiceProxy{}
+	require.NoError(t, podStore.Create(&pod.Pod{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default", Labels: map[string]string{"app": "nginx"}},
+		Status:     pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.0.2"},
+	}))
 	require.NoError(t, serviceStore.Create(&service.Service{
 		ObjectMeta: pod.ObjectMeta{Name: "nginx-service", Namespace: "default"},
 		Spec: service.ServiceSpec{
@@ -646,16 +609,23 @@ func TestServiceSyncLoopRunsPeriodically(t *testing.T) {
 		Runtime:      mock.NewMockRuntime(),
 		Store:        podStore,
 		ServiceStore: serviceStore,
-		ServiceProxy: proxy,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go app.runServiceSyncLoop(ctx, 10*time.Millisecond)
 
 	require.Eventually(t, func() bool {
-		return proxy.appliedCount() > 0
+		got, err := serviceStore.Get("nginx-service", "default")
+		return err == nil && len(got.Status.Endpoints) == 1
 	}, time.Second, 10*time.Millisecond)
 	cancel()
+}
+
+func TestParseSailerOptionsProxyDisabled(t *testing.T) {
+	options, err := parseSailerOptions([]string{"--node-name", "node-a", "--harbor", "http://127.0.0.1:18080", "--proxy-disabled"})
+
+	require.NoError(t, err)
+	assert.True(t, options.proxyDisabled)
 }
 
 func TestCLICobraResourceAliasesAndNamedGet(t *testing.T) {

@@ -18,7 +18,7 @@
 
 ## SVC-01：Service endpoints
 
-目标：验证 ServiceSailer 根据 selector 选中 Running Pod，并写入 endpoints。
+目标：验证 ServiceController 根据 selector 选中 Running Pod，并写入 endpoints。
 
 机器：node-a 执行 CLI。
 
@@ -46,7 +46,7 @@ sleep 6
 
 ## SVC-02：ClusterIP 规则与数据面
 
-目标：验证 bridge 节点上的 ServiceProxy 写入 iptables NAT 规则，并能从 node-a Pod 内访问 ClusterIP。
+目标：验证 node-a 上随 sailer 运行的 kubeproxy 写入 iptables NAT 规则，并能从 node-a Pod 内访问 ClusterIP。
 
 机器：node-a。
 
@@ -72,12 +72,12 @@ head -n 1 /tmp/minik8s-service-clusterip.html
 
 失败排查：
 
-- 没有 `MK8S-SVC`：确认 bridge 没有设置 `MINIK8S_SERVICE_PROXY_DISABLED=1`，并且使用的是包含 P0 修复后的二进制。
+- 没有 `MK8S-SVC`：确认 node-a 的 sailer 未使用 `--proxy-disabled`，并且运行用户有 root/iptables 权限。
 - 有规则但访问失败：检查 CNI PodIP、`ip route` 和 Docker container 网络命名空间。
 
 ## SVC-03：NodePort 规则与宿主机访问
 
-目标：验证 NodePort Service 在运行 ServiceProxy 的节点上暴露 `30080`。
+目标：验证 NodePort Service 在运行 sailer/kubeproxy 的节点上暴露 `30080`。
 
 机器：node-a 必测；node-b 辅助观察。
 
@@ -224,15 +224,15 @@ iptables-save -t nat | grep MK8S-SVC || true
 流程：
 
 ```bash
-go test ./cmd/minik8s ./internal/kubeproxy ./internal/bridge/sailer ./internal/cli -count=1
+go test ./cmd/minik8s ./internal/kubeproxy ./internal/bridge/captain ./internal/cli -count=1
 ```
 
 期望：
 
-- `cmd/minik8s` 测试确认默认注入 iptables ServiceProxy，并尊重 `MINIK8S_SERVICE_PROXY_DISABLED=1`。
+- `internal/cli` 和 `internal/sailer` 测试确认 sailer 默认启用 iptables kubeproxy，并可通过 `--proxy-disabled` 关闭。
 - `internal/kubeproxy` 测试确认 ClusterIP、NodePort、多 endpoint、delete 规则生成。
-- ServiceSailer 和 CLI 测试通过。
+- ServiceController 和 CLI 测试通过。
 
 失败排查：
 
-- `cmd/minik8s` 注入测试失败：检查 main 入口是否绕过了默认 ServiceProxy。
+- sailer proxy 测试失败：检查 CLI 是否把 `--proxy-disabled` 传入 sailer options，以及 sailer 是否调用 Service list API。

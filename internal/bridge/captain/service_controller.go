@@ -1,4 +1,4 @@
-package sailer
+package captain
 
 import (
 	"context"
@@ -7,33 +7,24 @@ import (
 	"strings"
 
 	store "minik8s/internal/bridge/logbook"
-	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 )
 
-type ServiceProxy = kubeproxy.Proxy
-
-func NewIPTablesServiceProxy() *kubeproxy.IPTablesProxy {
-	return kubeproxy.NewIPTablesProxy(nil)
-}
-
-type ServiceSailer struct {
+type ServiceController struct {
 	podStore     store.PodStore
 	serviceStore store.ServiceStore
-	proxy        ServiceProxy
 }
 
-func NewServiceSailer(podStore store.PodStore, serviceStore store.ServiceStore, proxy ServiceProxy) *ServiceSailer {
-	return &ServiceSailer{
+func NewServiceController(podStore store.PodStore, serviceStore store.ServiceStore) *ServiceController {
+	return &ServiceController{
 		podStore:     podStore,
 		serviceStore: serviceStore,
-		proxy:        proxy,
 	}
 }
 
-func (c *ServiceSailer) Sync(ctx context.Context) error {
+func (c *ServiceController) Sync(ctx context.Context) error {
 	services, err := c.serviceStore.List("", nil)
 	if err != nil {
 		return fmt.Errorf("listing services: %w", err)
@@ -52,20 +43,16 @@ func (c *ServiceSailer) Sync(ctx context.Context) error {
 	return nil
 }
 
-func (c *ServiceSailer) DeleteService(ctx context.Context, name, namespace string) error {
+func (c *ServiceController) DeleteService(ctx context.Context, name, namespace string) error {
 	svc, err := c.serviceStore.Get(name, namespace)
 	if err != nil {
 		return err
 	}
-	if c.proxy != nil {
-		if err := c.proxy.DeleteService(ctx, svc); err != nil {
-			return fmt.Errorf("deleting service proxy rules: %w", err)
-		}
-	}
+	_ = svc
 	return c.serviceStore.Delete(name, namespace)
 }
 
-func (c *ServiceSailer) reconcileService(ctx context.Context, svc *service.Service) error {
+func (c *ServiceController) reconcileService(ctx context.Context, svc *service.Service) error {
 	pods, err := c.podStore.List(svc.Namespace, &svc.Spec.Selector)
 	if err != nil {
 		return fmt.Errorf("listing selected pods: %w", err)
@@ -98,11 +85,7 @@ func (c *ServiceSailer) reconcileService(ctx context.Context, svc *service.Servi
 	if err := c.serviceStore.Update(svc); err != nil {
 		return fmt.Errorf("updating service status: %w", err)
 	}
-	if c.proxy != nil {
-		if err := c.proxy.SyncService(ctx, svc); err != nil {
-			return fmt.Errorf("applying service proxy rules: %w", err)
-		}
-	}
+	_ = ctx
 	minilog.Info("service-sync", "service=%s/%s endpoints=%s", svc.Namespace, svc.Name, endpointSummary(endpoints))
 	return nil
 }

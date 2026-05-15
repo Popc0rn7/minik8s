@@ -21,6 +21,8 @@ type Node struct {
 	Role          NodeRole          `json:"role" yaml:"role"`
 	Status        NodeStatus        `json:"status" yaml:"status"`
 	LastHeartbeat time.Time         `json:"lastHeartbeat,omitempty" yaml:"lastHeartbeat,omitempty"`
+	NodeIP        string            `json:"nodeIP,omitempty" yaml:"nodeIP,omitempty"`
+	PodCIDR       string            `json:"podCIDR,omitempty" yaml:"podCIDR,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
 }
 

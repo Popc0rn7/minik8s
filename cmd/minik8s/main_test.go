@@ -14,33 +14,18 @@ import (
 	"go.etcd.io/etcd/server/v3/embed"
 
 	store "minik8s/internal/bridge/logbook"
-	"minik8s/internal/kubeproxy"
 )
 
-func TestNewBridgeConfigInjectsDefaultServiceProxy(t *testing.T) {
-	t.Setenv("MINIK8S_SERVICE_PROXY_DISABLED", "")
-
+func TestNewBridgeConfigDoesNotInjectServiceProxy(t *testing.T) {
 	config := newBridgeConfig(
 		store.NewInMemoryPodStore(),
 		store.NewInMemoryServiceStore(),
 		store.NewInMemoryNodeStore(),
 	)
 
-	require.NotNil(t, config.ServiceProxy)
-	_, ok := config.ServiceProxy.(*kubeproxy.IPTablesProxy)
-	assert.True(t, ok)
-}
-
-func TestNewBridgeConfigHonorsServiceProxyDisabled(t *testing.T) {
-	t.Setenv("MINIK8S_SERVICE_PROXY_DISABLED", "1")
-
-	config := newBridgeConfig(
-		store.NewInMemoryPodStore(),
-		store.NewInMemoryServiceStore(),
-		store.NewInMemoryNodeStore(),
-	)
-
-	assert.Nil(t, config.ServiceProxy)
+	assert.NotNil(t, config.PodStore)
+	assert.NotNil(t, config.ServiceStore)
+	assert.NotNil(t, config.NodeStore)
 }
 
 func TestOpenStoresUsesEtcdBackendForPodServiceAndNodeStores(t *testing.T) {

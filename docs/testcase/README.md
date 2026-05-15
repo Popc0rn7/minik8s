@@ -93,5 +93,5 @@ iptables-save -t nat | grep MK8S-SVC || true
 - Pod 一直 `Pending`：检查对应 `nodeName` 的 sailer 是否在运行，或执行 `./minik8s get nodes` 看节点心跳。
 - Pod 没有 IP：检查 `MINIK8S_CNI_DISABLED` 是否被设置为 `1`，以及 `doctor network` 的 CNI conf/bin 路径。
 - 跨节点 PodIP 不通：检查 `sailer` 是否带了 `--node-ip` 和 `--pod-cidr`，`ip route` 是否有对端 PodCIDR，宿主机防火墙是否拦截转发。
-- Service ClusterIP 不通：检查 `bridge` 是否启用了默认 ServiceProxy，`iptables-save -t nat | grep MK8S-SVC` 是否有规则。
+- Service ClusterIP 不通：检查对应节点的 `sailer` 是否未使用 `--proxy-disabled`，`iptables-save -t nat | grep MK8S-SVC` 是否有规则。
 - NodePort 不通：确认访问的是运行了 proxy 规则的节点 IP，且宿主机防火墙允许 `30080`。

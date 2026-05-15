@@ -46,7 +46,7 @@ The Cobra CLI also accepts `--server`, which overrides the environment variable 
 | `GET` | `/api/v1/namespaces/{namespace}/services` | List Services in a namespace and refresh endpoints. |
 | `GET` | `/api/v1/namespaces/{namespace}/services/{name}` | Read one Service and refresh endpoints. |
 | `PUT` | `/api/v1/namespaces/{namespace}/services/{name}` | Replace one Service. |
-| `DELETE` | `/api/v1/namespaces/{namespace}/services/{name}` | Delete one Service and clean proxy state. |
+| `DELETE` | `/api/v1/namespaces/{namespace}/services/{name}` | Delete one Service. Node-local sailer/kubeproxy cleans data-plane rules on its next sync. |
 
 ## Nodes
 
@@ -54,6 +54,6 @@ The Cobra CLI also accepts `--server`, which overrides the environment variable 
 |---|---|---|
 | `GET` | `/api/v1/nodes` | List known Nodes. |
 | `GET` | `/api/v1/nodes/{name}` | Read one Node. |
-| `GET` | `/api/v1/nodes/{name}/pods` | Worker heartbeat and assigned-Pod poll endpoint. |
+| `GET` | `/api/v1/nodes/{name}/pods?nodeIP={ip}&podCIDR={cidr}` | Worker heartbeat, optional Node network metadata update, and assigned-Pod poll endpoint. |
 
 Errors use a Kubernetes-style `Status` object with `kind`, `apiVersion`, `status`, `reason`, `message`, and `code`.

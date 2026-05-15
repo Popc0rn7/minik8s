@@ -21,28 +21,6 @@ import (
 	"minik8s/internal/service"
 )
 
-type mockServiceProxy struct {
-	synced  []*service.Service
-	deleted []*service.Service
-}
-
-func (m *mockServiceProxy) SyncService(_ context.Context, svc *service.Service) error {
-	m.synced = append(m.synced, svc.DeepCopy())
-	return nil
-}
-
-func (m *mockServiceProxy) SyncAll(_ context.Context, services []*service.Service) error {
-	for _, svc := range services {
-		m.synced = append(m.synced, svc.DeepCopy())
-	}
-	return nil
-}
-
-func (m *mockServiceProxy) DeleteService(_ context.Context, svc *service.Service) error {
-	m.deleted = append(m.deleted, svc.DeepCopy())
-	return nil
-}
-
 func newTestServer() *Server {
 	return New(Config{
 		PodStore:  store.NewInMemoryPodStore(),
@@ -203,14 +181,12 @@ func TestHarborServiceCRUD(t *testing.T) {
 	assert.Contains(t, logs.String(), "service-delete: service=default/nginx-service")
 }
 
-func TestHarborServiceCRUDAppliesServiceProxy(t *testing.T) {
+func TestHarborServiceCRUDUpdatesEndpointsWithoutServiceProxy(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
-	proxy := &mockServiceProxy{}
 	srv := New(Config{
 		PodStore:     podStore,
 		ServiceStore: serviceStore,
-		ServiceProxy: proxy,
 	})
 	require.NoError(t, podStore.Create(&pod.Pod{
 		TypeMeta:   pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
@@ -229,15 +205,15 @@ func TestHarborServiceCRUDAppliesServiceProxy(t *testing.T) {
 
 	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/services", body)
 	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
-	require.Len(t, proxy.synced, 1)
-	assert.Equal(t, "nginx-service", proxy.synced[0].Name)
-	require.Len(t, proxy.synced[0].Status.Endpoints, 1)
-	assert.Equal(t, int32(8080), proxy.synced[0].Status.Endpoints[0].TargetPort)
+	got, err := serviceStore.Get("nginx-service", "default")
+	require.NoError(t, err)
+	require.Len(t, got.Status.Endpoints, 1)
+	assert.Equal(t, int32(8080), got.Status.Endpoints[0].TargetPort)
 
 	del := serve(t, srv, http.MethodDelete, "/api/v1/namespaces/default/services/nginx-service", "")
 	require.Equal(t, http.StatusOK, del.Code, del.Body.String())
-	require.Len(t, proxy.deleted, 1)
-	assert.Equal(t, "nginx-service", proxy.deleted[0].Name)
+	_, err = serviceStore.Get("nginx-service", "default")
+	assert.ErrorIs(t, err, store.ErrServiceNotFound)
 }
 
 func TestHarborNodePodsEndpointFiltersByNodeName(t *testing.T) {
@@ -301,6 +277,23 @@ func TestHarborGetNode(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	assert.Contains(t, rec.Body.String(), `"name":"node-a"`)
+}
+
+func TestHarborNodePodsHeartbeatUpdatesNodeNetworkFields(t *testing.T) {
+	nodeStore := store.NewInMemoryNodeStore()
+	srv := New(Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: nodeStore,
+	})
+
+	heartbeat := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods?nodeIP=192.168.1.8&podCIDR=10.244.0.0%2F24", "")
+	require.Equal(t, http.StatusOK, heartbeat.Code, heartbeat.Body.String())
+	got, err := nodeStore.Get("node-a")
+	require.NoError(t, err)
+
+	assert.Equal(t, node.NodeReady, got.Status)
+	assert.Equal(t, "192.168.1.8", got.NodeIP)
+	assert.Equal(t, "10.244.0.0/24", got.PodCIDR)
 }
 
 func TestHarborListNodesRefreshesExpiredNodesToUnknown(t *testing.T) {

@@ -204,9 +204,9 @@ sleep 6
 
 目标：验证 node-b heartbeat 超时后，控制面将该节点上的非终态 Pod 从 `Running` 标为 `Unknown`，写入 `reason: NodeLost`，并从匹配的 Service endpoints 中移除该 PodIP。
 
-机器：node-a 执行 CLI；node-b 需要先运行 kubesailer，再在流程中手动停止。
+机器：node-a 执行 CLI；node-b 需要先运行 sailer，再在流程中手动停止。
 
-前置：node-a/node-b 均按 `two-node.md` 启动启用 CNI 的 kubesailer，且 `./minik8s get nodes` 能看到两个节点为 `Ready`。
+前置：node-a/node-b 均按 `two-node.md` 启动启用 CNI 的 sailer，且 `./minik8s get nodes` 能看到两个节点为 `Ready`。
 
 流程：
 
@@ -222,7 +222,7 @@ sleep 6
 ./minik8s describe service nginx-service
 ```
 
-在 node-b 的 kubesailer 终端按 `Ctrl-C` 停止 kubesailer，等待超过默认 Node TTL：
+在 node-b 的 sailer 终端按 `Ctrl-C` 停止 sailer，等待超过默认 Node TTL：
 
 ```bash
 sleep 35
@@ -233,8 +233,8 @@ sleep 35
 
 期望：
 
-- 停止 node-b kubesailer 前，`nginx-node-b` 为 `Running`，有非空 `podIP`。
-- 停止 node-b kubesailer 前，`nginx-service` endpoints 包含 `nginx-node-b` 对应 PodIP。
+- 停止 node-b sailer 前，`nginx-node-b` 为 `Running`，有非空 `podIP`。
+- 停止 node-b sailer 前，`nginx-service` endpoints 包含 `nginx-node-b` 对应 PodIP。
 - `get nodes` 触发 liveness refresh 后，`node-b` 状态为 `Unknown`。
 - `nginx-node-b` 的 `status.phase` 为 `Unknown`，`status.reason` 为 `NodeLost`。
 - `nginx-node-b` 的 `status.podIP` 仍保留，用于诊断。
@@ -243,10 +243,10 @@ sleep 35
 失败排查：
 
 - Pod 仍为 `Running`：确认等待时间超过 Node TTL，且执行过 `./minik8s get nodes` 或 node liveness loop 正在运行。
-- Service endpoint 仍包含 node-b PodIP：确认使用的是包含 NodeLost 级联修复后的 `kubebridge`，并等待一次 service sync。
-- node-b 重新出现 Ready：确认 node-b kubesailer 已停止，且没有 systemd/supervisor 自动拉起。
+- Service endpoint 仍包含 node-b PodIP：确认使用的是包含 NodeLost 级联修复后的 `bridge`，并等待一次 service sync。
+- node-b 重新出现 Ready：确认 node-b sailer 已停止，且没有 systemd/supervisor 自动拉起。
 
-清理：重新启动 node-b kubesailer，使节点回到 Ready，然后删除测试对象。
+清理：重新启动 node-b sailer，使节点回到 Ready，然后删除测试对象。
 
 ```bash
 ./minik8s delete service nginx-service || true
@@ -263,7 +263,7 @@ sleep 35
 流程：
 
 ```bash
-go test ./internal/bridge/sailer ./internal/sailer -run 'SandboxCreationFailure|SyncOnce' -count=1 -v
+go test ./internal/sailer -run 'SandboxCreationFailure|SyncOnce' -count=1 -v
 ```
 
 期望：
@@ -273,4 +273,4 @@ go test ./internal/bridge/sailer ./internal/sailer -run 'SandboxCreationFailure|
 
 失败排查：
 
-- 若测试失败，优先查看 PodSailer 的状态转换和 Sailer 的 status API 回写逻辑。
+- 若测试失败，优先查看 PodController 的状态转换和 Sailer 的 status API 回写逻辑。

@@ -11,11 +11,20 @@ import (
 	"path"
 	"strings"
 
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
+	"minik8s/internal/service"
 )
 
+type NodeHeartbeat struct {
+	NodeName string
+	NodeIP   string
+	PodCIDR  string
+}
+
 type PodClient interface {
-	ListAssignedPods(ctx context.Context, nodeName string) ([]*pod.Pod, error)
+	ListAssignedPods(ctx context.Context, heartbeat NodeHeartbeat) ([]*pod.Pod, error)
+	ListServices(ctx context.Context) ([]*service.Service, error)
 	UpdatePodStatus(ctx context.Context, p *pod.Pod) error
 }
 
@@ -31,8 +40,47 @@ func NewHTTPPodClient(baseURL string, client *http.Client) *HTTPPodClient {
 	return &HTTPPodClient{baseURL: strings.TrimRight(baseURL, "/"), client: client}
 }
 
-func (c *HTTPPodClient) ListAssignedPods(ctx context.Context, nodeName string) ([]*pod.Pod, error) {
-	endpoint, err := c.url("/api/v1/nodes/" + url.PathEscape(nodeName) + "/pods")
+func (c *HTTPPodClient) ListAssignedPods(ctx context.Context, heartbeat NodeHeartbeat) ([]*pod.Pod, error) {
+	endpoint, err := c.url("/api/v1/nodes/" + url.PathEscape(heartbeat.NodeName) + "/pods")
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	query := parsed.Query()
+	if heartbeat.NodeIP != "" {
+		query.Set("nodeIP", heartbeat.NodeIP)
+	}
+	if heartbeat.PodCIDR != "" {
+		query.Set("podCIDR", heartbeat.PodCIDR)
+	}
+	parsed.RawQuery = query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.URL = parsed
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("list assigned pods: %s", responseError(resp))
+	}
+	var list struct {
+		Items []*pod.Pod `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (c *HTTPPodClient) ListServices(ctx context.Context) ([]*service.Service, error) {
+	endpoint, err := c.url("/api/v1/namespaces/default/services")
 	if err != nil {
 		return nil, err
 	}
@@ -46,10 +94,10 @@ func (c *HTTPPodClient) ListAssignedPods(ctx context.Context, nodeName string) (
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list assigned pods: %s", responseError(resp))
+		return nil, fmt.Errorf("list services: %s", responseError(resp))
 	}
 	var list struct {
-		Items []*pod.Pod `json:"items"`
+		Items []*service.Service `json:"items"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		return nil, err
@@ -104,6 +152,30 @@ func (c *HTTPPodClient) GetPod(ctx context.Context, name, namespace string) (*po
 		return nil, err
 	}
 	return &p, nil
+}
+
+func (c *HTTPPodClient) GetNode(ctx context.Context, name string) (*node.Node, error) {
+	endpoint, err := c.url("/api/v1/nodes/" + url.PathEscape(name))
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get node: %s", responseError(resp))
+	}
+	var n node.Node
+	if err := json.NewDecoder(resp.Body).Decode(&n); err != nil {
+		return nil, err
+	}
+	return &n, nil
 }
 
 func (c *HTTPPodClient) url(resourcePath string) (string, error) {

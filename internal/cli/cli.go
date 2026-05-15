@@ -16,8 +16,8 @@ import (
 	"time"
 
 	bridge "minik8s/internal/bridge"
+	bridgeCaptain "minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
-	bridgeSailer "minik8s/internal/bridge/sailer"
 	"minik8s/internal/cliui"
 	"minik8s/internal/cni"
 	"minik8s/internal/kubeproxy"
@@ -40,7 +40,7 @@ type Config struct {
 	ServiceStore store.ServiceStore
 	NodeStore    store.NodeStore
 	Bridge       *bridge.Bridge
-	Network      bridgeSailer.PodNetworkManager
+	Network      nodeSailer.PodNetworkManager
 	ServiceProxy kubeproxy.Proxy
 	HTTPClient   *http.Client
 	NetRunner    netagent.Runner
@@ -53,7 +53,7 @@ type App struct {
 	serviceStore  store.ServiceStore
 	nodeStore     store.NodeStore
 	controlBridge *bridge.Bridge
-	network       bridgeSailer.PodNetworkManager
+	network       nodeSailer.PodNetworkManager
 	serviceProxy  kubeproxy.Proxy
 	httpClient    *http.Client
 	netRunner     netagent.Runner
@@ -76,16 +76,12 @@ func New(config Config) *App {
 		nodeStore = store.NewInMemoryNodeStore()
 	}
 	serviceProxy := config.ServiceProxy
-	if serviceProxy == nil && os.Getenv("MINIK8S_SERVICE_PROXY_DISABLED") != "1" {
-		serviceProxy = kubeproxy.NewIPTablesProxy(nil)
-	}
 	controlBridge := config.Bridge
 	if controlBridge == nil {
 		controlBridge = bridge.New(bridge.Config{
 			PodStore:     config.Store,
 			ServiceStore: serviceStore,
 			NodeStore:    nodeStore,
-			ServiceProxy: serviceProxy,
 		})
 	}
 	return &App{
@@ -793,7 +789,7 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 
 func (a *App) runServiceSyncLoop(ctx context.Context, interval time.Duration) {
 	syncOnce := func() {
-		ctrl := bridgeSailer.NewServiceSailer(a.controlBridge.PodStore(), a.controlBridge.ServiceStore(), a.controlBridge.ServiceProxy())
+		ctrl := bridgeCaptain.NewServiceController(a.controlBridge.PodStore(), a.controlBridge.ServiceStore())
 		if err := ctrl.Sync(ctx); err != nil {
 			minilog.Warn("service-periodic-sync", "error=%v", err)
 		}
@@ -839,15 +835,16 @@ func (a *App) runNodeLivenessLoop(ctx context.Context, interval time.Duration) {
 }
 
 type sailerOptions struct {
-	nodeName  string
-	harbor    string
-	nodeIP    string
-	podCIDR   string
-	interval  time.Duration
-	vxlanID   int
-	vxlanPort int
-	vxlanName string
-	once      bool
+	nodeName      string
+	harbor        string
+	nodeIP        string
+	podCIDR       string
+	interval      time.Duration
+	vxlanID       int
+	vxlanPort     int
+	vxlanName     string
+	proxyDisabled bool
+	once          bool
 }
 
 func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
@@ -856,11 +853,14 @@ func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	k := nodeSailer.New(nodeSailer.Config{
-		NodeName: options.nodeName,
-		Runtime:  a.runtime,
-		Network:  a.network,
-		Client:   nodeSailer.NewHTTPPodClient(options.harbor, a.httpClient),
-		Interval: options.interval,
+		NodeName:     options.nodeName,
+		NodeIP:       options.nodeIP,
+		PodCIDR:      options.podCIDR,
+		Runtime:      a.runtime,
+		Network:      a.network,
+		Client:       nodeSailer.NewHTTPPodClient(options.harbor, a.httpClient),
+		ServiceProxy: a.sailerServiceProxy(options),
+		Interval:     options.interval,
 	})
 	networkAgent, err := a.sailerNetworkAgent(options)
 	if err != nil {
@@ -997,6 +997,8 @@ func parseSailerOptions(args []string) (sailerOptions, error) {
 			options.vxlanName = args[i]
 		case "--once":
 			options.once = true
+		case "--proxy-disabled":
+			options.proxyDisabled = true
 		default:
 			return options, fmt.Errorf("unknown sailer flag %q", args[i])
 		}
@@ -1008,6 +1010,16 @@ func parseSailerOptions(args []string) (sailerOptions, error) {
 		return options, fmt.Errorf("--harbor is required")
 	}
 	return options, nil
+}
+
+func (a *App) sailerServiceProxy(options sailerOptions) kubeproxy.Proxy {
+	if options.proxyDisabled {
+		return nil
+	}
+	if a.serviceProxy != nil {
+		return a.serviceProxy
+	}
+	return kubeproxy.NewIPTablesProxy(nil)
 }
 
 func valueFlag(args []string, name string) (string, error) {
@@ -1178,7 +1190,7 @@ type cniNetworkManager struct {
 	runner *cni.Runner
 }
 
-func (m cniNetworkManager) Add(ctx context.Context, req bridgeSailer.PodNetworkRequest) (bridgeSailer.PodNetworkResult, error) {
+func (m cniNetworkManager) Add(ctx context.Context, req nodeSailer.PodNetworkRequest) (nodeSailer.PodNetworkResult, error) {
 	result, err := m.runner.Add(ctx, cni.PodNetwork{
 		ContainerID: req.SandboxID,
 		NetNS:       req.NetNSPath,
@@ -1187,12 +1199,12 @@ func (m cniNetworkManager) Add(ctx context.Context, req bridgeSailer.PodNetworkR
 		Namespace:   req.Pod.Namespace,
 	})
 	if err != nil {
-		return bridgeSailer.PodNetworkResult{}, err
+		return nodeSailer.PodNetworkResult{}, err
 	}
-	return bridgeSailer.PodNetworkResult{PodIP: result.PodIP, CNIResult: result.Raw}, nil
+	return nodeSailer.PodNetworkResult{PodIP: result.PodIP, CNIResult: result.Raw}, nil
 }
 
-func (m cniNetworkManager) Del(ctx context.Context, req bridgeSailer.PodNetworkRequest) error {
+func (m cniNetworkManager) Del(ctx context.Context, req nodeSailer.PodNetworkRequest) error {
 	return m.runner.Del(ctx, cni.PodNetwork{
 		ContainerID: req.SandboxID,
 		NetNS:       req.NetNSPath,
@@ -1202,7 +1214,7 @@ func (m cniNetworkManager) Del(ctx context.Context, req bridgeSailer.PodNetworkR
 	})
 }
 
-func defaultNetworkManager() bridgeSailer.PodNetworkManager {
+func defaultNetworkManager() nodeSailer.PodNetworkManager {
 	if os.Getenv("MINIK8S_CNI_DISABLED") == "1" {
 		return nil
 	}
