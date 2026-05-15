@@ -76,16 +76,12 @@ func New(config Config) *App {
 		nodeStore = store.NewInMemoryNodeStore()
 	}
 	serviceProxy := config.ServiceProxy
-	if serviceProxy == nil && os.Getenv("MINIK8S_SERVICE_PROXY_DISABLED") != "1" {
-		serviceProxy = kubeproxy.NewIPTablesProxy(nil)
-	}
 	controlBridge := config.Bridge
 	if controlBridge == nil {
 		controlBridge = bridge.New(bridge.Config{
 			PodStore:     config.Store,
 			ServiceStore: serviceStore,
 			NodeStore:    nodeStore,
-			ServiceProxy: serviceProxy,
 		})
 	}
 	return &App{
@@ -793,7 +789,7 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 
 func (a *App) runServiceSyncLoop(ctx context.Context, interval time.Duration) {
 	syncOnce := func() {
-		ctrl := bridgeCaptain.NewServiceController(a.controlBridge.PodStore(), a.controlBridge.ServiceStore(), a.controlBridge.ServiceProxy())
+		ctrl := bridgeCaptain.NewServiceController(a.controlBridge.PodStore(), a.controlBridge.ServiceStore())
 		if err := ctrl.Sync(ctx); err != nil {
 			minilog.Warn("service-periodic-sync", "error=%v", err)
 		}
@@ -839,15 +835,16 @@ func (a *App) runNodeLivenessLoop(ctx context.Context, interval time.Duration) {
 }
 
 type sailerOptions struct {
-	nodeName  string
-	harbor    string
-	nodeIP    string
-	podCIDR   string
-	interval  time.Duration
-	vxlanID   int
-	vxlanPort int
-	vxlanName string
-	once      bool
+	nodeName      string
+	harbor        string
+	nodeIP        string
+	podCIDR       string
+	interval      time.Duration
+	vxlanID       int
+	vxlanPort     int
+	vxlanName     string
+	proxyDisabled bool
+	once          bool
 }
 
 func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
@@ -856,11 +853,14 @@ func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	k := nodeSailer.New(nodeSailer.Config{
-		NodeName: options.nodeName,
-		Runtime:  a.runtime,
-		Network:  a.network,
-		Client:   nodeSailer.NewHTTPPodClient(options.harbor, a.httpClient),
-		Interval: options.interval,
+		NodeName:     options.nodeName,
+		NodeIP:       options.nodeIP,
+		PodCIDR:      options.podCIDR,
+		Runtime:      a.runtime,
+		Network:      a.network,
+		Client:       nodeSailer.NewHTTPPodClient(options.harbor, a.httpClient),
+		ServiceProxy: a.sailerServiceProxy(options),
+		Interval:     options.interval,
 	})
 	networkAgent, err := a.sailerNetworkAgent(options)
 	if err != nil {
@@ -997,6 +997,8 @@ func parseSailerOptions(args []string) (sailerOptions, error) {
 			options.vxlanName = args[i]
 		case "--once":
 			options.once = true
+		case "--proxy-disabled":
+			options.proxyDisabled = true
 		default:
 			return options, fmt.Errorf("unknown sailer flag %q", args[i])
 		}
@@ -1008,6 +1010,16 @@ func parseSailerOptions(args []string) (sailerOptions, error) {
 		return options, fmt.Errorf("--harbor is required")
 	}
 	return options, nil
+}
+
+func (a *App) sailerServiceProxy(options sailerOptions) kubeproxy.Proxy {
+	if options.proxyDisabled {
+		return nil
+	}
+	if a.serviceProxy != nil {
+		return a.serviceProxy
+	}
+	return kubeproxy.NewIPTablesProxy(nil)
 }
 
 func valueFlag(args []string, name string) (string, error) {

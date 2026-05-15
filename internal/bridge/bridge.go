@@ -8,7 +8,6 @@ import (
 	"minik8s/internal/bridge/harbor"
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/bridge/navigator"
-	"minik8s/internal/kubeproxy"
 )
 
 type Config struct {
@@ -16,7 +15,6 @@ type Config struct {
 	ServiceStore store.ServiceStore
 	NodeStore    store.NodeStore
 	Navigator    navigator.Navigator
-	ServiceProxy kubeproxy.Proxy
 	NodeTTL      time.Duration
 }
 
@@ -25,7 +23,6 @@ type Bridge struct {
 	serviceStore store.ServiceStore
 	nodeStore    store.NodeStore
 	navigator    navigator.Navigator
-	serviceProxy kubeproxy.Proxy
 	nodeTTL      time.Duration
 }
 
@@ -55,7 +52,6 @@ func New(config Config) *Bridge {
 		serviceStore: serviceStore,
 		nodeStore:    nodeStore,
 		navigator:    podNavigator,
-		serviceProxy: config.ServiceProxy,
 		nodeTTL:      nodeTTL,
 	}
 }
@@ -66,7 +62,6 @@ func (k *Bridge) Handler() http.Handler {
 		ServiceStore: k.serviceStore,
 		NodeStore:    k.nodeStore,
 		Navigator:    k.navigator,
-		ServiceProxy: k.serviceProxy,
 		NodeTTL:      k.nodeTTL,
 	})
 }
@@ -77,7 +72,6 @@ func (k *Bridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 		ServiceStore: k.serviceStore,
 		NodeStore:    k.nodeStore,
 		Navigator:    k.navigator,
-		ServiceProxy: k.serviceProxy,
 		NodeTTL:      k.nodeTTL,
 	}).RefreshNodeLiveness(ctx)
 }
@@ -88,10 +82,6 @@ func (k *Bridge) PodStore() store.PodStore {
 
 func (k *Bridge) ServiceStore() store.ServiceStore {
 	return k.serviceStore
-}
-
-func (k *Bridge) ServiceProxy() kubeproxy.Proxy {
-	return k.serviceProxy
 }
 
 func (k *Bridge) NodeStore() store.NodeStore {

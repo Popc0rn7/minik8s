@@ -319,8 +319,8 @@ func (s *EtcdNodeStore) Upsert(n *node.Node) error {
 	return s.putNode(ncopy)
 }
 
-func (s *EtcdNodeStore) UpsertHeartbeat(name string) error {
-	n, err := heartbeatNode(name, s.now)
+func (s *EtcdNodeStore) UpsertHeartbeat(name string, updates ...node.Node) error {
+	n, err := heartbeatNode(name, s.now, updates...)
 	if err != nil {
 		return err
 	}
@@ -328,8 +328,8 @@ func (s *EtcdNodeStore) UpsertHeartbeat(name string) error {
 	if err != nil && err != ErrNodeNotFound {
 		return err
 	}
-	if err == nil && existing.Labels != nil {
-		n.Labels = copyLabels(existing.Labels)
+	if err == nil {
+		mergeNodeHeartbeat(n, existing)
 	}
 	return s.putNode(n)
 }

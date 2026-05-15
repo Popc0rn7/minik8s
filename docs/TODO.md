@@ -2,7 +2,7 @@
 
 ## 相比 Kubernetes 的主要缺陷
 
-1. 缺少常驻 kube-proxy，Service 规则依赖手动触发同步。
+1. kubeproxy 已随 sailer 常驻，但仍是轮询同步，不是 Kubernetes informer/watch 模型。
 
 2. 多节点规则下发不完整，NodePort 回包和 SNAT 语义较弱。
 
@@ -12,7 +12,7 @@
 
 1. 多机下 Service 隐藏 Pod 位置的自动闭环还不完整。
 
-2. endpoint 动态更新依赖触发 sync，尚非主动 watch 更新。
+2. endpoint 和 kubeproxy 动态更新依赖周期 sync，尚非主动 watch 更新。
 
 3. NodePort、清理、展示主干达标，但复杂边界场景不足。
 

@@ -7,29 +7,20 @@ import (
 	"strings"
 
 	store "minik8s/internal/bridge/logbook"
-	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 )
 
-type ServiceProxy = kubeproxy.Proxy
-
-func NewIPTablesServiceProxy() *kubeproxy.IPTablesProxy {
-	return kubeproxy.NewIPTablesProxy(nil)
-}
-
 type ServiceController struct {
 	podStore     store.PodStore
 	serviceStore store.ServiceStore
-	proxy        ServiceProxy
 }
 
-func NewServiceController(podStore store.PodStore, serviceStore store.ServiceStore, proxy ServiceProxy) *ServiceController {
+func NewServiceController(podStore store.PodStore, serviceStore store.ServiceStore) *ServiceController {
 	return &ServiceController{
 		podStore:     podStore,
 		serviceStore: serviceStore,
-		proxy:        proxy,
 	}
 }
 
@@ -57,11 +48,7 @@ func (c *ServiceController) DeleteService(ctx context.Context, name, namespace s
 	if err != nil {
 		return err
 	}
-	if c.proxy != nil {
-		if err := c.proxy.DeleteService(ctx, svc); err != nil {
-			return fmt.Errorf("deleting service proxy rules: %w", err)
-		}
-	}
+	_ = svc
 	return c.serviceStore.Delete(name, namespace)
 }
 
@@ -98,11 +85,7 @@ func (c *ServiceController) reconcileService(ctx context.Context, svc *service.S
 	if err := c.serviceStore.Update(svc); err != nil {
 		return fmt.Errorf("updating service status: %w", err)
 	}
-	if c.proxy != nil {
-		if err := c.proxy.SyncService(ctx, svc); err != nil {
-			return fmt.Errorf("applying service proxy rules: %w", err)
-		}
-	}
+	_ = ctx
 	minilog.Info("service-sync", "service=%s/%s endpoints=%s", svc.Namespace, svc.Name, endpointSummary(endpoints))
 	return nil
 }

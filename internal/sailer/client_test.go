@@ -12,7 +12,9 @@ import (
 
 	"minik8s/internal/bridge/harbor"
 	store "minik8s/internal/bridge/logbook"
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
+	"minik8s/internal/service"
 )
 
 func TestHTTPPodClientListsAssignedPodsAndUpdatesStatus(t *testing.T) {
@@ -28,10 +30,19 @@ func TestHTTPPodClientListsAssignedPodsAndUpdatesStatus(t *testing.T) {
 	createPod(t, srv, "nginx", "node-a")
 	createPod(t, srv, "other", "node-b")
 
-	pods, err := client.ListAssignedPods(t.Context(), "node-a")
+	pods, err := client.ListAssignedPods(t.Context(), NodeHeartbeat{
+		NodeName: "node-a",
+		NodeIP:   "192.168.1.8",
+		PodCIDR:  "10.244.0.0/24",
+	})
 	require.NoError(t, err)
 	require.Len(t, pods, 1)
 	assert.Equal(t, "nginx", pods[0].Name)
+	gotNode, err := client.GetNode(t.Context(), "node-a")
+	require.NoError(t, err)
+	assert.Equal(t, node.NodeReady, gotNode.Status)
+	assert.Equal(t, "192.168.1.8", gotNode.NodeIP)
+	assert.Equal(t, "10.244.0.0/24", gotNode.PodCIDR)
 
 	pods[0].Status.Phase = pod.PodRunning
 	pods[0].Status.PodIP = "10.244.0.2"
@@ -41,6 +52,29 @@ func TestHTTPPodClientListsAssignedPodsAndUpdatesStatus(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, pod.PodRunning, got.Status.Phase)
 	assert.Equal(t, "10.244.0.2", got.Status.PodIP)
+}
+
+func TestHTTPPodClientListsServices(t *testing.T) {
+	serviceStore := store.NewInMemoryServiceStore()
+	require.NoError(t, serviceStore.Create(&service.Service{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx-service", Namespace: "default"},
+		Status:     service.ServiceStatus{ClusterIP: "10.96.0.1"},
+	}))
+	srv := harbor.New(harbor.Config{ServiceStore: serviceStore})
+	client := NewHTTPPodClient("http://minik8s.test", &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+			return rec.Result(), nil
+		}),
+	})
+
+	services, err := client.ListServices(t.Context())
+	require.NoError(t, err)
+
+	require.Len(t, services, 1)
+	assert.Equal(t, "nginx-service", services[0].Name)
+	assert.Equal(t, "10.96.0.1", services[0].Status.ClusterIP)
 }
 
 func TestHTTPPodClientUpdateStatusErrorIncludesResponseBody(t *testing.T) {

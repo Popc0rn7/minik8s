@@ -79,6 +79,36 @@ func TestIPTablesProxySyncAllReconcilesEveryService(t *testing.T) {
 	assert.Equal(t, 2, countCommandsContaining(runner.commands, "-t nat -N MK8S-SVC-"))
 }
 
+func TestIPTablesProxySyncAllDeletesServicesMissingFromSnapshot(t *testing.T) {
+	runner := &recordingRunner{}
+	proxy := NewIPTablesProxy(runner.Run)
+	oldSvc := &service.Service{
+		ObjectMeta: pod.ObjectMeta{Name: "old", Namespace: "default"},
+		Spec: service.ServiceSpec{
+			Type:  service.ServiceTypeClusterIP,
+			Ports: []service.ServicePort{{Protocol: "TCP", Port: 80, TargetPort: 8080}},
+		},
+		Status: service.ServiceStatus{ClusterIP: "10.96.0.10"},
+	}
+	newSvc := &service.Service{
+		ObjectMeta: pod.ObjectMeta{Name: "new", Namespace: "default"},
+		Spec: service.ServiceSpec{
+			Type:  service.ServiceTypeClusterIP,
+			Ports: []service.ServicePort{{Protocol: "TCP", Port: 80, TargetPort: 8080}},
+		},
+		Status: service.ServiceStatus{ClusterIP: "10.96.0.11"},
+	}
+
+	require.NoError(t, proxy.SyncAll(context.Background(), []*service.Service{oldSvc}))
+	runner.commands = nil
+	require.NoError(t, proxy.SyncAll(context.Background(), []*service.Service{newSvc}))
+
+	joined := strings.Join(runner.commands, "\n")
+	assert.Contains(t, joined, "-t nat -D PREROUTING -p tcp -d 10.96.0.10 --dport 80 -j MK8S-SVC-")
+	assert.Contains(t, joined, "-t nat -F MK8S-SVC-")
+	assert.Contains(t, joined, "-t nat -X MK8S-SVC-")
+}
+
 func TestIPTablesProxyDeleteServiceIgnoresMissingRules(t *testing.T) {
 	runner := &recordingRunner{failOn: "-D"}
 	proxy := NewIPTablesProxy(runner.Run)

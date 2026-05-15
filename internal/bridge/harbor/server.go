@@ -17,7 +17,6 @@ import (
 	"minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/bridge/navigator"
-	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/netregistry"
 	"minik8s/internal/node"
@@ -31,7 +30,6 @@ type Config struct {
 	ServiceStore store.ServiceStore
 	NodeStore    store.NodeStore
 	Navigator    navigator.Navigator
-	ServiceProxy kubeproxy.Proxy
 	NodeTTL      time.Duration
 	NetRegistry  *netregistry.Store
 }
@@ -41,7 +39,6 @@ type Server struct {
 	services    store.ServiceStore
 	nodes       store.NodeStore
 	navigator   navigator.Navigator
-	proxy       kubeproxy.Proxy
 	nodeTTL     time.Duration
 	netRegistry *netregistry.Store
 }
@@ -76,7 +73,6 @@ func New(config Config) *Server {
 		services:    serviceStore,
 		nodes:       nodeStore,
 		navigator:   podNavigator,
-		proxy:       config.ServiceProxy,
 		nodeTTL:     nodeTTL,
 		netRegistry: netRegistryStore,
 	}
@@ -149,6 +145,10 @@ func (s *Server) handleNetRegistryNodes(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if err := s.netRegistry.Register(n); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.nodes.UpsertHeartbeat(n.Name, node.Node{NodeIP: n.NodeIP, PodCIDR: n.PodCIDR}); err != nil {
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
@@ -267,9 +267,19 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	if err := s.nodes.UpsertHeartbeat(nodeName); err != nil {
+	heartbeat := node.Node{
+		NodeIP:  r.URL.Query().Get("nodeIP"),
+		PodCIDR: r.URL.Query().Get("podCIDR"),
+	}
+	if err := s.nodes.UpsertHeartbeat(nodeName, heartbeat); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
+	}
+	if heartbeat.NodeIP != "" && heartbeat.PodCIDR != "" {
+		if err := s.netRegistry.Register(netregistry.Node{Name: nodeName, NodeIP: heartbeat.NodeIP, PodCIDR: heartbeat.PodCIDR}); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
 	}
 	if shouldLogConnect {
 		minilog.Info("node-connect", "node=%s", nodeName)
@@ -434,7 +444,7 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request, namespac
 			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target a service")
 			return
 		}
-		ctrl := captain.NewServiceController(s.pods, s.services, s.proxy)
+		ctrl := captain.NewServiceController(s.pods, s.services)
 		if err := ctrl.DeleteService(r.Context(), name, namespace); err != nil {
 			writeStoreError(w, err, "services", name)
 			return
@@ -488,7 +498,7 @@ func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (
 }
 
 func (s *Server) syncServices(ctx context.Context) error {
-	ctrl := captain.NewServiceController(s.pods, s.services, s.proxy)
+	ctrl := captain.NewServiceController(s.pods, s.services)
 	return ctrl.Sync(ctx)
 }
 

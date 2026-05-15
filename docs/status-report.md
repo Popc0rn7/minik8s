@@ -141,19 +141,19 @@
 - Service 类型：ClusterIP、NodePort。
 - ClusterIP 分配。
 - 根据 selector 选择 Running 且有 PodIP 的 Pod，生成 endpoints。
-- iptables proxy 为 ClusterIP/NodePort 创建 NAT chain 和 DNAT 规则。
+- sailer 内置 node-local kubeproxy，为 ClusterIP/NodePort 创建 NAT chain 和 DNAT 规则。
 - 多 endpoint 使用 statistic random 规则做简单负载均衡。
 
 主要缺口：
 
-- 没有独立 kube-proxy daemon；proxy 是由 ServiceController 同步时直接调用。
-- 当前 `cmd/minik8s/main.go` 手动创建 `bridge.New(...)` 时没有传入 `ServiceProxy`，这会让真实 `minik8s bridge` 的 Service 数据面规则可能不生效，只更新 endpoints。
+- kubeproxy 不作为独立 daemon；它与 sailer 共生命周期，在每个 Worker Node 上同步 Service 数据面规则。
+- bridge/captain 只更新 Service endpoints，不再直接操作本机 iptables。
 - ClusterIP 默认/分配逻辑很简化，未完整处理冲突、回收、Service CIDR。
 - 没有 sessionAffinity、externalTrafficPolicy、EndpointSlice。
 
 稳定版建议：
 
-- 先修复 `main.go` 的 ServiceProxy 注入，或文档明确设置 `MINIK8S_SERVICE_PROXY_DISABLED=1` 时仅验证 endpoints。
+- 在无 root/iptables 环境中运行 sailer 时使用 `--proxy-disabled`，此时仅验证 Service object + endpoints。
 - 将稳定版 Service 目标分成两层：
   - 必须稳定：Service object + selector + endpoints 展示。
   - 可选稳定：iptables 数据面访问 ClusterIP/NodePort。
@@ -217,9 +217,9 @@
    - `./minik8s sailer --node-name node-a --harbor http://127.0.0.1:18080`
    - `./minik8s apply/get/delete`
 
-2. Service proxy 注入风险
-   - 修复 `cmd/minik8s/main.go` 中 `bridge.New` 未传入 `ServiceProxy` 的问题。
-   - 否则 Service 文档中的 iptables 规则演示可能无法真实生效。
+2. Service proxy 节点权限风险
+   - kubeproxy 随 sailer 在 Worker Node 上同步 iptables，bridge 不再操作数据面规则。
+   - 演示 Service 数据面时，运行 sailer 的节点需要 root/iptables；无权限时使用 `--proxy-disabled` 只验证 endpoints。
 
 3. 删除语义风险
    - `delete pod` 只删除控制面期望状态，runtime 清理由 sailer 下一轮执行。
@@ -232,9 +232,7 @@
 ### P1：把“部分实现”补到可信
 
 1. Scheduler 尊重 `nodeSelector`，或者移除/标注该字段。
-2. Node 类型补 `NodeIP`、`PodCIDR`，让 sailer 网络同步/CNI 和 Node API 语义统一。
-3. NodeStore etcd 化，避免“Pod/Service 在 etcd，Node 在 file”的混合状态。
-4. 给 Service 数据面加一个真实 smoke test 脚本，失败时能自动清理 iptables chain。
+2. 给 Service 数据面加一个真实 smoke test 脚本，失败时能自动清理 iptables chain。
 
 ### P2：不要现在碰的大坑
 
@@ -278,14 +276,11 @@
 
 第 2 步：修最影响演示的缺口。
 
-- 给 `bridge` 注入默认 `ServiceProxy`，让 Service 数据面和文档一致。
-- 或者反过来明确 stable 只保证 endpoints，iptables proxy 是实验项。
+- 明确 stable 的 Service 数据面由 sailer 内置 kubeproxy 提供，bridge 只保证 endpoints。
 - 给 delete demo 加 `wait until docker ps no residue` 的脚本。
 
 第 3 步：补最小一致性。
 
-- Node 加 `NodeIP`、`PodCIDR` 字段。
-- sailer 网络注册可以复用 Node 信息，至少文档上统一。
 - Scheduler 对 `nodeSelector` 做最小匹配。
 
 第 4 步：建立稳定验收脚本。

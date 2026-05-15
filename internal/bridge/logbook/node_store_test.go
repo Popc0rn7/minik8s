@@ -26,6 +26,29 @@ func TestInMemoryNodeStoreUpsertsHeartbeat(t *testing.T) {
 	assert.Equal(t, now.UTC(), got.LastHeartbeat)
 }
 
+func TestInMemoryNodeStoreHeartbeatPreservesNodeNetworkFields(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := NewInMemoryNodeStore()
+	store.SetNow(func() time.Time { return now })
+	require.NoError(t, store.Upsert(&node.Node{
+		Name:    "node-a",
+		Status:  node.NodeUnknown,
+		NodeIP:  "192.168.1.8",
+		PodCIDR: "10.244.0.0/24",
+		Labels:  map[string]string{"zone": "east"},
+	}))
+
+	require.NoError(t, store.UpsertHeartbeat("node-a"))
+	got, err := store.Get("node-a")
+	require.NoError(t, err)
+
+	assert.Equal(t, node.NodeReady, got.Status)
+	assert.Equal(t, "192.168.1.8", got.NodeIP)
+	assert.Equal(t, "10.244.0.0/24", got.PodCIDR)
+	assert.Equal(t, map[string]string{"zone": "east"}, got.Labels)
+	assert.Equal(t, now.UTC(), got.LastHeartbeat)
+}
+
 func TestFileNodeStorePersistsHeartbeats(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nodes.json")
 	now := time.Unix(100, 0)
@@ -43,6 +66,27 @@ func TestFileNodeStorePersistsHeartbeats(t *testing.T) {
 	assert.Equal(t, "node-a", got.Name)
 	assert.Equal(t, node.NodeReady, got.Status)
 	assert.Equal(t, now.UTC(), got.LastHeartbeat)
+}
+
+func TestFileNodeStorePersistsNodeNetworkFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodes.json")
+	store1, err := NewFileNodeStore(path)
+	require.NoError(t, err)
+
+	require.NoError(t, store1.Upsert(&node.Node{
+		Name:    "node-a",
+		Status:  node.NodeReady,
+		NodeIP:  "192.168.1.8",
+		PodCIDR: "10.244.0.0/24",
+	}))
+
+	store2, err := NewFileNodeStore(path)
+	require.NoError(t, err)
+	got, err := store2.Get("node-a")
+	require.NoError(t, err)
+
+	assert.Equal(t, "192.168.1.8", got.NodeIP)
+	assert.Equal(t, "10.244.0.0/24", got.PodCIDR)
 }
 
 func TestNodeStoreListsReadyNodes(t *testing.T) {

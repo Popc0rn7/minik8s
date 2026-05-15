@@ -49,6 +49,7 @@ flowchart LR
 
     SailerA --> RuntimeA
     SailerA --> CNIA
+    SailerA --> ProxyA
     ProxyA --> PodsA
     MetricsA --> HPACtrl
   end

@@ -323,7 +323,7 @@ func newSailerCommand(app *App, out io.Writer) *cobra.Command {
 	var nodeName, harbor, nodeIP, podCIDR, interval string
 	var vxlanID, vxlanPort int
 	var vxlanName string
-	var once bool
+	var once, proxyDisabled bool
 	cmd := &cobra.Command{
 		Use:   "sailer",
 		Short: "Run the worker node agent",
@@ -350,6 +350,9 @@ func newSailerCommand(app *App, out io.Writer) *cobra.Command {
 			if once {
 				legacy = append(legacy, "--once")
 			}
+			if proxyDisabled {
+				legacy = append(legacy, "--proxy-disabled")
+			}
 			return app.sailer(cmd.Context(), legacy, out)
 		},
 	}
@@ -362,6 +365,7 @@ func newSailerCommand(app *App, out io.Writer) *cobra.Command {
 	cmd.Flags().IntVar(&vxlanPort, "vxlan-port", 0, "VXLAN UDP port")
 	cmd.Flags().StringVar(&vxlanName, "vxlan-name", "", "VXLAN device name")
 	cmd.Flags().BoolVar(&once, "once", false, "Run one sync and exit")
+	cmd.Flags().BoolVar(&proxyDisabled, "proxy-disabled", false, "Disable node-local Service proxy sync")
 	return cmd
 }
 

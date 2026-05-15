@@ -6,24 +6,31 @@ import (
 	"time"
 
 	store "minik8s/internal/bridge/logbook"
+	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	"minik8s/pkg/runtime"
 )
 
 type Config struct {
-	NodeName string
-	Runtime  runtime.ContainerRuntime
-	Network  PodNetworkManager
-	Client   PodClient
-	Interval time.Duration
+	NodeName     string
+	NodeIP       string
+	PodCIDR      string
+	Runtime      runtime.ContainerRuntime
+	Network      PodNetworkManager
+	Client       PodClient
+	ServiceProxy kubeproxy.Proxy
+	Interval     time.Duration
 }
 
 type Sailer struct {
 	nodeName string
+	nodeIP   string
+	podCIDR  string
 	runtime  runtime.ContainerRuntime
 	network  PodNetworkManager
 	client   PodClient
+	proxy    kubeproxy.Proxy
 	interval time.Duration
 	local    store.PodStore
 	known    map[string]*pod.Pod
@@ -36,9 +43,12 @@ func New(config Config) *Sailer {
 	}
 	return &Sailer{
 		nodeName: config.NodeName,
+		nodeIP:   config.NodeIP,
+		podCIDR:  config.PodCIDR,
 		runtime:  config.Runtime,
 		network:  config.Network,
 		client:   config.Client,
+		proxy:    config.ServiceProxy,
 		interval: interval,
 		local:    store.NewInMemoryPodStore(),
 		known:    make(map[string]*pod.Pod),
@@ -70,7 +80,11 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 	if err := k.validate(); err != nil {
 		return err
 	}
-	desired, err := k.client.ListAssignedPods(ctx, k.nodeName)
+	desired, err := k.client.ListAssignedPods(ctx, NodeHeartbeat{
+		NodeName: k.nodeName,
+		NodeIP:   k.nodeIP,
+		PodCIDR:  k.podCIDR,
+	})
 	if err != nil {
 		return err
 	}
@@ -127,7 +141,18 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 		minilog.Info("sailer-pod-removed", "pod=%s/%s", podNamespace(knownPod.Namespace), knownPod.Name)
 		delete(k.known, key)
 	}
-	return nil
+	return k.SyncProxy(ctx)
+}
+
+func (k *Sailer) SyncProxy(ctx context.Context) error {
+	if k.proxy == nil {
+		return nil
+	}
+	services, err := k.client.ListServices(ctx)
+	if err != nil {
+		return err
+	}
+	return k.proxy.SyncAll(ctx, services)
 }
 
 func (k *Sailer) validate() error {

@@ -180,6 +180,11 @@ func TestEtcdNodeStorePersistsHeartbeats(t *testing.T) {
 	store1 := NewEtcdNodeStore(client)
 	store1.SetNow(func() time.Time { return now })
 
+	require.NoError(t, store1.Upsert(&node.Node{
+		Name:    "node-a",
+		NodeIP:  "192.168.1.8",
+		PodCIDR: "10.244.0.0/24",
+	}))
 	require.NoError(t, store1.UpsertHeartbeat("node-a"))
 
 	store2 := NewEtcdNodeStore(client)
@@ -190,6 +195,8 @@ func TestEtcdNodeStorePersistsHeartbeats(t *testing.T) {
 	assert.Equal(t, node.NodeRoleWorker, got.Role)
 	assert.Equal(t, node.NodeReady, got.Status)
 	assert.Equal(t, now.UTC(), got.LastHeartbeat)
+	assert.Equal(t, "192.168.1.8", got.NodeIP)
+	assert.Equal(t, "10.244.0.0/24", got.PodCIDR)
 }
 
 func TestEtcdNodeStoreListsReadyNodes(t *testing.T) {
