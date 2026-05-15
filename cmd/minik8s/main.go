@@ -14,17 +14,12 @@ import (
 )
 
 func main() {
-	podStore, serviceStore, closeStores, err := openStores()
+	podStore, serviceStore, nodeStore, closeStores, err := openStores()
 	if err != nil {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening stores: %v", err))
 		os.Exit(1)
 	}
 	defer closeStores()
-	nodeStore, err := store.NewFileNodeStore(cli.DefaultNodeStatePath())
-	if err != nil {
-		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening node store: %v", err))
-		os.Exit(1)
-	}
 	bridge := kubebridge.New(newKubebridgeConfig(podStore, serviceStore, nodeStore))
 
 	config := cli.Config{
@@ -69,25 +64,29 @@ func needsDockerRuntime(args []string) bool {
 	return false
 }
 
-func openStores() (store.PodStore, store.ServiceStore, func(), error) {
+func openStores() (store.PodStore, store.ServiceStore, store.NodeStore, func(), error) {
 	endpoints := store.ParseEndpoints(os.Getenv("MINIK8S_ETCD_ENDPOINTS"))
 	if len(endpoints) > 0 {
 		client, err := store.NewClient(endpoints)
 		if err != nil {
-			return nil, nil, func() {}, err
+			return nil, nil, nil, func() {}, err
 		}
-		return store.NewEtcdPodStore(client), store.NewEtcdServiceStore(client), func() { _ = client.Close() }, nil
+		return store.NewEtcdPodStore(client), store.NewEtcdServiceStore(client), store.NewEtcdNodeStore(client), func() { _ = client.Close() }, nil
 	}
 
 	podStore, err := store.NewFilePodStore(cli.DefaultStatePath())
 	if err != nil {
-		return nil, nil, func() {}, fmt.Errorf("opening pod store: %w", err)
+		return nil, nil, nil, func() {}, fmt.Errorf("opening pod store: %w", err)
 	}
 	serviceStore, err := store.NewFileServiceStore(cli.DefaultServiceStatePath())
 	if err != nil {
-		return nil, nil, func() {}, fmt.Errorf("opening service store: %w", err)
+		return nil, nil, nil, func() {}, fmt.Errorf("opening service store: %w", err)
 	}
-	return podStore, serviceStore, func() {}, nil
+	nodeStore, err := store.NewFileNodeStore(cli.DefaultNodeStatePath())
+	if err != nil {
+		return nil, nil, nil, func() {}, fmt.Errorf("opening node store: %w", err)
+	}
+	return podStore, serviceStore, nodeStore, func() {}, nil
 }
 
 func newKubebridgeConfig(podStore store.PodStore, serviceStore store.ServiceStore, nodeStore store.NodeStore) kubebridge.Config {
