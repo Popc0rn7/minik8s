@@ -247,7 +247,7 @@ func TestHarborNodePodsEndpointRegistersHeartbeat(t *testing.T) {
 	require.Equal(t, http.StatusOK, nodes.Code, nodes.Body.String())
 	assert.Contains(t, nodes.Body.String(), `"name":"node-a"`)
 	assert.Contains(t, nodes.Body.String(), `"role":"Worker"`)
-	assert.Contains(t, nodes.Body.String(), `"status":"Ready"`)
+	assert.Contains(t, nodes.Body.String(), `"phase":"Ready"`)
 }
 
 func TestHarborSchedulesUnassignedPodOnHeartbeat(t *testing.T) {
@@ -291,16 +291,16 @@ func TestHarborNodePodsHeartbeatUpdatesNodeNetworkFields(t *testing.T) {
 	got, err := nodeStore.Get("node-a")
 	require.NoError(t, err)
 
-	assert.Equal(t, node.NodeReady, got.Status)
-	assert.Equal(t, "192.168.1.8", got.NodeIP)
-	assert.Equal(t, "10.244.0.0/24", got.PodCIDR)
+	assert.Equal(t, node.NodeReady, got.Status.Phase)
+	assert.Equal(t, "192.168.1.8", got.InternalIP())
+	assert.Equal(t, "10.244.0.0/24", got.Spec.PodCIDR)
 }
 
 func TestHarborListNodesRefreshesExpiredNodesToUnknown(t *testing.T) {
 	now := time.Unix(100, 0)
 	nodeStore := store.NewInMemoryNodeStore()
 	nodeStore.SetNow(func() time.Time { return now })
-	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}))
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)})))
 	srv := New(Config{
 		PodStore:  store.NewInMemoryPodStore(),
 		NodeStore: nodeStore,
@@ -320,7 +320,7 @@ func TestHarborNodeLostMarksAssignedPodsUnknownAndRefreshesEndpoints(t *testing.
 	serviceStore := store.NewInMemoryServiceStore()
 	nodeStore := store.NewInMemoryNodeStore()
 	nodeStore.SetNow(func() time.Time { return now })
-	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}))
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)})))
 	require.NoError(t, podStore.Create(&pod.Pod{
 		ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default", Labels: map[string]string{"app": "nginx"}},
 		Spec:       pod.PodSpec{NodeName: "node-a", Containers: []pod.ContainerSpec{{Name: "nginx", Image: "nginx"}}},
@@ -378,7 +378,7 @@ func TestHarborNodeLostDoesNotChangeTerminalPods(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	nodeStore := store.NewInMemoryNodeStore()
 	nodeStore.SetNow(func() time.Time { return now })
-	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}))
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)})))
 	for _, item := range []struct {
 		name  string
 		phase pod.PodPhase
@@ -439,7 +439,7 @@ func TestHarborLogsNodeReconnectFromUnknown(t *testing.T) {
 	now := time.Unix(100, 0)
 	nodeStore := store.NewInMemoryNodeStore()
 	nodeStore.SetNow(func() time.Time { return now })
-	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeUnknown, LastHeartbeat: now.Add(-time.Minute)}))
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeUnknown, LastHeartbeat: now.Add(-time.Minute)})))
 	srv := New(Config{
 		PodStore:  store.NewInMemoryPodStore(),
 		NodeStore: nodeStore,
@@ -451,7 +451,7 @@ func TestHarborLogsNodeReconnectFromUnknown(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(logs.String(), "node-connect: node=node-a"))
 	got, err := nodeStore.Get("node-a")
 	require.NoError(t, err)
-	assert.Equal(t, node.NodeReady, got.Status)
+	assert.Equal(t, node.NodeReady, got.Status.Phase)
 }
 
 func TestHarborLogsPodStatusUpdate(t *testing.T) {

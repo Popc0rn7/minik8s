@@ -17,9 +17,7 @@ import (
 )
 
 type NodeHeartbeat struct {
-	NodeName string
-	NodeIP   string
-	PodCIDR  string
+	Node *node.Node
 }
 
 type PodClient interface {
@@ -41,7 +39,10 @@ func NewHTTPPodClient(baseURL string, client *http.Client) *HTTPPodClient {
 }
 
 func (c *HTTPPodClient) ListAssignedPods(ctx context.Context, heartbeat NodeHeartbeat) ([]*pod.Pod, error) {
-	endpoint, err := c.url("/api/v1/nodes/" + url.PathEscape(heartbeat.NodeName) + "/pods")
+	if heartbeat.Node == nil {
+		return nil, fmt.Errorf("node heartbeat is required")
+	}
+	endpoint, err := c.url("/api/v1/nodes/" + url.PathEscape(heartbeat.Node.Name()) + "/pods")
 	if err != nil {
 		return nil, err
 	}
@@ -50,18 +51,23 @@ func (c *HTTPPodClient) ListAssignedPods(ctx context.Context, heartbeat NodeHear
 		return nil, err
 	}
 	query := parsed.Query()
-	if heartbeat.NodeIP != "" {
-		query.Set("nodeIP", heartbeat.NodeIP)
+	if heartbeat.Node.InternalIP() != "" {
+		query.Set("nodeIP", heartbeat.Node.InternalIP())
 	}
-	if heartbeat.PodCIDR != "" {
-		query.Set("podCIDR", heartbeat.PodCIDR)
+	if heartbeat.Node.Spec.PodCIDR != "" {
+		query.Set("podCIDR", heartbeat.Node.Spec.PodCIDR)
 	}
 	parsed.RawQuery = query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	data, err := json.Marshal(heartbeat.Node)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
 	req.URL = parsed
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err

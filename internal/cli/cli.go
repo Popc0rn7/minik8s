@@ -131,6 +131,17 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return writes(out, cliui.SuccessLine("service/%s created (%s)", updated.Name, updated.Spec.Type))
 	}
+	if kind == "Node" {
+		n, err := podyaml.LoadNodeFromFile(path)
+		if err != nil {
+			return err
+		}
+		updated, err := client.ApplyNode(ctx, n)
+		if err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("node/%s created (%s)", updated.Name(), updated.Status.Phase))
+	}
 	if kind != "" && kind != "Pod" {
 		return fmt.Errorf("unsupported kind %q", kind)
 	}
@@ -835,6 +846,7 @@ func (a *App) runNodeLivenessLoop(ctx context.Context, interval time.Duration) {
 }
 
 type sailerOptions struct {
+	nodeFile      string
 	nodeName      string
 	harbor        string
 	nodeIP        string
@@ -852,10 +864,15 @@ func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	nodeConfig, err := podyaml.LoadNodeFromFile(options.nodeFile)
+	if err != nil {
+		return err
+	}
+	options.nodeName = nodeConfig.Name()
+	options.nodeIP = nodeConfig.InternalIP()
+	options.podCIDR = nodeConfig.Spec.PodCIDR
 	k := nodeSailer.New(nodeSailer.Config{
-		NodeName:     options.nodeName,
-		NodeIP:       options.nodeIP,
-		PodCIDR:      options.podCIDR,
+		Node:         nodeConfig,
 		Runtime:      a.runtime,
 		Network:      a.network,
 		Client:       nodeSailer.NewHTTPPodClient(options.harbor, a.httpClient),
@@ -932,30 +949,14 @@ func parseSailerOptions(args []string) (sailerOptions, error) {
 	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--node-name":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("missing value for --node-name")
-			}
-			options.nodeName = args[i]
+		case "--node-name", "--node-ip", "--pod-cidr":
+			return options, fmt.Errorf("%s is no longer supported; pass a Node YAML as minik8s sailer <node.yaml>", args[i])
 		case "--harbor":
 			i++
 			if i >= len(args) {
 				return options, fmt.Errorf("missing value for --harbor")
 			}
 			options.harbor = args[i]
-		case "--node-ip":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("missing value for --node-ip")
-			}
-			options.nodeIP = args[i]
-		case "--pod-cidr":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("missing value for --pod-cidr")
-			}
-			options.podCIDR = args[i]
 		case "--interval":
 			i++
 			if i >= len(args) {
@@ -1000,11 +1001,17 @@ func parseSailerOptions(args []string) (sailerOptions, error) {
 		case "--proxy-disabled":
 			options.proxyDisabled = true
 		default:
-			return options, fmt.Errorf("unknown sailer flag %q", args[i])
+			if strings.HasPrefix(args[i], "-") {
+				return options, fmt.Errorf("unknown sailer flag %q", args[i])
+			}
+			if options.nodeFile != "" {
+				return options, fmt.Errorf("node yaml specified twice")
+			}
+			options.nodeFile = args[i]
 		}
 	}
-	if options.nodeName == "" {
-		return options, fmt.Errorf("--node-name is required")
+	if options.nodeFile == "" {
+		return options, fmt.Errorf("node yaml is required")
 	}
 	if options.harbor == "" {
 		return options, fmt.Errorf("--harbor is required")
@@ -1091,7 +1098,7 @@ func formatServiceSelector(selector pod.LabelSelector) string {
 	return formatLabels(labels)
 }
 
-func formatNodeStatus(status node.NodeStatus) string {
+func formatNodeStatus(status node.NodePhase) string {
 	icon := cliui.Icon(cliui.IconInfo, "[i]")
 	if status == node.NodeReady {
 		icon = cliui.Icon(cliui.IconSuccess, "[ok]")
@@ -1103,10 +1110,10 @@ func formatNodeStatus(status node.NodeStatus) string {
 }
 
 func formatNodeAge(n node.Node) string {
-	if n.LastHeartbeat.IsZero() {
+	if n.Status.LastHeartbeat.IsZero() {
 		return "-"
 	}
-	return shortDuration(time.Since(n.LastHeartbeat))
+	return shortDuration(time.Since(n.Status.LastHeartbeat))
 }
 
 func shortDuration(d time.Duration) string {

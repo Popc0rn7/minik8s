@@ -27,7 +27,7 @@ func (f *fakePodClient) ListAssignedPods(ctx context.Context, heartbeat NodeHear
 	f.heartbeat = heartbeat
 	result := make([]*pod.Pod, 0)
 	for _, p := range f.pods {
-		if p.Spec.NodeName == heartbeat.NodeName {
+		if heartbeat.Node != nil && p.Spec.NodeName == heartbeat.Node.Name() {
 			result = append(result, p.DeepCopy())
 		}
 	}
@@ -88,7 +88,10 @@ func TestSailerSyncOnceRunsOnlyAssignedPods(t *testing.T) {
 
 	require.NoError(t, k.SyncOnce(context.Background()))
 
-	assert.Equal(t, NodeHeartbeat{NodeName: "node-a", NodeIP: "192.168.1.8", PodCIDR: "10.244.0.0/24"}, client.heartbeat)
+	require.NotNil(t, client.heartbeat.Node)
+	assert.Equal(t, "node-a", client.heartbeat.Node.Name())
+	assert.Equal(t, "192.168.1.8", client.heartbeat.Node.InternalIP())
+	assert.Equal(t, "10.244.0.0/24", client.heartbeat.Node.Spec.PodCIDR)
 	assert.Len(t, rt.CreateSandboxCalls, 1)
 	assert.Len(t, rt.CreateContainerCalls, 1)
 	require.Len(t, client.updates, 1)

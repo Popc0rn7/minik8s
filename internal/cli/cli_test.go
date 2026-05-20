@@ -309,12 +309,28 @@ func TestNetDOptionsRequireNodeName(t *testing.T) {
 	assert.Contains(t, err.Error(), "--node-name is required")
 }
 
+func writeNodeYAML(t *testing.T, name, nodeIP, podCIDR string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name+".yaml")
+	data := []byte(`apiVersion: v1
+kind: Node
+metadata:
+  name: ` + name + `
+spec:
+  podCIDR: ` + podCIDR + `
+status:
+  addresses:
+  - type: InternalIP
+    address: ` + nodeIP + `
+`)
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+	return path
+}
+
 func TestSailerOptionsParseNetworkConfig(t *testing.T) {
 	options, err := parseSailerOptions([]string{
-		"--node-name", "node-a",
+		"node-a.yaml",
 		"--harbor", "http://192.168.1.8:18080",
-		"--node-ip", "192.168.1.8",
-		"--pod-cidr", "10.244.0.0/24",
 		"--interval", "2s",
 		"--vxlan-id", "99",
 		"--vxlan-port", "8472",
@@ -323,10 +339,8 @@ func TestSailerOptionsParseNetworkConfig(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	assert.Equal(t, "node-a", options.nodeName)
+	assert.Equal(t, "node-a.yaml", options.nodeFile)
 	assert.Equal(t, "http://192.168.1.8:18080", options.harbor)
-	assert.Equal(t, "192.168.1.8", options.nodeIP)
-	assert.Equal(t, "10.244.0.0/24", options.podCIDR)
 	assert.Equal(t, 2*time.Second, options.interval)
 	assert.Equal(t, 99, options.vxlanID)
 	assert.Equal(t, 8472, options.vxlanPort)
@@ -336,7 +350,7 @@ func TestSailerOptionsParseNetworkConfig(t *testing.T) {
 
 func TestSailerOptionsUseDefaultVXLANConfig(t *testing.T) {
 	options, err := parseSailerOptions([]string{
-		"--node-name", "node-a",
+		"node-a.yaml",
 		"--harbor", "http://192.168.1.8:18080",
 	})
 
@@ -372,13 +386,12 @@ func TestSailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {
 		},
 	})
 	var out bytes.Buffer
+	nodeFile := writeNodeYAML(t, "node-a", "192.168.1.8", "10.244.0.0/24")
 
 	err := app.Run(context.Background(), []string{
 		"sailer",
-		"--node-name", "node-a",
+		nodeFile,
 		"--harbor", "http://minik8s.test",
-		"--node-ip", "192.168.1.8",
-		"--pod-cidr", "10.244.0.0/24",
 		"--proxy-disabled",
 		"--once",
 	}, &out)
@@ -479,7 +492,7 @@ func TestCLIGetNodesShowsExpiredHeartbeatNodesUnknown(t *testing.T) {
 	now := time.Unix(100, 0)
 	nodeStore := store.NewInMemoryNodeStore()
 	nodeStore.SetNow(func() time.Time { return now })
-	require.NoError(t, nodeStore.Upsert(&node.Node{Name: "node-a", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}))
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)})))
 	app := newHTTPTestApp(t, harbor.New(harbor.Config{
 		PodStore:  store.NewInMemoryPodStore(),
 		NodeStore: nodeStore,
@@ -622,9 +635,10 @@ func TestServiceSyncLoopRunsPeriodically(t *testing.T) {
 }
 
 func TestParseSailerOptionsProxyDisabled(t *testing.T) {
-	options, err := parseSailerOptions([]string{"--node-name", "node-a", "--harbor", "http://127.0.0.1:18080", "--proxy-disabled"})
+	options, err := parseSailerOptions([]string{"node-a.yaml", "--harbor", "http://127.0.0.1:18080", "--proxy-disabled"})
 
 	require.NoError(t, err)
+	assert.Equal(t, "node-a.yaml", options.nodeFile)
 	assert.True(t, options.proxyDisabled)
 }
 

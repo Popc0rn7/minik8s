@@ -13,8 +13,8 @@ import (
 
 func TestNaiveNavigatorAssignsUnscheduledPodsRoundRobin(t *testing.T) {
 	nodes := []node.Node{
-		{Name: "node-b", Status: node.NodeReady},
-		{Name: "node-a", Status: node.NodeReady},
+		*node.New("node-b", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady}),
+		*node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady}),
 	}
 	s := NewNaiveNavigator()
 
@@ -38,7 +38,7 @@ func TestNaiveNavigatorKeepsExistingNodeName(t *testing.T) {
 		Spec:       pod.PodSpec{NodeName: "node-z"},
 	}
 
-	require.NoError(t, s.Schedule(p, []node.Node{{Name: "node-a", Status: node.NodeReady}}))
+	require.NoError(t, s.Schedule(p, []node.Node{*node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady})}))
 
 	assert.Equal(t, "node-z", p.Spec.NodeName)
 }
@@ -46,13 +46,68 @@ func TestNaiveNavigatorKeepsExistingNodeName(t *testing.T) {
 func TestReadyNodesFiltersUnknownAndExpiredNodes(t *testing.T) {
 	now := time.Unix(100, 0)
 	nodes := []node.Node{
-		{Name: "ready", Status: node.NodeReady, LastHeartbeat: now.Add(-5 * time.Second)},
-		{Name: "unknown", Status: node.NodeUnknown, LastHeartbeat: now.Add(-5 * time.Second)},
-		{Name: "expired", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)},
+		*node.New("ready", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: now.Add(-5 * time.Second)}),
+		*node.New("unknown", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeUnknown, LastHeartbeat: now.Add(-5 * time.Second)}),
+		*node.New("expired", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}),
 	}
 
 	ready := ReadyNodes(nodes, now, 30*time.Second)
 
 	require.Len(t, ready, 1)
-	assert.Equal(t, "ready", ready[0].Name)
+	assert.Equal(t, "ready", ready[0].Name())
+}
+
+func TestNaiveNavigatorHonorsNodeSelector(t *testing.T) {
+	nodes := []node.Node{
+		*node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady}),
+		*node.New("node-b", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady}),
+	}
+	nodes[1].Labels = map[string]string{"zone": "east"}
+	s := NewNaiveNavigator()
+	p := &pod.Pod{
+		ObjectMeta: pod.ObjectMeta{Name: "selected", Namespace: "default"},
+		Spec: pod.PodSpec{
+			NodeSelector: map[string]string{"zone": "east"},
+		},
+	}
+
+	require.NoError(t, s.Schedule(p, nodes))
+
+	assert.Equal(t, "node-b", p.Spec.NodeName)
+}
+
+func TestNaiveNavigatorSkipsNodesWithoutRemainingRequests(t *testing.T) {
+	nodes := []node.Node{
+		*node.New("node-a", node.NodeSpec{Capacity: node.ResourceList{CPU: "1", Memory: "512Mi"}}, node.NodeStatus{Phase: node.NodeReady}),
+		*node.New("node-b", node.NodeSpec{Capacity: node.ResourceList{CPU: "4", Memory: "8Gi"}}, node.NodeStatus{Phase: node.NodeReady}),
+	}
+	s := NewNaiveNavigator()
+	existing := []*pod.Pod{{
+		ObjectMeta: pod.ObjectMeta{Name: "existing", Namespace: "default"},
+		Spec: pod.PodSpec{
+			NodeName: "node-a",
+			Containers: []pod.ContainerSpec{{
+				Name: "c",
+				Resources: pod.ResourceRequirements{Requests: pod.ResourceList{
+					CPU:    "1",
+					Memory: "512Mi",
+				}},
+			}},
+		},
+		Status: pod.PodStatus{Phase: pod.PodRunning},
+	}}
+	p := &pod.Pod{
+		ObjectMeta: pod.ObjectMeta{Name: "needs-space", Namespace: "default"},
+		Spec: pod.PodSpec{Containers: []pod.ContainerSpec{{
+			Name: "c",
+			Resources: pod.ResourceRequirements{Requests: pod.ResourceList{
+				CPU:    "1",
+				Memory: "1Gi",
+			}},
+		}}},
+	}
+
+	require.NoError(t, s.ScheduleWithPods(p, nodes, existing))
+
+	assert.Equal(t, "node-b", p.Spec.NodeName)
 }

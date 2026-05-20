@@ -8,6 +8,7 @@ import (
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/pkg/runtime"
 )
@@ -16,6 +17,7 @@ type Config struct {
 	NodeName     string
 	NodeIP       string
 	PodCIDR      string
+	Node         *node.Node
 	Runtime      runtime.ContainerRuntime
 	Network      PodNetworkManager
 	Client       PodClient
@@ -25,8 +27,7 @@ type Config struct {
 
 type Sailer struct {
 	nodeName string
-	nodeIP   string
-	podCIDR  string
+	node     *node.Node
 	runtime  runtime.ContainerRuntime
 	network  PodNetworkManager
 	client   PodClient
@@ -42,9 +43,8 @@ func New(config Config) *Sailer {
 		interval = 5 * time.Second
 	}
 	return &Sailer{
-		nodeName: config.NodeName,
-		nodeIP:   config.NodeIP,
-		podCIDR:  config.PodCIDR,
+		nodeName: nodeNameFromConfig(config),
+		node:     nodeFromConfig(config),
 		runtime:  config.Runtime,
 		network:  config.Network,
 		client:   config.Client,
@@ -81,9 +81,7 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 		return err
 	}
 	desired, err := k.client.ListAssignedPods(ctx, NodeHeartbeat{
-		NodeName: k.nodeName,
-		NodeIP:   k.nodeIP,
-		PodCIDR:  k.podCIDR,
+		Node: k.node,
 	})
 	if err != nil {
 		return err
@@ -159,6 +157,9 @@ func (k *Sailer) validate() error {
 	if k.nodeName == "" {
 		return fmt.Errorf("node name is required")
 	}
+	if k.node == nil {
+		return fmt.Errorf("node is required")
+	}
 	if k.runtime == nil {
 		return fmt.Errorf("runtime is required")
 	}
@@ -166,6 +167,27 @@ func (k *Sailer) validate() error {
 		return fmt.Errorf("pod client is required")
 	}
 	return nil
+}
+
+func nodeNameFromConfig(config Config) string {
+	if config.Node != nil && config.Node.Name() != "" {
+		return config.Node.Name()
+	}
+	return config.NodeName
+}
+
+func nodeFromConfig(config Config) *node.Node {
+	if config.Node != nil {
+		copy := config.Node.DeepCopy()
+		copy.Default()
+		return copy
+	}
+	n := node.New(config.NodeName, node.NodeSpec{PodCIDR: config.PodCIDR}, node.NodeStatus{})
+	if config.NodeIP != "" {
+		n.Status.Addresses = []node.NodeAddress{{Type: node.NodeAddressInternalIP, Address: config.NodeIP}}
+	}
+	n.Default()
+	return n
 }
 
 func podKey(p *pod.Pod) string {

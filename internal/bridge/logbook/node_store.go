@@ -27,8 +27,8 @@ type NodeStore interface {
 
 type NodeTransition struct {
 	Name          string
-	From          node.NodeStatus
-	To            node.NodeStatus
+	From          node.NodePhase
+	To            node.NodePhase
 	LastHeartbeat time.Time
 }
 
@@ -62,7 +62,7 @@ func (s *InMemoryNodeStore) Upsert(n *node.Node) error {
 	if err != nil {
 		return err
 	}
-	s.nodes[ncopy.Name] = ncopy
+	s.nodes[ncopy.Name()] = ncopy
 	return nil
 }
 
@@ -73,10 +73,10 @@ func (s *InMemoryNodeStore) UpsertHeartbeat(name string, updates ...node.Node) e
 	if err != nil {
 		return err
 	}
-	if existing, ok := s.nodes[n.Name]; ok {
+	if existing, ok := s.nodes[n.Name()]; ok {
 		mergeNodeHeartbeat(n, existing)
 	}
-	s.nodes[n.Name] = n
+	s.nodes[n.Name()] = n
 	return nil
 }
 
@@ -150,7 +150,7 @@ func (s *FileNodeStore) Upsert(n *node.Node) error {
 	if err != nil {
 		return err
 	}
-	s.nodes[ncopy.Name] = ncopy
+	s.nodes[ncopy.Name()] = ncopy
 	return s.saveLocked()
 }
 
@@ -164,10 +164,10 @@ func (s *FileNodeStore) UpsertHeartbeat(name string, updates ...node.Node) error
 	if err != nil {
 		return err
 	}
-	if existing, ok := s.nodes[n.Name]; ok {
+	if existing, ok := s.nodes[n.Name()]; ok {
 		mergeNodeHeartbeat(n, existing)
 	}
-	s.nodes[n.Name] = n
+	s.nodes[n.Name()] = n
 	return s.saveLocked()
 }
 
@@ -236,7 +236,7 @@ func (s *FileNodeStore) load() error {
 		if err != nil {
 			return err
 		}
-		s.nodes[ncopy.Name] = ncopy
+		s.nodes[ncopy.Name()] = ncopy
 	}
 	return nil
 }
@@ -269,23 +269,34 @@ func heartbeatNode(name string, now func() time.Time, updates ...node.Node) (*no
 	if name == "" {
 		return nil, fmt.Errorf("node name is required")
 	}
-	n := &node.Node{
-		Name:          name,
-		Role:          node.NodeRoleWorker,
-		Status:        node.NodeReady,
+	n := node.New(name, node.NodeSpec{Role: node.NodeRoleWorker}, node.NodeStatus{
+		Phase:         node.NodeReady,
 		LastHeartbeat: now().UTC(),
-		Labels:        map[string]string{},
-	}
+	})
 	if len(updates) > 0 {
-		n.NodeIP = strings.TrimSpace(updates[0].NodeIP)
-		n.PodCIDR = strings.TrimSpace(updates[0].PodCIDR)
-		if updates[0].Labels != nil {
-			n.Labels = copyLabels(updates[0].Labels)
+		update := updates[0].DeepCopy()
+		normalizeNodeShape(update)
+		if update.Spec.PodCIDR != "" {
+			n.Spec.PodCIDR = strings.TrimSpace(update.Spec.PodCIDR)
 		}
-		if updates[0].Role != "" {
-			n.Role = updates[0].Role
+		if update.Spec.Role != "" {
+			n.Spec.Role = update.Spec.Role
+		}
+		if update.Spec.Capacity != (node.ResourceList{}) {
+			n.Spec.Capacity = update.Spec.Capacity
+		}
+		if update.Status.Allocatable != (node.ResourceList{}) {
+			n.Status.Allocatable = update.Status.Allocatable
+		}
+		if len(update.Status.Addresses) > 0 {
+			n.Status.Addresses = append([]node.NodeAddress(nil), update.Status.Addresses...)
+		}
+		if update.Labels != nil {
+			n.Labels = copyLabels(update.Labels)
 		}
 	}
+	n.Default()
+	n.SetReadyCondition(node.ConditionTrue, n.Status.LastHeartbeat, "Heartbeat", "Node is reporting heartbeat")
 	return n, nil
 }
 
@@ -294,21 +305,13 @@ func normalizeNode(n *node.Node) (*node.Node, error) {
 		return nil, fmt.Errorf("node is required")
 	}
 	ncopy := n.DeepCopy()
-	ncopy.Name = strings.TrimSpace(ncopy.Name)
-	if ncopy.Name == "" {
+	normalizeNodeShape(ncopy)
+	ncopy.ObjectMeta.Name = strings.TrimSpace(ncopy.ObjectMeta.Name)
+	if ncopy.ObjectMeta.Name == "" {
 		return nil, fmt.Errorf("node name is required")
 	}
-	if ncopy.Role == "" {
-		ncopy.Role = node.NodeRoleWorker
-	}
-	if ncopy.Status == "" {
-		ncopy.Status = node.NodeReady
-	}
-	if ncopy.Labels == nil {
-		ncopy.Labels = map[string]string{}
-	}
-	ncopy.NodeIP = strings.TrimSpace(ncopy.NodeIP)
-	ncopy.PodCIDR = strings.TrimSpace(ncopy.PodCIDR)
+	ncopy.Spec.PodCIDR = strings.TrimSpace(ncopy.Spec.PodCIDR)
+	ncopy.Default()
 	return ncopy, nil
 }
 
@@ -316,18 +319,29 @@ func mergeNodeHeartbeat(next, existing *node.Node) {
 	if existing == nil || next == nil {
 		return
 	}
-	if next.NodeIP == "" {
-		next.NodeIP = existing.NodeIP
+	if next.Spec.PodCIDR == "" {
+		next.Spec.PodCIDR = existing.Spec.PodCIDR
 	}
-	if next.PodCIDR == "" {
-		next.PodCIDR = existing.PodCIDR
+	if next.Spec.Capacity == (node.ResourceList{}) {
+		next.Spec.Capacity = existing.Spec.Capacity
+	}
+	if next.Status.Allocatable == (node.ResourceList{}) {
+		if existing.Status.Allocatable != (node.ResourceList{}) {
+			next.Status.Allocatable = existing.Status.Allocatable
+		} else {
+			next.Status.Allocatable = next.Spec.Capacity
+		}
+	}
+	if len(next.Status.Addresses) == 0 {
+		next.Status.Addresses = append([]node.NodeAddress(nil), existing.Status.Addresses...)
 	}
 	if len(next.Labels) == 0 && existing.Labels != nil {
 		next.Labels = copyLabels(existing.Labels)
 	}
-	if next.Role == "" {
-		next.Role = existing.Role
+	if next.Spec.Role == "" {
+		next.Spec.Role = existing.Spec.Role
 	}
+	next.Default()
 }
 
 func sortedNodeValues(nodes map[string]*node.Node) []node.Node {
@@ -336,7 +350,7 @@ func sortedNodeValues(nodes map[string]*node.Node) []node.Node {
 		result = append(result, *n.DeepCopy())
 	}
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name < result[j].Name
+		return result[i].Name() < result[j].Name()
 	})
 	return result
 }
@@ -344,10 +358,7 @@ func sortedNodeValues(nodes map[string]*node.Node) []node.Node {
 func filterReadyNodes(nodes []node.Node, now time.Time, ttl time.Duration) []node.Node {
 	result := make([]node.Node, 0, len(nodes))
 	for _, n := range nodes {
-		if n.Status != node.NodeReady {
-			continue
-		}
-		if ttl > 0 && !n.LastHeartbeat.IsZero() && now.Sub(n.LastHeartbeat) > ttl {
+		if !n.IsReady(now, ttl) {
 			continue
 		}
 		result = append(result, n)
@@ -361,24 +372,34 @@ func refreshNodeLiveness(nodes map[string]*node.Node, now time.Time, ttl time.Du
 	}
 	transitions := make([]NodeTransition, 0)
 	for _, n := range nodes {
-		if n == nil || n.Status != node.NodeReady || n.LastHeartbeat.IsZero() {
+		if n == nil || n.Status.Phase != node.NodeReady || n.Status.LastHeartbeat.IsZero() {
 			continue
 		}
-		if now.Sub(n.LastHeartbeat) <= ttl {
+		if now.Sub(n.Status.LastHeartbeat) <= ttl {
 			continue
 		}
 		transitions = append(transitions, NodeTransition{
-			Name:          n.Name,
-			From:          n.Status,
+			Name:          n.Name(),
+			From:          n.Status.Phase,
 			To:            node.NodeUnknown,
-			LastHeartbeat: n.LastHeartbeat,
+			LastHeartbeat: n.Status.LastHeartbeat,
 		})
-		n.Status = node.NodeUnknown
+		n.Status.Phase = node.NodeUnknown
+		n.SetReadyCondition(node.ConditionUnknown, now, "NodeLost", "Node stopped reporting heartbeat")
 	}
 	sort.Slice(transitions, func(i, j int) bool {
 		return transitions[i].Name < transitions[j].Name
 	})
 	return transitions
+}
+
+func normalizeNodeShape(n *node.Node) {
+	if n == nil {
+		return
+	}
+	if n.Labels == nil {
+		n.Labels = map[string]string{}
+	}
 }
 
 func copyLabels(labels map[string]string) map[string]string {
