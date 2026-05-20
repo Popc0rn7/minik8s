@@ -31,18 +31,21 @@ func TestHTTPPodClientListsAssignedPodsAndUpdatesStatus(t *testing.T) {
 	createPod(t, srv, "other", "node-b")
 
 	pods, err := client.ListAssignedPods(t.Context(), NodeHeartbeat{
-		NodeName: "node-a",
-		NodeIP:   "192.168.1.8",
-		PodCIDR:  "10.244.0.0/24",
+		Node: node.New("node-a", node.NodeSpec{PodCIDR: "10.244.0.0/24"}, node.NodeStatus{
+			Addresses: []node.NodeAddress{{
+				Type:    node.NodeAddressInternalIP,
+				Address: "192.168.1.8",
+			}},
+		}),
 	})
 	require.NoError(t, err)
 	require.Len(t, pods, 1)
 	assert.Equal(t, "nginx", pods[0].Name)
 	gotNode, err := client.GetNode(t.Context(), "node-a")
 	require.NoError(t, err)
-	assert.Equal(t, node.NodeReady, gotNode.Status)
-	assert.Equal(t, "192.168.1.8", gotNode.NodeIP)
-	assert.Equal(t, "10.244.0.0/24", gotNode.PodCIDR)
+	assert.Equal(t, node.NodeReady, gotNode.Status.Phase)
+	assert.Equal(t, "192.168.1.8", gotNode.InternalIP())
+	assert.Equal(t, "10.244.0.0/24", gotNode.Spec.PodCIDR)
 
 	pods[0].Status.Phase = pod.PodRunning
 	pods[0].Status.PodIP = "10.244.0.2"

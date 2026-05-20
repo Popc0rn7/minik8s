@@ -128,6 +128,14 @@ func (c *controlPlaneClient) DeleteService(ctx context.Context, name, namespace 
 	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
 }
 
+func (c *controlPlaneClient) ApplyNode(ctx context.Context, n *node.Node) (*node.Node, error) {
+	created, err := c.createNode(ctx, n)
+	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {
+		return c.updateNode(ctx, n)
+	}
+	return created, err
+}
+
 func (c *controlPlaneClient) ListNodes(ctx context.Context) ([]node.Node, error) {
 	endpoint, err := c.resourceURL("/api/v1/nodes")
 	if err != nil {
@@ -152,6 +160,30 @@ func (c *controlPlaneClient) GetNode(ctx context.Context, name string) (*node.No
 		return nil, err
 	}
 	return &n, nil
+}
+
+func (c *controlPlaneClient) createNode(ctx context.Context, n *node.Node) (*node.Node, error) {
+	endpoint, err := c.resourceURL("/api/v1/nodes")
+	if err != nil {
+		return nil, err
+	}
+	var created node.Node
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, n, http.StatusCreated, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (c *controlPlaneClient) updateNode(ctx context.Context, n *node.Node) (*node.Node, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/nodes", n.Name()))
+	if err != nil {
+		return nil, err
+	}
+	var updated node.Node
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, n, http.StatusOK, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
 }
 
 func (c *controlPlaneClient) APIResources(ctx context.Context) (map[string]any, error) {

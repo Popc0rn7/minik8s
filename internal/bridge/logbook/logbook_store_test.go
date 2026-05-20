@@ -180,23 +180,21 @@ func TestEtcdNodeStorePersistsHeartbeats(t *testing.T) {
 	store1 := NewEtcdNodeStore(client)
 	store1.SetNow(func() time.Time { return now })
 
-	require.NoError(t, store1.Upsert(&node.Node{
-		Name:    "node-a",
-		NodeIP:  "192.168.1.8",
-		PodCIDR: "10.244.0.0/24",
-	}))
+	require.NoError(t, store1.Upsert(node.New("node-a", node.NodeSpec{PodCIDR: "10.244.0.0/24"}, node.NodeStatus{
+		Addresses: []node.NodeAddress{{Type: node.NodeAddressInternalIP, Address: "192.168.1.8"}},
+	})))
 	require.NoError(t, store1.UpsertHeartbeat("node-a"))
 
 	store2 := NewEtcdNodeStore(client)
 	got, err := store2.Get("node-a")
 	require.NoError(t, err)
 
-	assert.Equal(t, "node-a", got.Name)
-	assert.Equal(t, node.NodeRoleWorker, got.Role)
-	assert.Equal(t, node.NodeReady, got.Status)
-	assert.Equal(t, now.UTC(), got.LastHeartbeat)
-	assert.Equal(t, "192.168.1.8", got.NodeIP)
-	assert.Equal(t, "10.244.0.0/24", got.PodCIDR)
+	assert.Equal(t, "node-a", got.Name())
+	assert.Equal(t, node.NodeRoleWorker, got.Spec.Role)
+	assert.Equal(t, node.NodeReady, got.Status.Phase)
+	assert.Equal(t, now.UTC(), got.Status.LastHeartbeat)
+	assert.Equal(t, "192.168.1.8", got.InternalIP())
+	assert.Equal(t, "10.244.0.0/24", got.Spec.PodCIDR)
 }
 
 func TestEtcdNodeStoreListsReadyNodes(t *testing.T) {
@@ -205,16 +203,16 @@ func TestEtcdNodeStoreListsReadyNodes(t *testing.T) {
 	store := NewEtcdNodeStore(client)
 	store.SetNow(func() time.Time { return now })
 
-	require.NoError(t, store.Upsert(&node.Node{Name: "node-b", Status: node.NodeReady, LastHeartbeat: now}))
-	require.NoError(t, store.Upsert(&node.Node{Name: "node-a", Status: node.NodeReady, LastHeartbeat: now}))
-	require.NoError(t, store.Upsert(&node.Node{Name: "node-z", Status: node.NodeUnknown, LastHeartbeat: now}))
+	require.NoError(t, store.Upsert(node.New("node-b", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: now})))
+	require.NoError(t, store.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: now})))
+	require.NoError(t, store.Upsert(node.New("node-z", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeUnknown, LastHeartbeat: now})))
 
 	nodes, err := store.ListReady(30 * time.Second)
 	require.NoError(t, err)
 
 	require.Len(t, nodes, 2)
-	assert.Equal(t, "node-a", nodes[0].Name)
-	assert.Equal(t, "node-b", nodes[1].Name)
+	assert.Equal(t, "node-a", nodes[0].Name())
+	assert.Equal(t, "node-b", nodes[1].Name())
 }
 
 func TestEtcdNodeStoreRefreshLivenessPersistsUnknownStatus(t *testing.T) {
@@ -222,8 +220,8 @@ func TestEtcdNodeStoreRefreshLivenessPersistsUnknownStatus(t *testing.T) {
 	now := time.Unix(100, 0)
 	store1 := NewEtcdNodeStore(client)
 	store1.SetNow(func() time.Time { return now })
-	require.NoError(t, store1.Upsert(&node.Node{Name: "expired", Status: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)}))
-	require.NoError(t, store1.Upsert(&node.Node{Name: "fresh", Status: node.NodeReady, LastHeartbeat: now.Add(-5 * time.Second)}))
+	require.NoError(t, store1.Upsert(node.New("expired", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)})))
+	require.NoError(t, store1.Upsert(node.New("fresh", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: now.Add(-5 * time.Second)})))
 
 	transitions, err := store1.RefreshLiveness(30 * time.Second)
 	require.NoError(t, err)
@@ -235,10 +233,10 @@ func TestEtcdNodeStoreRefreshLivenessPersistsUnknownStatus(t *testing.T) {
 	store2 := NewEtcdNodeStore(client)
 	expired, err := store2.Get("expired")
 	require.NoError(t, err)
-	assert.Equal(t, node.NodeUnknown, expired.Status)
+	assert.Equal(t, node.NodeUnknown, expired.Status.Phase)
 	fresh, err := store2.Get("fresh")
 	require.NoError(t, err)
-	assert.Equal(t, node.NodeReady, fresh.Status)
+	assert.Equal(t, node.NodeReady, fresh.Status.Phase)
 }
 
 func newEmbeddedEtcdClient(t *testing.T) *clientv3.Client {

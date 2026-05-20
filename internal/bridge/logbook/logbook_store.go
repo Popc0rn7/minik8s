@@ -324,7 +324,7 @@ func (s *EtcdNodeStore) UpsertHeartbeat(name string, updates ...node.Node) error
 	if err != nil {
 		return err
 	}
-	existing, err := s.Get(n.Name)
+	existing, err := s.Get(n.Name())
 	if err != nil && err != ErrNodeNotFound {
 		return err
 	}
@@ -392,7 +392,7 @@ func (s *EtcdNodeStore) putNode(n *node.Node) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
 	defer cancel()
-	if _, err := s.client.Put(ctx, etcdNodeKey(n.Name), string(data)); err != nil {
+	if _, err := s.client.Put(ctx, etcdNodeKey(n.Name()), string(data)); err != nil {
 		return fmt.Errorf("putting node in etcd: %w", err)
 	}
 	return nil
@@ -415,7 +415,7 @@ func (s *EtcdNodeStore) listNodeMap() (map[string]*node.Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		nodes[ncopy.Name] = ncopy
+		nodes[ncopy.Name()] = ncopy
 	}
 	return nodes, nil
 }

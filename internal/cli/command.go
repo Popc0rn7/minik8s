@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -320,15 +321,16 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 }
 
 func newSailerCommand(app *App, out io.Writer) *cobra.Command {
-	var nodeName, harbor, nodeIP, podCIDR, interval string
+	var harbor, interval string
 	var vxlanID, vxlanPort int
 	var vxlanName string
 	var once, proxyDisabled bool
 	cmd := &cobra.Command{
-		Use:   "sailer",
+		Use:   "sailer <node.yaml>",
 		Short: "Run the worker node agent",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			legacy := []string{}
+			legacy := []string{args[0]}
 			appendFlag := func(name, value string) {
 				if value != "" {
 					legacy = append(legacy, name, value)
@@ -339,10 +341,7 @@ func newSailerCommand(app *App, out io.Writer) *cobra.Command {
 					legacy = append(legacy, name, fmt.Sprintf("%d", value))
 				}
 			}
-			appendFlag("--node-name", nodeName)
 			appendFlag("--harbor", harbor)
-			appendFlag("--node-ip", nodeIP)
-			appendFlag("--pod-cidr", podCIDR)
 			appendFlag("--interval", interval)
 			appendIntFlag("--vxlan-id", vxlanID)
 			appendIntFlag("--vxlan-port", vxlanPort)
@@ -356,10 +355,7 @@ func newSailerCommand(app *App, out io.Writer) *cobra.Command {
 			return app.sailer(cmd.Context(), legacy, out)
 		},
 	}
-	cmd.Flags().StringVar(&nodeName, "node-name", "", "Node name")
 	cmd.Flags().StringVar(&harbor, "harbor", "", "Harbor URL")
-	cmd.Flags().StringVar(&nodeIP, "node-ip", "", "Node host IP")
-	cmd.Flags().StringVar(&podCIDR, "pod-cidr", "", "Pod CIDR")
 	cmd.Flags().StringVar(&interval, "interval", "", "Sync interval")
 	cmd.Flags().IntVar(&vxlanID, "vxlan-id", 0, "VXLAN network identifier")
 	cmd.Flags().IntVar(&vxlanPort, "vxlan-port", 0, "VXLAN UDP port")
@@ -561,7 +557,7 @@ func sortServiceList(services []*service.Service) {
 
 func sortNodeList(nodes []node.Node) {
 	sort.Slice(nodes, func(i, j int) bool {
-		return nodes[i].Name < nodes[j].Name
+		return nodes[i].Name() < nodes[j].Name()
 	})
 }
 
@@ -625,20 +621,28 @@ func writeServiceTable(out io.Writer, services []*service.Service) error {
 }
 
 func writeNodeTable(out io.Writer, nodes []node.Node) error {
-	if err := writef(out, "%s %s %s %s\n",
+	if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 		cliui.PadRight("NODE", 31),
 		cliui.PadRight("ROLE", 14),
 		cliui.PadRight("STATUS", 14),
+		cliui.PadRight("IP", 15),
+		cliui.PadRight("PODCIDR", 18),
+		cliui.PadRight("CPU", 8),
+		cliui.PadRight("MEMORY", 10),
 		"AGE",
 	); err != nil {
 		return err
 	}
 	for _, n := range nodes {
-		nodeName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[node]"), n.Name)
-		if err := writef(out, "%s %s %s %s\n",
+		nodeName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[node]"), n.Name())
+		if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 			cliui.PadRight(nodeName, 31),
-			cliui.PadRight(string(n.Role), 14),
-			cliui.PadRight(formatNodeStatus(n.Status), 14),
+			cliui.PadRight(string(n.Spec.Role), 14),
+			cliui.PadRight(formatNodeStatus(n.Status.Phase), 14),
+			cliui.PadRight(emptyDash(n.InternalIP()), 15),
+			cliui.PadRight(emptyDash(n.Spec.PodCIDR), 18),
+			cliui.PadRight(emptyDash(n.Status.Allocatable.CPU), 8),
+			cliui.PadRight(emptyDash(n.Status.Allocatable.Memory), 10),
 			formatNodeAge(n),
 		); err != nil {
 			return err
@@ -683,8 +687,9 @@ func describeService(out io.Writer, svc *service.Service) error {
 }
 
 func describeNode(out io.Writer, n *node.Node) error {
-	labels := make([]string, 0, len(n.Labels))
-	for key, value := range n.Labels {
+	labelMap := n.LabelMap()
+	labels := make([]string, 0, len(labelMap))
+	for key, value := range labelMap {
 		labels = append(labels, fmt.Sprintf("%s=%s", key, value))
 	}
 	sort.Strings(labels)
@@ -692,9 +697,15 @@ func describeNode(out io.Writer, n *node.Node) error {
 		labels = append(labels, "-")
 	}
 	lines := []string{
-		fmt.Sprintf("Name: %s", n.Name),
-		fmt.Sprintf("Role: %s", n.Role),
-		fmt.Sprintf("Status: %s", n.Status),
+		fmt.Sprintf("Name: %s", n.Name()),
+		fmt.Sprintf("Role: %s", n.Spec.Role),
+		fmt.Sprintf("Status: %s", n.Status.Phase),
+		fmt.Sprintf("InternalIP: %s", emptyDash(n.InternalIP())),
+		fmt.Sprintf("PodCIDR: %s", emptyDash(n.Spec.PodCIDR)),
+		fmt.Sprintf("Capacity: cpu=%s memory=%s", emptyDash(n.Spec.Capacity.CPU), emptyDash(n.Spec.Capacity.Memory)),
+		fmt.Sprintf("Allocatable: cpu=%s memory=%s", emptyDash(n.Status.Allocatable.CPU), emptyDash(n.Status.Allocatable.Memory)),
+		fmt.Sprintf("Conditions: %s", formatNodeConditions(n.Status.Conditions)),
+		fmt.Sprintf("LastHeartbeat: %s", formatNodeLastHeartbeat(n.Status.LastHeartbeat)),
 		fmt.Sprintf("Age: %s", formatNodeAge(*n)),
 		fmt.Sprintf("Labels: %s", strings.Join(labels, ",")),
 	}
@@ -704,6 +715,25 @@ func describeNode(out io.Writer, n *node.Node) error {
 		}
 	}
 	return nil
+}
+
+func formatNodeConditions(conditions []node.NodeCondition) string {
+	if len(conditions) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(conditions))
+	for _, cond := range conditions {
+		parts = append(parts, fmt.Sprintf("%s=%s", cond.Type, cond.Status))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func formatNodeLastHeartbeat(last time.Time) string {
+	if last.IsZero() {
+		return "-"
+	}
+	return last.Format(time.RFC3339)
 }
 
 func emptyDash(value string) string {

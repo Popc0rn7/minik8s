@@ -148,7 +148,10 @@ func (s *Server) handleNetRegistryNodes(w http.ResponseWriter, r *http.Request) 
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
-		if err := s.nodes.UpsertHeartbeat(n.Name, node.Node{NodeIP: n.NodeIP, PodCIDR: n.PodCIDR}); err != nil {
+		heartbeat := node.New(n.Name, node.NodeSpec{PodCIDR: n.PodCIDR}, node.NodeStatus{
+			Addresses: []node.NodeAddress{{Type: node.NodeAddressInternalIP, Address: n.NodeIP}},
+		})
+		if err := s.nodes.UpsertHeartbeat(n.Name, *heartbeat); err != nil {
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
@@ -267,16 +270,17 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	heartbeat := node.Node{
-		NodeIP:  r.URL.Query().Get("nodeIP"),
-		PodCIDR: r.URL.Query().Get("podCIDR"),
+	heartbeat, err := s.readNodeHeartbeat(r, nodeName)
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
 	}
 	if err := s.nodes.UpsertHeartbeat(nodeName, heartbeat); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
-	if heartbeat.NodeIP != "" && heartbeat.PodCIDR != "" {
-		if err := s.netRegistry.Register(netregistry.Node{Name: nodeName, NodeIP: heartbeat.NodeIP, PodCIDR: heartbeat.PodCIDR}); err != nil {
+	if heartbeat.InternalIP() != "" && heartbeat.Spec.PodCIDR != "" {
+		if err := s.netRegistry.Register(netregistry.Node{Name: nodeName, NodeIP: heartbeat.InternalIP(), PodCIDR: heartbeat.Spec.PodCIDR}); err != nil {
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
@@ -304,7 +308,57 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 }
 
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+	case http.MethodPost:
+		if name != "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "create must target node collection")
+			return
+		}
+		var n node.Node
+		if err := decodeObject(r.Body, &n); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		n.Default()
+		if _, err := s.nodes.Get(n.Name()); err == nil {
+			writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("node %q already exists", n.Name()))
+			return
+		} else if err != nil && !errors.Is(err, store.ErrNodeNotFound) {
+			writeStoreError(w, err, "nodes", n.Name())
+			return
+		}
+		if err := s.nodes.Upsert(&n); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, &n)
+		return
+	case http.MethodPut:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "update must target a node")
+			return
+		}
+		var n node.Node
+		if err := decodeObject(r.Body, &n); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if n.Name() == "" {
+			n.ObjectMeta.Name = name
+		}
+		if n.Name() != name {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("node name %q does not match path %q", n.Name(), name))
+			return
+		}
+		n.Default()
+		if err := s.nodes.Upsert(&n); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, &n)
+		return
+	default:
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 		return
 	}
@@ -328,6 +382,30 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string
 		return
 	}
 	writeJSON(w, http.StatusOK, n)
+}
+
+func (s *Server) readNodeHeartbeat(r *http.Request, nodeName string) (node.Node, error) {
+	if r.Body != nil && r.ContentLength != 0 {
+		var heartbeat node.Node
+		if err := decodeObject(r.Body, &heartbeat); err != nil {
+			return node.Node{}, err
+		}
+		if heartbeat.Name() == "" {
+			heartbeat.ObjectMeta.Name = nodeName
+		}
+		if heartbeat.Name() != nodeName {
+			return node.Node{}, fmt.Errorf("heartbeat node name %q does not match path %q", heartbeat.Name(), nodeName)
+		}
+		heartbeat.Default()
+		return heartbeat, nil
+	}
+	nodeIP := r.URL.Query().Get("nodeIP")
+	podCIDR := r.URL.Query().Get("podCIDR")
+	heartbeat := node.New(nodeName, node.NodeSpec{PodCIDR: podCIDR}, node.NodeStatus{})
+	if nodeIP != "" {
+		heartbeat.Status.Addresses = []node.NodeAddress{{Type: node.NodeAddressInternalIP, Address: nodeIP}}
+	}
+	return *heartbeat, nil
 }
 
 func (s *Server) handlePodStatus(w http.ResponseWriter, r *http.Request, namespace, name string) {
@@ -557,7 +635,7 @@ func (s *Server) markPodsNodeLost(nodeName string) (int, error) {
 func (s *Server) shouldLogNodeConnect(nodeName string) (bool, error) {
 	n, err := s.nodes.Get(nodeName)
 	if err == nil {
-		return n.Status != node.NodeReady, nil
+		return n.Status.Phase != node.NodeReady, nil
 	}
 	if errors.Is(err, store.ErrNodeNotFound) {
 		return true, nil
@@ -573,7 +651,11 @@ func (s *Server) schedulePodIfPossible(p *pod.Pod) error {
 	if err != nil {
 		return fmt.Errorf("listing ready nodes: %w", err)
 	}
-	if err := s.navigator.Schedule(p, nodes); err != nil {
+	pods, err := s.pods.List("", nil)
+	if err != nil {
+		return fmt.Errorf("listing pods: %w", err)
+	}
+	if err := s.navigator.ScheduleWithPods(p, nodes, pods); err != nil {
 		return fmt.Errorf("scheduling pod: %w", err)
 	}
 	return nil
@@ -592,7 +674,7 @@ func (s *Server) scheduleUnassignedPods() error {
 		if p.Spec.NodeName != "" {
 			continue
 		}
-		if err := s.navigator.Schedule(p, nodes); err != nil {
+		if err := s.navigator.ScheduleWithPods(p, nodes, pods); err != nil {
 			return fmt.Errorf("scheduling pod %s/%s: %w", p.Namespace, p.Name, err)
 		}
 		if p.Spec.NodeName == "" {
@@ -639,7 +721,7 @@ func sortServices(services []*service.Service) {
 
 func sortNodes(nodes []node.Node) {
 	sort.Slice(nodes, func(i, j int) bool {
-		return nodes[i].Name < nodes[j].Name
+		return nodes[i].Name() < nodes[j].Name()
 	})
 }
 
