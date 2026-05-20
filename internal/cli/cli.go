@@ -35,30 +35,32 @@ import (
 
 // Config contains CLI dependencies.
 type Config struct {
-	Runtime      runtime.ContainerRuntime
-	Store        store.PodStore
-	ServiceStore store.ServiceStore
-	NodeStore    store.NodeStore
-	Bridge       *bridge.Bridge
-	Network      nodeSailer.PodNetworkManager
-	ServiceProxy kubeproxy.Proxy
-	HTTPClient   *http.Client
-	NetRunner    netagent.Runner
+	Runtime         runtime.ContainerRuntime
+	Store           store.PodStore
+	ServiceStore    store.ServiceStore
+	ReplicaSetStore store.ReplicaSetStore
+	NodeStore       store.NodeStore
+	Bridge          *bridge.Bridge
+	Network         nodeSailer.PodNetworkManager
+	ServiceProxy    kubeproxy.Proxy
+	HTTPClient      *http.Client
+	NetRunner       netagent.Runner
 }
 
 // App is the Minik8s command-line application.
 type App struct {
-	runtime       runtime.ContainerRuntime
-	store         store.PodStore
-	serviceStore  store.ServiceStore
-	nodeStore     store.NodeStore
-	controlBridge *bridge.Bridge
-	network       nodeSailer.PodNetworkManager
-	serviceProxy  kubeproxy.Proxy
-	httpClient    *http.Client
-	netRunner     netagent.Runner
-	server        string
-	namespace     string
+	runtime         runtime.ContainerRuntime
+	store           store.PodStore
+	serviceStore    store.ServiceStore
+	replicaSetStore store.ReplicaSetStore
+	nodeStore       store.NodeStore
+	controlBridge   *bridge.Bridge
+	network         nodeSailer.PodNetworkManager
+	serviceProxy    kubeproxy.Proxy
+	httpClient      *http.Client
+	netRunner       netagent.Runner
+	server          string
+	namespace       string
 }
 
 // New creates an App.
@@ -71,6 +73,10 @@ func New(config Config) *App {
 	if serviceStore == nil {
 		serviceStore = store.NewInMemoryServiceStore()
 	}
+	replicaSetStore := config.ReplicaSetStore
+	if replicaSetStore == nil {
+		replicaSetStore = store.NewInMemoryReplicaSetStore()
+	}
 	nodeStore := config.NodeStore
 	if nodeStore == nil {
 		nodeStore = store.NewInMemoryNodeStore()
@@ -79,22 +85,24 @@ func New(config Config) *App {
 	controlBridge := config.Bridge
 	if controlBridge == nil {
 		controlBridge = bridge.New(bridge.Config{
-			PodStore:     config.Store,
-			ServiceStore: serviceStore,
-			NodeStore:    nodeStore,
+			PodStore:        config.Store,
+			ServiceStore:    serviceStore,
+			ReplicaSetStore: replicaSetStore,
+			NodeStore:       nodeStore,
 		})
 	}
 	return &App{
-		runtime:       config.Runtime,
-		store:         config.Store,
-		serviceStore:  serviceStore,
-		nodeStore:     nodeStore,
-		controlBridge: controlBridge,
-		network:       network,
-		serviceProxy:  serviceProxy,
-		httpClient:    config.HTTPClient,
-		netRunner:     config.NetRunner,
-		namespace:     "default",
+		runtime:         config.Runtime,
+		store:           config.Store,
+		serviceStore:    serviceStore,
+		replicaSetStore: replicaSetStore,
+		nodeStore:       nodeStore,
+		controlBridge:   controlBridge,
+		network:         network,
+		serviceProxy:    serviceProxy,
+		httpClient:      config.HTTPClient,
+		netRunner:       config.NetRunner,
+		namespace:       "default",
 	}
 }
 
@@ -142,6 +150,17 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return writes(out, cliui.SuccessLine("node/%s created (%s)", updated.Name(), updated.Status.Phase))
 	}
+	if kind == "ReplicaSet" {
+		rs, err := podyaml.LoadReplicaSetFromFile(path)
+		if err != nil {
+			return err
+		}
+		updated, err := client.ApplyReplicaSet(ctx, rs)
+		if err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("replicaset/%s created (%d/%d)", updated.Name, updated.Status.Replicas, updated.Spec.Replicas))
+	}
 	if kind != "" && kind != "Pod" {
 		return fmt.Errorf("unsupported kind %q", kind)
 	}
@@ -174,7 +193,7 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	if len(args) < 2 {
-		return fmt.Errorf("usage: minik8s delete pod|service <name> [-n namespace]")
+		return fmt.Errorf("usage: minik8s delete pod|service|replicaset <name> [-n namespace]")
 	}
 	if args[0] == "service" || args[0] == "svc" {
 		name := args[1]
@@ -184,8 +203,16 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return writes(out, cliui.SuccessLine("service/%s deleted", name))
 	}
+	if args[0] == "replicaset" || args[0] == "replicasets" || args[0] == "rs" {
+		name := args[1]
+		namespace := namespaceFlag(args[2:])
+		if err := client.DeleteReplicaSet(ctx, name, namespace); err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("replicaset/%s deleted", name))
+	}
 	if args[0] != "pod" {
-		return fmt.Errorf("usage: minik8s delete pod|service <name> [-n namespace]")
+		return fmt.Errorf("usage: minik8s delete pod|service|replicaset <name> [-n namespace]")
 	}
 	name := args[1]
 	namespace := namespaceFlag(args[2:])
@@ -731,8 +758,9 @@ func parseNetDOptions(args []string) (netDOptions, error) {
 }
 
 type bridgeOptions struct {
-	listen              string
-	serviceSyncInterval time.Duration
+	listen                 string
+	serviceSyncInterval    time.Duration
+	replicaSetSyncInterval time.Duration
 }
 
 func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
@@ -750,6 +778,9 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	}()
 	if options.serviceSyncInterval > 0 {
 		go a.runServiceSyncLoop(ctx, options.serviceSyncInterval)
+	}
+	if options.replicaSetSyncInterval > 0 {
+		go a.runReplicaSetSyncLoop(ctx, options.replicaSetSyncInterval)
 	}
 	go a.runNodeLivenessLoop(ctx, 5*time.Second)
 	if err := writes(out, cliui.InfoLine("bridge listening on %s", options.listen)); err != nil {
@@ -772,7 +803,7 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func parseBridgeOptions(args []string) (bridgeOptions, error) {
-	options := bridgeOptions{listen: ":8080", serviceSyncInterval: 5 * time.Second}
+	options := bridgeOptions{listen: ":8080", serviceSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -791,6 +822,16 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 				return options, fmt.Errorf("invalid --service-sync-interval %q: %w", args[i], err)
 			}
 			options.serviceSyncInterval = interval
+		case "--replicaset-sync-interval":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --replicaset-sync-interval")
+			}
+			interval, err := time.ParseDuration(args[i])
+			if err != nil {
+				return options, fmt.Errorf("invalid --replicaset-sync-interval %q: %w", args[i], err)
+			}
+			options.replicaSetSyncInterval = interval
 		default:
 			return options, fmt.Errorf("unknown bridge flag %q", args[i])
 		}
@@ -803,6 +844,26 @@ func (a *App) runServiceSyncLoop(ctx context.Context, interval time.Duration) {
 		ctrl := bridgeCaptain.NewServiceController(a.controlBridge.PodStore(), a.controlBridge.ServiceStore())
 		if err := ctrl.Sync(ctx); err != nil {
 			minilog.Warn("service-periodic-sync", "error=%v", err)
+		}
+	}
+	syncOnce()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncOnce()
+		}
+	}
+}
+
+func (a *App) runReplicaSetSyncLoop(ctx context.Context, interval time.Duration) {
+	syncOnce := func() {
+		ctrl := bridgeCaptain.NewReplicaSetController(a.controlBridge.PodStore(), a.controlBridge.ReplicaSetStore())
+		if err := ctrl.Sync(ctx); err != nil {
+			minilog.Warn("replicaset-periodic-sync", "error=%v", err)
 		}
 	}
 	syncOnce()
@@ -1168,6 +1229,13 @@ func DefaultServiceStatePath() string {
 		return filepath.Join(dir, "services.json")
 	}
 	return filepath.Join(".minik8s", "state", "services.json")
+}
+
+func DefaultReplicaSetStatePath() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "replicasets.json")
+	}
+	return filepath.Join(".minik8s", "state", "replicasets.json")
 }
 
 func DefaultNodeStatePath() string {

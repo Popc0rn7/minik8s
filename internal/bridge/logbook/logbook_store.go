@@ -11,14 +11,16 @@ import (
 
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
+	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
 )
 
 const (
-	podPrefix     = "/registry/pods/"
-	servicePrefix = "/registry/services/"
-	nodePrefix    = "/registry/nodes/"
-	defaultOpTTL  = 5 * time.Second
+	podPrefix        = "/registry/pods/"
+	servicePrefix    = "/registry/services/"
+	replicaSetPrefix = "/registry/replicasets/"
+	nodePrefix       = "/registry/nodes/"
+	defaultOpTTL     = 5 * time.Second
 )
 
 // NewClient creates an etcd v3 client for Minik8s stores.
@@ -290,6 +292,118 @@ func (s *EtcdServiceStore) Delete(name, namespace string) error {
 	return nil
 }
 
+// EtcdReplicaSetStore persists ReplicaSet state in real etcd.
+type EtcdReplicaSetStore struct {
+	client *clientv3.Client
+}
+
+func NewEtcdReplicaSetStore(client *clientv3.Client) *EtcdReplicaSetStore {
+	return &EtcdReplicaSetStore{client: client}
+}
+
+func (s *EtcdReplicaSetStore) Create(rs *replicaset.ReplicaSet) error {
+	copy := normalizeReplicaSet(rs)
+	data, err := json.Marshal(copy)
+	if err != nil {
+		return fmt.Errorf("encoding replicaset: %w", err)
+	}
+	key := etcdReplicaSetKey(copy.Namespace, copy.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(key), "=", 0)).
+		Then(clientv3.OpPut(key, string(data))).
+		Commit()
+	if err != nil {
+		return fmt.Errorf("creating replicaset in etcd: %w", err)
+	}
+	if !resp.Succeeded {
+		return ErrReplicaSetAlreadyExists
+	}
+	return nil
+}
+
+func (s *EtcdReplicaSetStore) Get(name, namespace string) (*replicaset.ReplicaSet, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Get(ctx, etcdReplicaSetKey(namespace, name))
+	if err != nil {
+		return nil, fmt.Errorf("getting replicaset from etcd: %w", err)
+	}
+	if len(resp.Kvs) == 0 {
+		return nil, ErrReplicaSetNotFound
+	}
+	var rs replicaset.ReplicaSet
+	if err := json.Unmarshal(resp.Kvs[0].Value, &rs); err != nil {
+		return nil, fmt.Errorf("decoding replicaset: %w", err)
+	}
+	return normalizeReplicaSet(&rs), nil
+}
+
+func (s *EtcdReplicaSetStore) List(namespace string, selector *pod.LabelSelector) ([]*replicaset.ReplicaSet, error) {
+	prefix := replicaSetPrefix
+	if namespace != "" {
+		prefix = replicaSetPrefix + podNamespace(namespace) + "/"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Get(ctx, prefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, fmt.Errorf("listing replicasets from etcd: %w", err)
+	}
+	result := make([]*replicaset.ReplicaSet, 0, len(resp.Kvs))
+	for _, kv := range resp.Kvs {
+		var rs replicaset.ReplicaSet
+		if err := json.Unmarshal(kv.Value, &rs); err != nil {
+			return nil, fmt.Errorf("decoding replicaset %q: %w", string(kv.Key), err)
+		}
+		copy := normalizeReplicaSet(&rs)
+		if selector == nil || selector.Matches(copy.Labels) {
+			result = append(result, copy)
+		}
+	}
+	return result, nil
+}
+
+func (s *EtcdReplicaSetStore) Update(rs *replicaset.ReplicaSet) error {
+	copy := normalizeReplicaSet(rs)
+	data, err := json.Marshal(copy)
+	if err != nil {
+		return fmt.Errorf("encoding replicaset: %w", err)
+	}
+	key := etcdReplicaSetKey(copy.Namespace, copy.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(key), ">", 0)).
+		Then(clientv3.OpPut(key, string(data))).
+		Commit()
+	if err != nil {
+		return fmt.Errorf("updating replicaset in etcd: %w", err)
+	}
+	if !resp.Succeeded {
+		return ErrReplicaSetNotFound
+	}
+	return nil
+}
+
+func (s *EtcdReplicaSetStore) Delete(name, namespace string) error {
+	key := etcdReplicaSetKey(namespace, name)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(key), ">", 0)).
+		Then(clientv3.OpDelete(key)).
+		Commit()
+	if err != nil {
+		return fmt.Errorf("deleting replicaset from etcd: %w", err)
+	}
+	if !resp.Succeeded {
+		return ErrReplicaSetNotFound
+	}
+	return nil
+}
+
 // EtcdNodeStore persists Node state in real etcd.
 type EtcdNodeStore struct {
 	client *clientv3.Client
@@ -426,6 +540,10 @@ func etcdPodKey(namespace, name string) string {
 
 func etcdServiceKey(namespace, name string) string {
 	return servicePrefix + podNamespace(namespace) + "/" + name
+}
+
+func etcdReplicaSetKey(namespace, name string) string {
+	return replicaSetPrefix + podNamespace(namespace) + "/" + name
 }
 
 func etcdNodeKey(name string) string {

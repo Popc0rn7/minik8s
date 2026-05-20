@@ -21,22 +21,25 @@ import (
 	"minik8s/internal/netregistry"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
+	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
 	podyaml "minik8s/pkg/yaml"
 )
 
 type Config struct {
-	PodStore     store.PodStore
-	ServiceStore store.ServiceStore
-	NodeStore    store.NodeStore
-	Navigator    navigator.Navigator
-	NodeTTL      time.Duration
-	NetRegistry  *netregistry.Store
+	PodStore        store.PodStore
+	ServiceStore    store.ServiceStore
+	ReplicaSetStore store.ReplicaSetStore
+	NodeStore       store.NodeStore
+	Navigator       navigator.Navigator
+	NodeTTL         time.Duration
+	NetRegistry     *netregistry.Store
 }
 
 type Server struct {
 	pods        store.PodStore
 	services    store.ServiceStore
+	replicaSets store.ReplicaSetStore
 	nodes       store.NodeStore
 	navigator   navigator.Navigator
 	nodeTTL     time.Duration
@@ -51,6 +54,10 @@ func New(config Config) *Server {
 	serviceStore := config.ServiceStore
 	if serviceStore == nil {
 		serviceStore = store.NewInMemoryServiceStore()
+	}
+	replicaSetStore := config.ReplicaSetStore
+	if replicaSetStore == nil {
+		replicaSetStore = store.NewInMemoryReplicaSetStore()
 	}
 	nodeStore := config.NodeStore
 	if nodeStore == nil {
@@ -71,6 +78,7 @@ func New(config Config) *Server {
 	return &Server{
 		pods:        podStore,
 		services:    serviceStore,
+		replicaSets: replicaSetStore,
 		nodes:       nodeStore,
 		navigator:   podNavigator,
 		nodeTTL:     nodeTTL,
@@ -105,6 +113,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"kind":       "Service",
 				"verbs":      []string{"get", "list", "create", "update", "delete"},
 			}, {
+				"name":       "replicasets",
+				"namespaced": true,
+				"kind":       "ReplicaSet",
+				"verbs":      []string{"get", "list", "create", "update", "delete"},
+			}, {
 				"name":       "nodes",
 				"namespaced": false,
 				"kind":       "Node",
@@ -126,6 +139,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.handlePods(w, r, namespace, parts[5:])
 		case "services":
 			s.handleServices(w, r, namespace, parts[5:])
+		case "replicasets":
+			s.handleReplicaSets(w, r, namespace, parts[5:])
 		default:
 			writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("resource %q not found", parts[4]))
 		}
@@ -249,6 +264,10 @@ func (s *Server) handlePods(w http.ResponseWriter, r *http.Request, namespace st
 			writeStoreError(w, err, "pods", name)
 			return
 		}
+		if err := s.syncReplicaSets(r.Context()); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
 		minilog.Info("pod-delete", "pod=%s/%s", namespace, name)
 		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("pod %q deleted", name))
 	default:
@@ -287,6 +306,10 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 	}
 	if shouldLogConnect {
 		minilog.Info("node-connect", "node=%s", nodeName)
+	}
+	if err := s.syncReplicaSets(r.Context()); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
 	}
 	if err := s.scheduleUnassignedPods(); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
@@ -428,6 +451,10 @@ func (s *Server) handlePodStatus(w http.ResponseWriter, r *http.Request, namespa
 		writeStoreError(w, err, "pods", name)
 		return
 	}
+	if err := s.syncReplicaSets(r.Context()); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
 	if err := s.syncServices(r.Context()); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -534,6 +561,110 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request, namespac
 	}
 }
 
+func (s *Server) handleReplicaSets(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
+	name := ""
+	if len(parts) > 0 {
+		name = parts[0]
+	}
+	if len(parts) > 1 {
+		writeStatus(w, http.StatusNotFound, "NotFound", "replicaset path not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		if name != "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "create must target replicaset collection")
+			return
+		}
+		rs, err := readReplicaSet(r.Body, namespace, "")
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.replicaSets.Create(rs); err != nil {
+			writeStoreError(w, err, "replicasets", rs.Name)
+			return
+		}
+		if err := s.syncReplicaSets(r.Context()); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		updated, err := s.replicaSets.Get(rs.Name, rs.Namespace)
+		if err != nil {
+			writeStoreError(w, err, "replicasets", rs.Name)
+			return
+		}
+		minilog.Info("replicaset-create", "replicaset=%s/%s", updated.Namespace, updated.Name)
+		writeJSON(w, http.StatusCreated, updated)
+	case http.MethodGet:
+		if err := s.syncReplicaSets(r.Context()); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		if name == "" {
+			replicaSets, err := s.replicaSets.List(namespace, nil)
+			if err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+				return
+			}
+			sortReplicaSets(replicaSets)
+			writeJSON(w, http.StatusOK, map[string]any{"kind": "ReplicaSetList", "apiVersion": "v1", "items": replicaSets})
+			return
+		}
+		rs, err := s.replicaSets.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "replicasets", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, rs)
+	case http.MethodPut:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "update must target a replicaset")
+			return
+		}
+		existing, err := s.replicaSets.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "replicasets", name)
+			return
+		}
+		rs, err := readReplicaSet(r.Body, namespace, name)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		rs.Status = existing.Status
+		if err := s.replicaSets.Update(rs); err != nil {
+			writeStoreError(w, err, "replicasets", name)
+			return
+		}
+		if err := s.syncReplicaSets(r.Context()); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		updated, err := s.replicaSets.Get(rs.Name, rs.Namespace)
+		if err != nil {
+			writeStoreError(w, err, "replicasets", name)
+			return
+		}
+		minilog.Info("replicaset-update", "replicaset=%s/%s", updated.Namespace, updated.Name)
+		writeJSON(w, http.StatusOK, updated)
+	case http.MethodDelete:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target a replicaset")
+			return
+		}
+		ctrl := captain.NewReplicaSetController(s.pods, s.replicaSets)
+		if err := ctrl.DeleteReplicaSet(r.Context(), name, namespace); err != nil {
+			writeStoreError(w, err, "replicasets", name)
+			return
+		}
+		minilog.Info("replicaset-delete", "replicaset=%s/%s", namespace, name)
+		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("replicaset %q deleted", name))
+	default:
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+	}
+}
+
 func readPod(r io.Reader, namespace, name string) (*pod.Pod, error) {
 	var p pod.Pod
 	if err := decodeObject(r, &p); err != nil {
@@ -549,6 +680,23 @@ func readPod(r io.Reader, namespace, name string) (*pod.Pod, error) {
 		return nil, err
 	}
 	return &p, nil
+}
+
+func readReplicaSet(r io.Reader, namespace, name string) (*replicaset.ReplicaSet, error) {
+	var rs replicaset.ReplicaSet
+	if err := decodeObject(r, &rs); err != nil {
+		return nil, err
+	}
+	if namespace != "" {
+		rs.Namespace = namespace
+	}
+	if name != "" {
+		rs.Name = name
+	}
+	if err := podyaml.DefaultAndValidateReplicaSet(&rs); err != nil {
+		return nil, err
+	}
+	return &rs, nil
 }
 
 func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (*service.Service, error) {
@@ -577,6 +725,11 @@ func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (
 
 func (s *Server) syncServices(ctx context.Context) error {
 	ctrl := captain.NewServiceController(s.pods, s.services)
+	return ctrl.Sync(ctx)
+}
+
+func (s *Server) syncReplicaSets(ctx context.Context) error {
+	ctrl := captain.NewReplicaSetController(s.pods, s.replicaSets)
 	return ctrl.Sync(ctx)
 }
 
@@ -719,6 +872,15 @@ func sortServices(services []*service.Service) {
 	})
 }
 
+func sortReplicaSets(replicaSets []*replicaset.ReplicaSet) {
+	sort.Slice(replicaSets, func(i, j int) bool {
+		if replicaSets[i].Namespace == replicaSets[j].Namespace {
+			return replicaSets[i].Name < replicaSets[j].Name
+		}
+		return replicaSets[i].Namespace < replicaSets[j].Namespace
+	})
+}
+
 func sortNodes(nodes []node.Node) {
 	sort.Slice(nodes, func(i, j int) bool {
 		return nodes[i].Name() < nodes[j].Name()
@@ -758,6 +920,10 @@ func writeStoreError(w http.ResponseWriter, err error, resource, name string) {
 	case errors.Is(err, store.ErrServiceNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
 	case errors.Is(err, store.ErrServiceAlreadyExists):
+		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
+	case errors.Is(err, store.ErrReplicaSetNotFound):
+		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
+	case errors.Is(err, store.ErrReplicaSetAlreadyExists):
 		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
 	case errors.Is(err, store.ErrNodeNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))

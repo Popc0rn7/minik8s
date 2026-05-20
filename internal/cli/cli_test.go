@@ -18,6 +18,7 @@ import (
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
+	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
 	"minik8s/test/mock"
 )
@@ -73,6 +74,8 @@ func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
 		{"get", "services"},
 		{"delete", "service", "nginx-service"},
 		{"get", "nodes"},
+		{"get", "rs"},
+		{"delete", "rs", "nginx-rs"},
 	} {
 		err := app.Run(context.Background(), args, &out)
 		require.Error(t, err)
@@ -586,6 +589,65 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"delete", "service", "nginx-service"}, &out))
 	assert.Contains(t, out.String(), "service/nginx-service deleted")
+}
+
+func TestCLIApplyGetDescribeDeleteReplicaSet(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	podStore := store.NewInMemoryPodStore()
+	rsStore := store.NewInMemoryReplicaSetStore()
+	server := harbor.New(harbor.Config{PodStore: podStore, ReplicaSetStore: rsStore, NodeStore: store.NewInMemoryNodeStore()})
+	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	manifest := filepath.Join(t.TempDir(), "replicaset.yaml")
+	require.NoError(t, os.WriteFile(manifest, []byte(`
+kind: ReplicaSet
+metadata:
+  name: nginx-rs
+  labels:
+    tier: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    spec:
+      containers:
+      - name: nginx
+        image: nginx
+`), 0o644))
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
+	assert.Contains(t, out.String(), "replicaset/nginx-rs created")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"get", "rs"}, &out))
+	assert.Contains(t, out.String(), "REPLICASET")
+	assert.Contains(t, out.String(), "DESIRED")
+	assert.Contains(t, out.String(), "CURRENT")
+	assert.Contains(t, out.String(), "nginx-rs")
+	assert.Contains(t, out.String(), "tier=web")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"describe", "rs", "nginx-rs"}, &out))
+	assert.Contains(t, out.String(), "Name: nginx-rs")
+	assert.Contains(t, out.String(), "Desired: 2")
+	assert.Contains(t, out.String(), "Current: 2")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"get", "rs", "nginx-rs", "-o", "json"}, &out))
+	var got replicaset.ReplicaSet
+	require.NoError(t, json.Unmarshal(out.Bytes(), &got))
+	assert.Equal(t, "nginx-rs", got.Name)
+	assert.Equal(t, int32(2), got.Spec.Replicas)
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"delete", "rs/nginx-rs"}, &out))
+	assert.Contains(t, out.String(), "replicaset/nginx-rs deleted")
+	pods, err := podStore.List("default", nil)
+	require.NoError(t, err)
+	assert.Empty(t, pods)
 }
 
 func TestParseBridgeOptionsServiceSyncInterval(t *testing.T) {

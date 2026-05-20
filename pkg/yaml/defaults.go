@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"minik8s/internal/pod"
+	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
 )
 
@@ -23,6 +24,7 @@ func DefaultAndValidatePod(p *pod.Pod) error {
 	if p.Namespace == "" {
 		p.Namespace = "default"
 	}
+	p.Spec.NodeName = ""
 	if p.Spec.RestartPolicy == "" {
 		p.Spec.RestartPolicy = pod.RestartPolicyAlways
 	}
@@ -120,6 +122,46 @@ func DefaultAndValidateService(s *service.Service) error {
 	}
 	if s.Status.ClusterIP == "" {
 		s.Status.ClusterIP = service.DefaultClusterIP
+	}
+	return nil
+}
+
+func DefaultAndValidateReplicaSet(rs *replicaset.ReplicaSet) error {
+	if rs == nil {
+		return fmt.Errorf("replicaset is nil")
+	}
+	if rs.Kind != "" && rs.Kind != "ReplicaSet" {
+		return fmt.Errorf("kind must be ReplicaSet, got %q", rs.Kind)
+	}
+	if rs.Kind == "" {
+		rs.Kind = "ReplicaSet"
+	}
+	if rs.Namespace == "" {
+		rs.Namespace = "default"
+	}
+	if strings.TrimSpace(rs.Name) == "" {
+		return fmt.Errorf("metadata.name is required")
+	}
+	if rs.Spec.Replicas < 0 {
+		return fmt.Errorf("spec.replicas must be greater than or equal to 0")
+	}
+	if len(rs.Spec.Selector.MatchLabels) == 0 {
+		return fmt.Errorf("spec.selector.matchLabels must contain at least one label")
+	}
+	template := &rs.Spec.Template
+	template.Kind = "Pod"
+	template.Namespace = rs.Namespace
+	if template.Name == "" {
+		template.Name = rs.Name
+	}
+	if template.Labels == nil {
+		template.Labels = map[string]string{}
+	}
+	for k, v := range rs.Spec.Selector.MatchLabels {
+		template.Labels[k] = v
+	}
+	if err := DefaultAndValidatePod(template); err != nil {
+		return fmt.Errorf("spec.template: %w", err)
 	}
 	return nil
 }

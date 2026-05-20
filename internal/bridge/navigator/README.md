@@ -2,7 +2,6 @@
 
 This module is reserved for bridge scheduling logic.
 
-Current Pod manifests use `spec.nodeName` directly, so sailer selects work via
-the Harbor's node-scoped Pod list. A future navigator should watch
-unscheduled Pods, choose a node, and write `spec.nodeName` through the control
-plane API.
+User manifests do not choose `spec.nodeName`. Harbor accepts unscheduled Pods,
+the navigator chooses a Ready node, and the control plane writes `spec.nodeName`
+as the internal assignment consumed by sailer.

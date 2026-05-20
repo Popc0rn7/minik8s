@@ -95,7 +95,7 @@ unset MINIK8S_CNI_DISABLED
 
 ## POD-02：volume 与资源限制
 
-目标：验证 `hostPath` volume、`volumeMounts`、CPU/memory limit、namespace 过滤。
+目标：验证 `hostPath` volume、`volumeMounts`、CPU/memory limit、namespace 过滤。Pod YAML 不指定 `nodeName`，实际运行节点由 scheduler 决定。
 
 机器：node-a。
 
@@ -107,6 +107,7 @@ rm -f /tmp/minik8s-case-data/marker
 ./minik8s apply -f manifest/testdata/pod_volume_resource.yaml
 sleep 6
 ./minik8s get pods -n demo
+./minik8s describe pod volume-resource-pod -n demo
 cat /tmp/minik8s-case-data/marker
 docker inspect volume-resource-pod-writer --format '{{json .HostConfig.Mounts}} {{.HostConfig.NanoCpus}} {{.HostConfig.Memory}}'
 ```
@@ -114,7 +115,8 @@ docker inspect volume-resource-pod-writer --format '{{json .HostConfig.Mounts}} 
 期望：
 
 - `get pods -n demo` 包含 `volume-resource-pod`、`Running`、`demo`。
-- `/tmp/minik8s-case-data/marker` 内容为 `volume-ok`。
+- `describe pod` 中 Node 不为空，说明 scheduler 已完成分配。
+- 如果 Pod 被调度到 node-a，`/tmp/minik8s-case-data/marker` 内容为 `volume-ok`；如果被调度到 node-b，到 node-b 执行同一路径检查。
 - Docker inspect 显示目标挂载 `/data`。
 - `NanoCpus` 约为 `500000000`，`Memory` 约为 `134217728`。
 
@@ -191,7 +193,7 @@ sleep 6
 
 失败排查：
 
-- `spec.nodeName` 为空：确认至少一个 sailer 正在心跳，默认 TTL 为 30s。
+- `spec.nodeName` 为空：确认至少一个 sailer 正在心跳，默认 TTL 为 30s；用户 YAML 中不应指定 `nodeName`。
 - Pod 被分到 node-b 但没 Running：到 node-b 查看 sailer 日志和 Docker 状态。
 
 清理：

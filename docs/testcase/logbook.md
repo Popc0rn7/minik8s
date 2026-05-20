@@ -1,6 +1,6 @@
 # Logbook 控制面状态存储测试用例
 
-本文档从 0 开始验证 v0.1.0 的 Logbook 控制面状态存储。设置 `MINIK8S_LOGBOOK_ENDPOINTS` 后，Pod、Service、Node 都使用真实 etcd 作为状态源；未设置时回退本地 JSON file store。etcd 只需要运行在 node-a/control plane，node-b worker 不直连 etcd，只访问 Harbor。
+本文档从 0 开始验证 v0.1.0 的 Logbook 控制面状态存储。设置 `MINIK8S_LOGBOOK_ENDPOINTS` 后，Pod、Service、ReplicaSet、Node 都使用真实 etcd 作为状态源；未设置时回退本地 JSON file store。etcd 只需要运行在 node-a/control plane，node-b worker 不直连 etcd，只访问 Harbor。
 
 ## 测试模型
 
@@ -14,6 +14,7 @@ etcd key 约定：
 ```text
 /registry/pods/{namespace}/{name}
 /registry/services/{namespace}/{name}
+/registry/replicasets/{namespace}/{name}
 /registry/nodes/{name}
 ```
 
@@ -127,8 +128,11 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 
 ```bash
 ./minik8s delete service nginx-service || true
+./minik8s delete rs nginx-rs || true
 ./minik8s delete pod nginx-node-a || true
 ./minik8s delete pod nginx-node-b || true
+./minik8s delete pod nginx-rs-1 || true
+./minik8s delete pod nginx-rs-2 || true
 ./minik8s delete pod nginx-pod || true
 sleep 8
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
@@ -146,9 +150,9 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} del --prefix /reg
 | --- | --- | --- | --- |
 | LOGBOOK-01 | etcd 服务健康与 CLI 环境 | node-a | 是 |
 | LOGBOOK-02 | bridge 使用 Logbook 后端 | node-a | 是 |
-| LOGBOOK-03 | Pod/Service/Node key 写入 | node-a + node-b | 是 |
+| LOGBOOK-03 | Pod/Service/ReplicaSet/Node key 写入 | node-a + node-b | 是 |
 | LOGBOOK-04 | 删除对象清理 etcd key | node-a | 是 |
-| LOGBOOK-05 | bridge 重启后恢复状态 | node-a + node-b | 是 |
+| LOGBOOK-05 | bridge 重启后恢复 Pod/Service/ReplicaSet 状态 | node-a + node-b | 是 |
 | LOGBOOK-06 | watch 与并发检查 | node-a 或开发机 | 可选 |
 
 ## LOGBOOK-01：etcd 服务健康与 CLI 环境
@@ -219,9 +223,9 @@ curl -fsS ${HARBOR}/version
 - `doctor logbook` 提示未设置 endpoint：确认当前 shell 已 `export MINIK8S_LOGBOOK_ENDPOINTS`。
 - apply/get 仍像 file store：确认启动 bridge 的那个终端也设置了同一个 `MINIK8S_LOGBOOK_ENDPOINTS`。
 
-## LOGBOOK-03：Pod/Service/Node key 写入
+## LOGBOOK-03：Pod/Service/ReplicaSet/Node key 写入
 
-目标：验证 Pod、Service、Node 对象都写入 `/registry`，CLI 和 etcd 看到同一份状态。
+目标：验证 Pod、Service、ReplicaSet、Node 对象都写入 `/registry`，CLI 和 etcd 看到同一份状态。
 
 在 node-a 和 node-b 启动 sailer 后，在 node-a：
 
@@ -229,10 +233,12 @@ curl -fsS ${HARBOR}/version
 ./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
 ./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
 ./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/testdata/replicaset_nginx.yaml
 sleep 10
 ./minik8s get nodes
 ./minik8s get pods
 ./minik8s get services
+./minik8s get rs
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
 ```
 
@@ -241,39 +247,47 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 - `get nodes` 包含 `node-a` 和 `node-b`。
 - `get pods` 包含 `nginx-node-a` 和 `nginx-node-b`。
 - `get services` 包含 `nginx-service`。
+- `get rs` 包含 `nginx-rs`，desired/current 为 `2/2` 或表格中等价展示。
 - etcd 中存在 `/registry/nodes/node-a` 和 `/registry/nodes/node-b`。
 - etcd 中存在 `/registry/pods/default/nginx-node-a` 和 `/registry/pods/default/nginx-node-b`。
 - etcd 中存在 `/registry/services/default/nginx-service`。
+- etcd 中存在 `/registry/replicasets/default/nginx-rs`。
 
 失败排查：
 
 - Node key 不出现：确认两个 sailer 的 `--harbor` 指向 node-a 的 `${HARBOR}`。
 - Pod key 不出现：确认 `apply` 命令连接的是 `${HARBOR}`，不是另一个控制面。
 - Service key 不出现：确认 YAML kind 是 `Service`，并查看 bridge 日志。
+- ReplicaSet key 不出现：确认 YAML kind 是 `ReplicaSet`，并查看 bridge 日志中的 `replicaset-create`。
 
 ## LOGBOOK-04：删除对象清理 etcd key
 
-目标：验证删除 Pod/Service 后，对应 etcd key 会被清理。
+目标：验证删除 Pod/Service/ReplicaSet 后，对应 etcd key 会被清理。
 
 在 node-a：
 
 ```bash
 ./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
 ./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/testdata/replicaset_nginx.yaml
 sleep 8
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
 ./minik8s delete service nginx-service
+./minik8s delete rs nginx-rs
 ./minik8s delete pod nginx-node-a
 sleep 8
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry/pods/default/nginx-node-a
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry/services/default/nginx-service
+ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry/replicasets/default/nginx-rs
 ```
 
 期望：
 
-- 删除前能看到 Pod/Service key。
+- 删除前能看到 Pod/Service/ReplicaSet key。
 - 删除后 `/registry/pods/default/nginx-node-a` 无输出。
 - 删除后 `/registry/services/default/nginx-service` 无输出。
+- 删除后 `/registry/replicasets/default/nginx-rs` 无输出。
+- 删除 ReplicaSet 后，其 owned Pod key `/registry/pods/default/nginx-rs-1`、`/registry/pods/default/nginx-rs-2` 也应被级联清理。
 - Node key 仍存在，因为 worker 心跳还在运行。
 
 失败排查：
@@ -283,7 +297,7 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 
 ## LOGBOOK-05：bridge 重启后恢复状态
 
-目标：验证 bridge 进程重启后，Pod、Service、Node 对象仍可从 etcd 恢复；worker 继续心跳后节点保持 Ready。
+目标：验证 bridge 进程重启后，Pod、Service、ReplicaSet、Node 对象仍可从 etcd 恢复；worker 继续心跳后节点保持 Ready。
 
 在 node-a 创建对象：
 
@@ -291,10 +305,12 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 ./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
 ./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
 ./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/testdata/replicaset_nginx.yaml
 sleep 10
 ./minik8s get nodes
 ./minik8s get pods
 ./minik8s get services
+./minik8s get rs
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
 ```
 
@@ -319,6 +335,7 @@ export MINIK8S_HARBOR=${HARBOR}
 ./minik8s get nodes
 ./minik8s get pods
 ./minik8s get services
+./minik8s get rs
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
 ```
 
@@ -326,8 +343,9 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 
 - Pod 列表仍包含 `nginx-node-a` 和 `nginx-node-b`。
 - Service 列表仍包含 `nginx-service` 和原 ClusterIP。
+- ReplicaSet 列表仍包含 `nginx-rs`，且 current 会在同步后恢复为 desired。
 - Node 列表仍包含 `node-a`、`node-b`；worker 心跳后状态为 `Ready`。
-- etcd 中的 `/registry/pods`、`/registry/services`、`/registry/nodes` 仍存在。
+- etcd 中的 `/registry/pods`、`/registry/services`、`/registry/replicasets`、`/registry/nodes` 仍存在。
 
 失败排查：
 
@@ -356,6 +374,8 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} watch --prefix /r
 ```bash
 ./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
 ./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/testdata/replicaset_nginx.yaml
+./minik8s delete rs nginx-rs
 ./minik8s delete service nginx-service
 ./minik8s delete pod nginx-node-a
 ```
@@ -364,7 +384,7 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} watch --prefix /r
 
 - Go test 通过。
 - watch 终端看到 `/registry` 下的 `PUT` 和 `DELETE`。
-- Pod/Service apply 对应 `PUT`；delete 对应 `DELETE`。
+- Pod/Service/ReplicaSet apply 对应 `PUT`；delete 对应 `DELETE`。
 - sailer 心跳期间可持续看到 `/registry/nodes/{name}` 的 `PUT`。
 
 失败排查：

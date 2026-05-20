@@ -11,19 +11,21 @@ import (
 )
 
 type Config struct {
-	PodStore     store.PodStore
-	ServiceStore store.ServiceStore
-	NodeStore    store.NodeStore
-	Navigator    navigator.Navigator
-	NodeTTL      time.Duration
+	PodStore        store.PodStore
+	ServiceStore    store.ServiceStore
+	ReplicaSetStore store.ReplicaSetStore
+	NodeStore       store.NodeStore
+	Navigator       navigator.Navigator
+	NodeTTL         time.Duration
 }
 
 type Bridge struct {
-	podStore     store.PodStore
-	serviceStore store.ServiceStore
-	nodeStore    store.NodeStore
-	navigator    navigator.Navigator
-	nodeTTL      time.Duration
+	podStore        store.PodStore
+	serviceStore    store.ServiceStore
+	replicaSetStore store.ReplicaSetStore
+	nodeStore       store.NodeStore
+	navigator       navigator.Navigator
+	nodeTTL         time.Duration
 }
 
 func New(config Config) *Bridge {
@@ -34,6 +36,10 @@ func New(config Config) *Bridge {
 	serviceStore := config.ServiceStore
 	if serviceStore == nil {
 		serviceStore = store.NewInMemoryServiceStore()
+	}
+	replicaSetStore := config.ReplicaSetStore
+	if replicaSetStore == nil {
+		replicaSetStore = store.NewInMemoryReplicaSetStore()
 	}
 	nodeStore := config.NodeStore
 	if nodeStore == nil {
@@ -48,31 +54,34 @@ func New(config Config) *Bridge {
 		nodeTTL = navigator.DefaultNodeTTL
 	}
 	return &Bridge{
-		podStore:     podStore,
-		serviceStore: serviceStore,
-		nodeStore:    nodeStore,
-		navigator:    podNavigator,
-		nodeTTL:      nodeTTL,
+		podStore:        podStore,
+		serviceStore:    serviceStore,
+		replicaSetStore: replicaSetStore,
+		nodeStore:       nodeStore,
+		navigator:       podNavigator,
+		nodeTTL:         nodeTTL,
 	}
 }
 
 func (k *Bridge) Handler() http.Handler {
 	return harbor.New(harbor.Config{
-		PodStore:     k.podStore,
-		ServiceStore: k.serviceStore,
-		NodeStore:    k.nodeStore,
-		Navigator:    k.navigator,
-		NodeTTL:      k.nodeTTL,
+		PodStore:        k.podStore,
+		ServiceStore:    k.serviceStore,
+		ReplicaSetStore: k.replicaSetStore,
+		NodeStore:       k.nodeStore,
+		Navigator:       k.navigator,
+		NodeTTL:         k.nodeTTL,
 	})
 }
 
 func (k *Bridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransition, error) {
 	return harbor.New(harbor.Config{
-		PodStore:     k.podStore,
-		ServiceStore: k.serviceStore,
-		NodeStore:    k.nodeStore,
-		Navigator:    k.navigator,
-		NodeTTL:      k.nodeTTL,
+		PodStore:        k.podStore,
+		ServiceStore:    k.serviceStore,
+		ReplicaSetStore: k.replicaSetStore,
+		NodeStore:       k.nodeStore,
+		Navigator:       k.navigator,
+		NodeTTL:         k.nodeTTL,
 	}).RefreshNodeLiveness(ctx)
 }
 
@@ -82,6 +91,10 @@ func (k *Bridge) PodStore() store.PodStore {
 
 func (k *Bridge) ServiceStore() store.ServiceStore {
 	return k.serviceStore
+}
+
+func (k *Bridge) ReplicaSetStore() store.ReplicaSetStore {
+	return k.replicaSetStore
 }
 
 func (k *Bridge) NodeStore() store.NodeStore {
