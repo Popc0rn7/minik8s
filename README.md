@@ -52,21 +52,20 @@ vocabulary:
 
 ```bash
 make build
-./minik8s cni init
 export MINIK8S_HARBOR=http://127.0.0.1:18080
-./minik8s bridge --listen :18080
+./minik8s bridge --listen :18080 --cluster-cidr 10.244.0.0/16 --node-cidr-mask-size 24
 ```
 
 In another shell on a worker node:
 
 ```bash
-./minik8s sailer --node-name node-a --harbor http://127.0.0.1:18080 --node-ip 192.168.1.8 --pod-cidr 10.244.0.0/24
+./minik8s sailer manifest/node/node_a.yaml --harbor http://127.0.0.1:18080
 ```
 
 In a third shell on the control node:
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx.yaml
+./minik8s apply -f manifest/pod/pod_nginx.yaml
 ./minik8s get pods
 ./minik8s get po nginx-pod -o yaml
 ./minik8s describe pod nginx-pod

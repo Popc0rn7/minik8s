@@ -53,33 +53,9 @@ make build
 
 `version` 在控制面未启动前可以失败；这里只确认二进制已构建。
 
-## 初始化 CNI
+## 准备 Node YAML
 
-在 node-a：
-
-```bash
-unset MINIK8S_CNI_DISABLED
-./minik8s cni init \
-  --pod-cidr ${POD_CIDR_A} \
-  --gateway 10.244.0.1
-./minik8s doctor network
-```
-
-在 node-b：
-
-```bash
-unset MINIK8S_CNI_DISABLED
-./minik8s cni init \
-  --pod-cidr ${POD_CIDR_B} \
-  --gateway 10.244.1.1
-./minik8s doctor network
-```
-
-期望：
-
-- `doctor network` 显示 `config: present`。
-- `bridge: mk8s0`。
-- node-a 的 `podCIDR` 为 `10.244.0.0/24`，node-b 为 `10.244.1.0/24`。
+确认 `manifest/node/node_a.yaml` 和 `manifest/node/node_b.yaml` 中的 `InternalIP` 与当前两台机器一致；如果不同，先按实际地址更新。Node YAML 不需要写 `spec.podCIDR`，控制面会从集群 CIDR 自动分配。
 
 ## 启动控制面
 
@@ -88,7 +64,11 @@ unset MINIK8S_CNI_DISABLED
 ```bash
 export MINIK8S_STATE_DIR=.minik8s/testcase-state
 export MINIK8S_HARBOR=${HARBOR}
-./minik8s bridge --listen :18080
+export CLUSTER_CIDR=10.244.0.0/16
+./minik8s bridge \
+  --listen :18080 \
+  --cluster-cidr ${CLUSTER_CIDR} \
+  --node-cidr-mask-size 24
 ```
 
 期望：
@@ -103,25 +83,21 @@ export MINIK8S_HARBOR=${HARBOR}
 
 ```bash
 ./minik8s sailer \
-  --node-name node-a \
-  --harbor ${HARBOR} \
-  --node-ip ${NODE_A_IP} \
-  --pod-cidr ${POD_CIDR_A}
+  manifest/node/node_a.yaml \
+  --harbor ${HARBOR}
 ```
 
 在 node-b 终端 1：
 
 ```bash
 ./minik8s sailer \
-  --node-name node-b \
-  --harbor ${HARBOR} \
-  --node-ip ${NODE_B_IP} \
-  --pod-cidr ${POD_CIDR_B}
+  manifest/node/node_b.yaml \
+  --harbor ${HARBOR}
 ```
 
 期望：
 
-- `sailer` 同时注册节点心跳、同步 assigned Pods，并通过 Harbor `/nodes` 同步 VXLAN overlay。
+- `sailer` 先注册节点心跳，从控制面获得 `spec.podCIDR`，自动写入本机 CNI 配置，然后同步 assigned Pods，并通过 Harbor `/nodes` 同步 VXLAN overlay。
 - 两边 `ip route` 能看到对端 PodCIDR，并且 `mk8s-vxlan` FDB 指向对端 NodeIP：
 
 ```bash
@@ -146,6 +122,7 @@ bridge fdb show dev mk8s-vxlan
 
 - 输出包含 `node-a` 和 `node-b`。
 - 两个节点状态均为 `Ready`。
+- `node-a` 的 `podCIDR` 为 `10.244.0.0/24`，`node-b` 为 `10.244.1.0/24`。
 
 失败排查：
 
@@ -154,24 +131,24 @@ bridge fdb show dev mk8s-vxlan
 
 ## 可选：静态 route 模式
 
-如果启动 `sailer` 时不带 `--node-ip` 和 `--pod-cidr`，也可以在 CNI 初始化时写静态 route。
+如果只想排查静态路由，可以停掉两个 sailer 后手动执行 `cni init --route`。主路径不需要这一步，sailer 会使用控制面分配的 PodCIDR 自动配置 VXLAN。
 
 node-a：
 
 ```bash
 ./minik8s cni init \
-  --pod-cidr ${POD_CIDR_A} \
+  --pod-cidr 10.244.0.0/24 \
   --gateway 10.244.0.1 \
-  --route ${POD_CIDR_B}=${NODE_B_IP}
+  --route 10.244.1.0/24=${NODE_B_IP}
 ```
 
 node-b：
 
 ```bash
 ./minik8s cni init \
-  --pod-cidr ${POD_CIDR_B} \
+  --pod-cidr 10.244.1.0/24 \
   --gateway 10.244.1.1 \
-  --route ${POD_CIDR_A}=${NODE_A_IP}
+  --route 10.244.0.0/24=${NODE_A_IP}
 ```
 
-v0.1.0 推荐使用带 `--node-ip` 和 `--pod-cidr` 的 `sailer`，因为 VXLAN、FDB 和 route 会周期性恢复。
+v0.1.0 推荐使用 Node YAML 启动 `sailer`，因为控制面分配 PodCIDR、CNI 配置、VXLAN、FDB 和 route 会自动恢复。

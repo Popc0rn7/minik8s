@@ -27,13 +27,15 @@ import (
 )
 
 type Config struct {
-	PodStore        store.PodStore
-	ServiceStore    store.ServiceStore
-	ReplicaSetStore store.ReplicaSetStore
-	NodeStore       store.NodeStore
-	Navigator       navigator.Navigator
-	NodeTTL         time.Duration
-	NetRegistry     *netregistry.Store
+	PodStore         store.PodStore
+	ServiceStore     store.ServiceStore
+	ReplicaSetStore  store.ReplicaSetStore
+	NodeStore        store.NodeStore
+	Navigator        navigator.Navigator
+	NodeTTL          time.Duration
+	NetRegistry      *netregistry.Store
+	ClusterCIDR      string
+	NodeCIDRMaskSize int
 }
 
 type Server struct {
@@ -44,6 +46,7 @@ type Server struct {
 	navigator   navigator.Navigator
 	nodeTTL     time.Duration
 	netRegistry *netregistry.Store
+	cidrAlloc   *nodeCIDRAllocator
 }
 
 func New(config Config) *Server {
@@ -75,6 +78,10 @@ func New(config Config) *Server {
 	if netRegistryStore == nil {
 		netRegistryStore = netregistry.NewStore(time.Minute)
 	}
+	cidrAlloc, err := newNodeCIDRAllocator(config.ClusterCIDR, config.NodeCIDRMaskSize)
+	if err != nil {
+		panic(err)
+	}
 	return &Server{
 		pods:        podStore,
 		services:    serviceStore,
@@ -83,6 +90,7 @@ func New(config Config) *Server {
 		navigator:   podNavigator,
 		nodeTTL:     nodeTTL,
 		netRegistry: netRegistryStore,
+		cidrAlloc:   cidrAlloc,
 	}
 }
 
@@ -298,8 +306,13 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
-	if heartbeat.InternalIP() != "" && heartbeat.Spec.PodCIDR != "" {
-		if err := s.netRegistry.Register(netregistry.Node{Name: nodeName, NodeIP: heartbeat.InternalIP(), PodCIDR: heartbeat.Spec.PodCIDR}); err != nil {
+	assigned, err := s.ensureNodePodCIDR(nodeName)
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	if assigned.InternalIP() != "" && assigned.Spec.PodCIDR != "" {
+		if err := s.netRegistry.Register(netregistry.Node{Name: nodeName, NodeIP: assigned.InternalIP(), PodCIDR: assigned.Spec.PodCIDR}); err != nil {
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
@@ -355,7 +368,12 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusCreated, &n)
+		assigned, err := s.ensureNodePodCIDR(n.Name())
+		if err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, assigned)
 		return
 	case http.MethodPut:
 		if name == "" {
@@ -379,7 +397,12 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, &n)
+		assigned, err := s.ensureNodePodCIDR(n.Name())
+		if err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, assigned)
 		return
 	default:
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
@@ -429,6 +452,29 @@ func (s *Server) readNodeHeartbeat(r *http.Request, nodeName string) (node.Node,
 		heartbeat.Status.Addresses = []node.NodeAddress{{Type: node.NodeAddressInternalIP, Address: nodeIP}}
 	}
 	return *heartbeat, nil
+}
+
+func (s *Server) ensureNodePodCIDR(name string) (*node.Node, error) {
+	current, err := s.nodes.Get(name)
+	if err != nil {
+		return nil, err
+	}
+	if current.Spec.PodCIDR != "" {
+		return current, nil
+	}
+	nodes, err := s.nodes.List()
+	if err != nil {
+		return nil, err
+	}
+	cidr, err := s.cidrAlloc.assign(name, nodes)
+	if err != nil {
+		return nil, err
+	}
+	current.Spec.PodCIDR = cidr
+	if err := s.nodes.Upsert(current); err != nil {
+		return nil, err
+	}
+	return s.nodes.Get(name)
 }
 
 func (s *Server) handlePodStatus(w http.ResponseWriter, r *http.Request, namespace, name string) {

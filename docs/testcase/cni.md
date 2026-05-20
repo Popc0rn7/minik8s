@@ -9,7 +9,7 @@
 | node-a | `192.168.1.8` | `10.244.0.0/24` | `bridge`、`sailer` |
 | node-b | `192.168.1.6` | `10.244.1.0/24` | `sailer` |
 
-`minik8s-bridge` CNI 负责本机 Pod 网络；带 `--node-ip` 和 `--pod-cidr` 的 `sailer` 会向 Harbor `/nodes` 注册节点网络信息，并周期性同步跨节点 VXLAN overlay。
+`minik8s-bridge` CNI 负责本机 Pod 网络；`sailer` 使用 Node YAML 注册节点，控制面自动分配 `spec.podCIDR`，随后 sailer 写入本机 CNI 配置，并向 Harbor `/nodes` 注册节点网络信息，周期性同步跨节点 VXLAN overlay。
 
 ## 从 0 启动
 
@@ -20,35 +20,16 @@
 ```bash
 export NODE_A_IP=192.168.1.8
 export NODE_B_IP=192.168.1.6
-export POD_CIDR_A=10.244.0.0/24
-export POD_CIDR_B=10.244.1.0/24
+export CLUSTER_CIDR=10.244.0.0/16
 export HARBOR=http://${NODE_A_IP}:18080
 export MINIK8S_HARBOR=${HARBOR}
 unset MINIK8S_CNI_DISABLED
 ```
 
-两台机器都构建二进制和 CNI plugin：
+两台机器都构建二进制和 CNI plugin，并确认 `manifest/node/node_a.yaml`、`manifest/node/node_b.yaml` 中的 `InternalIP` 与实际机器一致：
 
 ```bash
 make build
-```
-
-在 node-a 初始化 CNI：
-
-```bash
-./minik8s cni init \
-  --pod-cidr ${POD_CIDR_A} \
-  --gateway 10.244.0.1
-./minik8s doctor network
-```
-
-在 node-b 初始化 CNI：
-
-```bash
-./minik8s cni init \
-  --pod-cidr ${POD_CIDR_B} \
-  --gateway 10.244.1.1
-./minik8s doctor network
 ```
 
 在 node-a 终端 1 启动控制面：
@@ -56,7 +37,10 @@ make build
 ```bash
 export MINIK8S_STATE_DIR=.minik8s/testcase-state
 export MINIK8S_HARBOR=${HARBOR}
-./minik8s bridge --listen :18080
+./minik8s bridge \
+  --listen :18080 \
+  --cluster-cidr ${CLUSTER_CIDR} \
+  --node-cidr-mask-size 24
 ```
 
 在 node-b 先确认能访问控制面：
@@ -70,20 +54,16 @@ curl -fsS ${HARBOR}/nodes
 
 ```bash
 ./minik8s sailer \
-  --node-name node-a \
-  --harbor ${HARBOR} \
-  --node-ip ${NODE_A_IP} \
-  --pod-cidr ${POD_CIDR_A}
+  manifest/node/node_a.yaml \
+  --harbor ${HARBOR}
 ```
 
 在 node-b 终端 1 启动 worker：
 
 ```bash
 ./minik8s sailer \
-  --node-name node-b \
-  --harbor ${HARBOR} \
-  --node-ip ${NODE_B_IP} \
-  --pod-cidr ${POD_CIDR_B}
+  manifest/node/node_b.yaml \
+  --harbor ${HARBOR}
 ```
 
 在 node-a 的测试终端确认节点和 VXLAN/路由：
@@ -107,6 +87,7 @@ bridge fdb show dev mk8s-vxlan
 期望：
 
 - `get nodes` 包含 `node-a` 和 `node-b`，状态为 `Ready`。
+- `get nodes` 显示 node-a/node-b 的 PodCIDR 分别为 `10.244.0.0/24` 和 `10.244.1.0/24`。
 - node-a 有到 `10.244.1.0/24` 的 route，且 `mk8s-vxlan` FDB 指向 node-b IP。
 - node-b 有到 `10.244.0.0/24` 的 route，且 `mk8s-vxlan` FDB 指向 node-a IP。
 
@@ -140,8 +121,8 @@ sleep 8
 在 node-a：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_b.yaml
 sleep 8
 ./minik8s get pods
 ./minik8s get pod nginx-node-a -o yaml
@@ -170,7 +151,7 @@ cat .minik8s/state/cni-ipam.json
 失败排查：
 
 - PodIP 为空：检查对应节点 `./minik8s doctor network`，确认 `MINIK8S_CNI_DISABLED` 未设置为 `1`。
-- 两个 Pod 拿到同一网段：检查两台机器的 `cni init --pod-cidr` 参数。
+- 两个 Pod 拿到同一网段：检查 `./minik8s get nodes` 中两个节点的 PodCIDR 是否不同，并确认两个 sailer 使用了不同 Node YAML。
 
 ## CNI-02：同节点 PodIP 通信
 
@@ -179,8 +160,8 @@ cat .minik8s/state/cni-ipam.json
 在 node-a：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx.yaml
-./minik8s apply -f manifest/testdata/pod_busybox_client.yaml
+./minik8s apply -f manifest/pod/pod_nginx.yaml
+./minik8s apply -f manifest/pod/pod_busybox_client.yaml
 sleep 8
 SERVER_IP=$(./minik8s get pod nginx-pod -o yaml | awk '/podIP:/ {print $2; exit}')
 CLIENT_CID=$(docker ps -q --filter label=minik8s.pod.name=busybox-client --filter label=minik8s.container.name=client)
@@ -205,10 +186,10 @@ head -n 1 /tmp/minik8s-cni-same-node.html
 在 node-a 创建测试 Pod 并记录 IP：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
-./minik8s apply -f manifest/testdata/pod_busybox_node_b.yaml
-./minik8s apply -f manifest/testdata/pod_busybox_client.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_b.yaml
+./minik8s apply -f manifest/pod/pod_busybox_node_b.yaml
+./minik8s apply -f manifest/pod/pod_busybox_client.yaml
 sleep 10
 ./minik8s get pods
 NGINX_A_IP=$(./minik8s get pod nginx-node-a -o yaml | awk '/podIP:/ {print $2; exit}')
@@ -243,7 +224,7 @@ head -n 1 /tmp/minik8s-cni-cross-b.html
 失败排查：
 
 - node-b shell 没有 `NGINX_A_IP`：从 node-a 输出复制该变量，或在 node-b 手动 `export NGINX_A_IP=<value>`。
-- 跨节点不通但同节点通：检查 sailer 是否带了 `--node-ip` 和 `--pod-cidr`，再检查 `ip link show mk8s-vxlan`、`bridge fdb show dev mk8s-vxlan`、`ip route`、宿主机防火墙、Linux `ip_forward`。
+- 跨节点不通但同节点通：检查 `./minik8s get nodes` 是否已有 PodCIDR，`curl -fsS ${HARBOR}/nodes` 是否有 `nodeIP + podCIDR`，再检查 `ip link show mk8s-vxlan`、`bridge fdb show dev mk8s-vxlan`、`ip route`、宿主机防火墙、Linux `ip_forward`。
 - 云主机跨节点不通：确认安全组双向放通 UDP `4789`，并用 `tcpdump -ni ens3 udp port 4789` 确认 VXLAN 包是否到达对端。
 - node-b Pod 没启动：看 node-b 的 sailer 日志和 Docker 状态。
 
@@ -254,8 +235,8 @@ head -n 1 /tmp/minik8s-cni-cross-b.html
 在 node-a：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_b.yaml
 sleep 8
 ./minik8s delete pod nginx-node-a
 ./minik8s delete pod nginx-node-b
@@ -290,15 +271,15 @@ docker ps -a --filter label=minik8s.pod.name=nginx-node-b
 
 目标：验证在 sailer 不负责网络路由同步时，也可以用 CNI 配置中的 `routes` 字段手动完成跨节点路由。
 
-此 case 可选，只在排查动态路由同步时使用。执行前先停止 node-a/node-b 的 sailer，并重新启动不带 `--node-ip`、`--pod-cidr` 的 sailer，避免动态路由恢复影响观察。
+此 case 可选，只在排查动态路由同步时使用。执行前先停止 node-a/node-b 的 sailer，避免动态 VXLAN 路由恢复影响观察。
 
 在 node-a 重新初始化 CNI：
 
 ```bash
 ./minik8s cni init \
-  --pod-cidr ${POD_CIDR_A} \
+  --pod-cidr 10.244.0.0/24 \
   --gateway 10.244.0.1 \
-  --route ${POD_CIDR_B}=${NODE_B_IP}
+  --route 10.244.1.0/24=${NODE_B_IP}
 ./minik8s doctor network
 ```
 
@@ -306,19 +287,21 @@ docker ps -a --filter label=minik8s.pod.name=nginx-node-b
 
 ```bash
 ./minik8s cni init \
-  --pod-cidr ${POD_CIDR_B} \
+  --pod-cidr 10.244.1.0/24 \
   --gateway 10.244.1.1 \
-  --route ${POD_CIDR_A}=${NODE_A_IP}
+  --route 10.244.0.0/24=${NODE_A_IP}
 ./minik8s doctor network
 ```
 
-两台机器分别启动不带网络参数的 sailer：
+两台机器分别启动对应 Node YAML 的 sailer：
 
 ```bash
 ./minik8s sailer \
-  --node-name <node-a-or-node-b> \
+  manifest/node/node_a.yaml \
   --harbor ${HARBOR}
 ```
+
+node-b 使用 `manifest/node/node_b.yaml`。
 
 然后按 CNI-03 创建 Pod 并验证跨节点访问。
 
@@ -351,6 +334,6 @@ cat .minik8s/state/cni-ipam.json 2>/dev/null || true
 
 - `curl ${HARBOR}/version` 失败：先查 node-a `bridge` 是否运行、node-a 入站 `18080` 是否放通。
 - `get nodes` 缺 node-b：检查 node-b sailer 的 `--harbor` 是否指向 node-a 局域网 IP。
-- `/nodes` 为空：检查 sailer 是否带 `--node-ip` 和 `--pod-cidr`。
+- `/nodes` 为空：检查 Node YAML 是否包含 `InternalIP`，并确认 sailer 已从控制面拿到 `spec.podCIDR`。
 - 跨节点 PodIP 不通：检查两台机器的 `ip link show mk8s-vxlan`、`bridge fdb show dev mk8s-vxlan`、`ip route | grep 10.244`，再查 UDP `4789`、防火墙、`ip_forward` 和 sailer 日志。
 - Pod 一直 `Pending`：检查对应节点 sailer 是否在运行。

@@ -309,7 +309,8 @@ func newNetDCommand(app *App, out io.Writer) *cobra.Command {
 }
 
 func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
-	var listen, serviceSyncInterval, replicaSetSyncInterval string
+	var listen, serviceSyncInterval, replicaSetSyncInterval, clusterCIDR string
+	var nodeCIDRMaskSize int
 	cmd := &cobra.Command{
 		Use:   "bridge",
 		Short: "Run the control plane",
@@ -324,12 +325,20 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 			if replicaSetSyncInterval != "" {
 				legacy = append(legacy, "--replicaset-sync-interval", replicaSetSyncInterval)
 			}
+			if clusterCIDR != "" {
+				legacy = append(legacy, "--cluster-cidr", clusterCIDR)
+			}
+			if nodeCIDRMaskSize != 0 {
+				legacy = append(legacy, "--node-cidr-mask-size", fmt.Sprintf("%d", nodeCIDRMaskSize))
+			}
 			return app.bridge(cmd.Context(), legacy, out)
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", "", "Listen address")
 	cmd.Flags().StringVar(&serviceSyncInterval, "service-sync-interval", "", "Service sync interval")
 	cmd.Flags().StringVar(&replicaSetSyncInterval, "replicaset-sync-interval", "", "ReplicaSet sync interval")
+	cmd.Flags().StringVar(&clusterCIDR, "cluster-cidr", "", "Cluster CIDR for Node PodCIDR allocation")
+	cmd.Flags().IntVar(&nodeCIDRMaskSize, "node-cidr-mask-size", 0, "Per-node PodCIDR mask size")
 	return cmd
 }
 

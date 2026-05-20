@@ -39,7 +39,7 @@ node-a/node-b 的 sailer 建议均保持运行。ReplicaSet 创建出的 Pod 不
 
 ```bash
 ./minik8s delete rs nginx-rs || true
-./minik8s apply -f manifest/testdata/replicaset_nginx.yaml
+./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 8
 ./minik8s get rs
 ./minik8s describe rs nginx-rs
@@ -67,7 +67,7 @@ sleep 8
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/replicaset_nginx.yaml
+./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 8
 ./minik8s delete pod nginx-rs-1
 sleep 8
@@ -120,7 +120,7 @@ spec:
         imageTag: alpine
 EOF
 
-./minik8s apply -f manifest/testdata/replicaset_nginx.yaml
+./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 8
 ./minik8s apply -f /tmp/minik8s-rs-one.yaml
 sleep 8
@@ -147,7 +147,7 @@ sleep 8
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/replicaset_nginx.yaml
+./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 8
 ./minik8s delete rs nginx-rs
 sleep 8

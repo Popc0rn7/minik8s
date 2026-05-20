@@ -98,7 +98,7 @@ curl -fsS ${HARBOR}/nodes
 
 ```bash
 ./minik8s sailer \
-  --node-name node-a \
+  manifest/node/node_a.yaml \
   --harbor ${HARBOR}
 ```
 
@@ -106,7 +106,7 @@ curl -fsS ${HARBOR}/nodes
 
 ```bash
 ./minik8s sailer \
-  --node-name node-b \
+  manifest/node/node_b.yaml \
   --harbor ${HARBOR}
 ```
 
@@ -230,10 +230,10 @@ curl -fsS ${HARBOR}/version
 在 node-a 和 node-b 启动 sailer 后，在 node-a：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
-./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
-./minik8s apply -f manifest/testdata/replicaset_nginx.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_b.yaml
+./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 10
 ./minik8s get nodes
 ./minik8s get pods
@@ -267,9 +267,9 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 在 node-a：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
-./minik8s apply -f manifest/testdata/replicaset_nginx.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 8
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
 ./minik8s delete service nginx-service
@@ -302,10 +302,10 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 在 node-a 创建对象：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
-./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
-./minik8s apply -f manifest/testdata/replicaset_nginx.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_b.yaml
+./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 10
 ./minik8s get nodes
 ./minik8s get pods
@@ -325,8 +325,8 @@ export MINIK8S_HARBOR=${HARBOR}
 如果 node-a/node-b 的 sailer 已退出，重新启动：
 
 ```bash
-./minik8s sailer --node-name node-a --harbor ${HARBOR}
-./minik8s sailer --node-name node-b --harbor ${HARBOR}
+./minik8s sailer manifest/node/node_a.yaml --harbor ${HARBOR}
+./minik8s sailer manifest/node/node_b.yaml --harbor ${HARBOR}
 ```
 
 重新检查：
@@ -372,9 +372,9 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} watch --prefix /r
 在 node-a 终端 2 执行：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
-./minik8s apply -f manifest/testdata/replicaset_nginx.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
 ./minik8s delete rs nginx-rs
 ./minik8s delete service nginx-service
 ./minik8s delete pod nginx-node-a

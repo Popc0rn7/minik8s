@@ -450,19 +450,8 @@ func (a *App) cni(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(DefaultCNIBinDir(), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(DefaultCNIConfDir(), 0o755); err != nil {
-		return err
-	}
-	configPath := filepath.Join(DefaultCNIConfDir(), "10-minik8s.conf")
-	data, err := json.MarshalIndent(config, "", "  ")
+	configPath, err := writeCNIConfig(config)
 	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	if err := os.WriteFile(configPath, data, 0o644); err != nil {
 		return err
 	}
 	_ = ctx
@@ -535,6 +524,55 @@ func cniInitConfig(args []string) (cniInitPluginConfig, error) {
 		}
 	}
 	return config, nil
+}
+
+func writeCNIConfig(config cniInitPluginConfig) (string, error) {
+	if err := os.MkdirAll(DefaultCNIBinDir(), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(DefaultCNIConfDir(), 0o755); err != nil {
+		return "", err
+	}
+	configPath := filepath.Join(DefaultCNIConfDir(), "10-minik8s.conf")
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(configPath, data, 0o644); err != nil {
+		return "", err
+	}
+	return configPath, nil
+}
+
+func cniConfigForPodCIDR(podCIDR string) (cniInitPluginConfig, error) {
+	config, err := cniInitConfig([]string{"--pod-cidr", podCIDR})
+	if err != nil {
+		return config, err
+	}
+	gateway, err := gatewayForPodCIDR(podCIDR)
+	if err != nil {
+		return config, err
+	}
+	config.Gateway = gateway
+	return config, nil
+}
+
+func gatewayForPodCIDR(podCIDR string) (string, error) {
+	ip, network, err := net.ParseCIDR(podCIDR)
+	if err != nil {
+		return "", fmt.Errorf("invalid podCIDR %q: %w", podCIDR, err)
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return "", fmt.Errorf("podCIDR %q must be IPv4", podCIDR)
+	}
+	gateway := append(net.IP(nil), ip4...)
+	gateway[3]++
+	if !network.Contains(gateway) {
+		return "", fmt.Errorf("podCIDR %q has no usable gateway address", podCIDR)
+	}
+	return gateway.String(), nil
 }
 
 func parseCNIRoute(value string) (cniInitRoute, error) {
@@ -761,6 +799,8 @@ type bridgeOptions struct {
 	listen                 string
 	serviceSyncInterval    time.Duration
 	replicaSetSyncInterval time.Duration
+	clusterCIDR            string
+	nodeCIDRMaskSize       int
 }
 
 func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
@@ -768,6 +808,7 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	a.controlBridge.SetNodeCIDRConfig(options.clusterCIDR, options.nodeCIDRMaskSize)
 	server := &http.Server{
 		Addr:    options.listen,
 		Handler: a.controlBridge.Handler(),
@@ -803,7 +844,7 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func parseBridgeOptions(args []string) (bridgeOptions, error) {
-	options := bridgeOptions{listen: ":8080", serviceSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second}
+	options := bridgeOptions{listen: ":8080", serviceSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -832,9 +873,39 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 				return options, fmt.Errorf("invalid --replicaset-sync-interval %q: %w", args[i], err)
 			}
 			options.replicaSetSyncInterval = interval
+		case "--cluster-cidr":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --cluster-cidr")
+			}
+			if _, _, err := net.ParseCIDR(args[i]); err != nil {
+				return options, fmt.Errorf("invalid --cluster-cidr %q: %w", args[i], err)
+			}
+			options.clusterCIDR = args[i]
+		case "--node-cidr-mask-size":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --node-cidr-mask-size")
+			}
+			mask, err := strconv.Atoi(args[i])
+			if err != nil || mask <= 0 || mask > 32 {
+				return options, fmt.Errorf("invalid --node-cidr-mask-size %q", args[i])
+			}
+			options.nodeCIDRMaskSize = mask
 		default:
 			return options, fmt.Errorf("unknown bridge flag %q", args[i])
 		}
+	}
+	_, cluster, err := net.ParseCIDR(options.clusterCIDR)
+	if err != nil {
+		return options, fmt.Errorf("invalid --cluster-cidr %q: %w", options.clusterCIDR, err)
+	}
+	ones, bits := cluster.Mask.Size()
+	if bits != 32 {
+		return options, fmt.Errorf("--cluster-cidr %q must be IPv4", options.clusterCIDR)
+	}
+	if options.nodeCIDRMaskSize < ones || options.nodeCIDRMaskSize > bits {
+		return options, fmt.Errorf("--node-cidr-mask-size must be between %d and %d for %s", ones, bits, options.clusterCIDR)
 	}
 	return options, nil
 }
@@ -932,11 +1003,26 @@ func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
 	options.nodeName = nodeConfig.Name()
 	options.nodeIP = nodeConfig.InternalIP()
 	options.podCIDR = nodeConfig.Spec.PodCIDR
+	podClient := nodeSailer.NewHTTPPodClient(options.harbor, a.httpClient)
+	assignedNode, err := a.bootstrapSailerNode(ctx, podClient, nodeConfig)
+	if err != nil {
+		return err
+	}
+	options.nodeName = assignedNode.Name()
+	options.nodeIP = assignedNode.InternalIP()
+	options.podCIDR = assignedNode.Spec.PodCIDR
+	cniConfig, err := cniConfigForPodCIDR(options.podCIDR)
+	if err != nil {
+		return err
+	}
+	if _, err := writeCNIConfig(cniConfig); err != nil {
+		return err
+	}
 	k := nodeSailer.New(nodeSailer.Config{
-		Node:         nodeConfig,
+		Node:         assignedNode,
 		Runtime:      a.runtime,
 		Network:      a.network,
-		Client:       nodeSailer.NewHTTPPodClient(options.harbor, a.httpClient),
+		Client:       podClient,
 		ServiceProxy: a.sailerServiceProxy(options),
 		Interval:     options.interval,
 	})
@@ -962,6 +1048,32 @@ func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
 		return runSailerWithNetwork(ctx, k, networkAgent, options.interval)
 	}
 	return k.Run(ctx)
+}
+
+func (a *App) bootstrapSailerNode(ctx context.Context, client *nodeSailer.HTTPPodClient, nodeConfig *node.Node) (*node.Node, error) {
+	if nodeConfig == nil {
+		return nil, fmt.Errorf("node yaml is required")
+	}
+	if nodeConfig.Name() == "" {
+		return nil, fmt.Errorf("node name is required")
+	}
+	if nodeConfig.InternalIP() == "" {
+		return nil, fmt.Errorf("node InternalIP is required")
+	}
+	if _, err := client.ListAssignedPods(ctx, nodeSailer.NodeHeartbeat{Node: nodeConfig}); err != nil {
+		return nil, err
+	}
+	assigned, err := client.GetNode(ctx, nodeConfig.Name())
+	if err != nil {
+		return nil, err
+	}
+	if assigned.Spec.PodCIDR == "" {
+		return nil, fmt.Errorf("node podCIDR is not assigned")
+	}
+	if assigned.InternalIP() == "" {
+		return nil, fmt.Errorf("node InternalIP is required")
+	}
+	return assigned, nil
 }
 
 func (a *App) sailerNetworkAgent(options sailerOptions) (*netagent.Agent, error) {

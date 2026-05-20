@@ -88,7 +88,7 @@ spec:
 }
 
 func TestPodVolumeResourceManifestLeavesSchedulingToNavigator(t *testing.T) {
-	path := filepath.Join("..", "..", "manifest", "testdata", "pod_volume_resource.yaml")
+	path := filepath.Join("..", "..", "manifest", "pod", "pod_volume_resource.yaml")
 
 	p, err := LoadPodFromFile(path)
 
