@@ -147,7 +147,6 @@ Docker image 工作流定义在 `.github/workflows/docker-image.yml`。
 
 - 向 `main` 分支推送代码。
 - 在 GitHub Actions 页面手动触发 `Docker Image`。
-- 过渡验证期间，`feat/cicd-docker` 分支 push 也会触发镜像发布；验证完成后应删除该分支触发条件，只保留 `main`。
 
 镜像地址：
 
@@ -157,10 +156,10 @@ ghcr.io/popc0rn7/minik8s
 
 tag 规则：
 
-| 分支 | tag |
-|------|-----|
-| `main` | `latest`、`main`、`sha-<short-sha>` |
-| `feat/cicd-docker` | `feat-cicd-docker`、`sha-<short-sha>` |
+| 触发方式 | tag |
+|----------|-----|
+| `main` push | `latest`、`main`、`sha-<short-sha>` |
+| 手动触发 | `sha-<short-sha>` |
 
 发布流程：
 

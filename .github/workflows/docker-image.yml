@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - feat/cicd-docker
   workflow_dispatch:
 
 permissions:
@@ -44,7 +43,6 @@ jobs:
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=feat-cicd-docker,enable=${{ github.ref == 'refs/heads/feat/cicd-docker' }}
             type=sha,prefix=sha-,format=short
 
       - name: Build and push image
