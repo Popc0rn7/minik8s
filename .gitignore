@@ -37,6 +37,5 @@ go.work.sum
 *.pdf
 
 # vibe coding
-AGENTS.md
 /.agents/
 /.claude/
