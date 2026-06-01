@@ -1,6 +1,6 @@
 # CI/CD
 
-本项目使用 GitHub Actions 实现 CI/CD。CI 负责在 Pull Request 和主分支提交时自动检查代码质量；CD 负责在版本标签发布时自动构建二进制文件并创建 GitHub Release。
+本项目使用 GitHub Actions 实现 CI/CD。CI 负责在 Pull Request 和主分支提交时自动检查代码质量；CD 负责在版本标签发布时自动构建二进制文件并创建 GitHub Release，并在 `main` 分支更新时自动发布 Docker image。
 
 ## CI 行为
 
@@ -138,3 +138,50 @@ git push origin v0.1.0
 ```
 
 标签推送后，GitHub Actions 会自动完成验证、构建、校验和生成以及 Release 发布。
+
+## Docker image 发布
+
+Docker image 工作流定义在 `.github/workflows/docker-image.yml`。
+
+触发条件：
+
+- 向 `main` 分支推送代码。
+- 在 GitHub Actions 页面手动触发 `Docker Image`。
+- 过渡验证期间，`feat/cicd-docker` 分支 push 也会触发镜像发布；验证完成后应删除该分支触发条件，只保留 `main`。
+
+镜像地址：
+
+```bash
+ghcr.io/popc0rn7/minik8s
+```
+
+tag 规则：
+
+| 分支 | tag |
+|------|-----|
+| `main` | `latest`、`main`、`sha-<short-sha>` |
+| `feat/cicd-docker` | `feat-cicd-docker`、`sha-<short-sha>` |
+
+发布流程：
+
+1. 使用 Docker Buildx 构建 `linux/amd64` 镜像。
+2. 在 builder 阶段编译 `./cmd/minik8s` 和 `./cmd/minik8s-bridge`。
+3. 将 `minik8s` 放入 `/usr/local/bin/minik8s`，将 CNI 插件放入 `/opt/cni/bin/minik8s-bridge`。
+4. 使用 GitHub Actions 内置 `GITHUB_TOKEN` 登录 GHCR 并推送镜像。
+
+本地验证：
+
+```bash
+docker build -t minik8s:test .
+docker run --rm minik8s:test --help
+docker pull ghcr.io/popc0rn7/minik8s:latest
+docker run --rm ghcr.io/popc0rn7/minik8s:latest --help
+```
+
+如果 GHCR package 尚未公开，拉取前需要先登录：
+
+```bash
+docker login ghcr.io
+```
+
+该镜像是 Minik8s CLI、bridge 和 sailer 入口镜像。运行 `sailer` 时仍需要宿主机提供 Docker daemon、Linux 网络工具、CNI 目录、iptables 权限以及必要的 bind mount；镜像发布只表示可分发运行入口，不表示已经实现完整托管式集群部署。
