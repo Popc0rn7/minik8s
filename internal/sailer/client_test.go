@@ -18,7 +18,8 @@ import (
 )
 
 func TestHTTPPodClientListsAssignedPodsAndUpdatesStatus(t *testing.T) {
-	srv := harbor.New(harbor.Config{PodStore: store.NewInMemoryPodStore()})
+	podStore := store.NewInMemoryPodStore()
+	srv := harbor.New(harbor.Config{PodStore: podStore})
 	client := NewHTTPPodClient("http://minik8s.test", &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			rec := httptest.NewRecorder()
@@ -27,8 +28,8 @@ func TestHTTPPodClientListsAssignedPodsAndUpdatesStatus(t *testing.T) {
 		}),
 	})
 
-	createPod(t, srv, "nginx", "node-a")
-	createPod(t, srv, "other", "node-b")
+	createAssignedPod(t, podStore, "nginx", "node-a")
+	createAssignedPod(t, podStore, "other", "node-b")
 
 	pods, err := client.ListAssignedPods(t.Context(), NodeHeartbeat{
 		Node: node.New("node-a", node.NodeSpec{PodCIDR: "10.244.0.0/24"}, node.NodeStatus{
@@ -108,12 +109,12 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-func createPod(t *testing.T, handler http.Handler, name, nodeName string) {
+func createAssignedPod(t *testing.T, podStore store.PodStore, name, nodeName string) {
 	t.Helper()
-	body := `{"kind":"Pod","apiVersion":"v1","metadata":{"name":"` + name + `","namespace":"default"},"spec":{"nodeName":"` + nodeName + `","containers":[{"name":"c","image":"busybox"}]}}`
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/namespaces/default/pods", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	require.NoError(t, podStore.Create(&pod.Pod{
+		TypeMeta:   pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{Name: name, Namespace: "default"},
+		Spec:       pod.PodSpec{NodeName: nodeName, Containers: []pod.ContainerSpec{{Name: "c", Image: "busybox"}}},
+		Status:     pod.PodStatus{Phase: pod.PodPending},
+	}))
 }

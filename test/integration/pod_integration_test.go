@@ -39,7 +39,7 @@ func TestLoadPodFromYAML(t *testing.T) {
 		t.Skip("Project root not found")
 	}
 
-	yamlPath := filepath.Join(projectRoot, "manifest", "testdata", "pod_nginx.yaml")
+	yamlPath := filepath.Join(projectRoot, "manifest", "pod", "pod_nginx.yaml")
 	if _, err := os.Stat(yamlPath); os.IsNotExist(err) {
 		t.Skip("pod_nginx.yaml not found at", yamlPath)
 	}
@@ -72,7 +72,7 @@ func TestPodLifecycleWithYAML(t *testing.T) {
 		t.Skip("Project root not found")
 	}
 
-	yamlPath := filepath.Join(projectRoot, "manifest", "testdata", "pod_nginx.yaml")
+	yamlPath := filepath.Join(projectRoot, "manifest", "pod", "pod_nginx.yaml")
 	if _, err := os.Stat(yamlPath); os.IsNotExist(err) {
 		t.Skip("pod_nginx.yaml not found at", yamlPath)
 	}
@@ -117,7 +117,7 @@ func TestPodRestartPolicyEnforcement(t *testing.T) {
 		t.Skip("Project root not found")
 	}
 
-	yamlPath := filepath.Join(projectRoot, "manifest", "testdata", "pod_nginx.yaml")
+	yamlPath := filepath.Join(projectRoot, "manifest", "pod", "pod_nginx.yaml")
 	if _, err := os.Stat(yamlPath); os.IsNotExist(err) {
 		t.Skip("pod_nginx.yaml not found at", yamlPath)
 	}
@@ -166,7 +166,7 @@ func TestPodTerminationWithYAML(t *testing.T) {
 		t.Skip("Project root not found")
 	}
 
-	yamlPath := filepath.Join(projectRoot, "manifest", "testdata", "pod_nginx.yaml")
+	yamlPath := filepath.Join(projectRoot, "manifest", "pod", "pod_nginx.yaml")
 	if _, err := os.Stat(yamlPath); os.IsNotExist(err) {
 		t.Skip("pod_nginx.yaml not found at", yamlPath)
 	}
@@ -212,7 +212,7 @@ func TestPodFailureRecovery(t *testing.T) {
 		t.Skip("Project root not found")
 	}
 
-	yamlPath := filepath.Join(projectRoot, "manifest", "testdata", "pod_nginx.yaml")
+	yamlPath := filepath.Join(projectRoot, "manifest", "pod", "pod_nginx.yaml")
 	if _, err := os.Stat(yamlPath); os.IsNotExist(err) {
 		t.Skip("pod_nginx.yaml not found at", yamlPath)
 	}

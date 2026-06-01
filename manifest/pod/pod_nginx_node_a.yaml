@@ -8,7 +8,6 @@ metadata:
     tier: frontend
     node: node-a
 spec:
-  nodeName: node-a
   containers:
   - name: nginx
     image: nginx

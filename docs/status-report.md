@@ -119,7 +119,7 @@
 - `minik8s-bridge` 插件创建 bridge、veth、Pod IP、默认路由、NAT。
 - IPAM 用 JSON 文件持久化 allocation。
 - 支持静态 host-gw routes。
-- Harbor 内置网络注册表，带 `--node-ip`、`--pod-cidr` 的 `sailer` 能动态注册并同步 host-gw route。
+- Harbor 内置网络注册表，`sailer` 使用 Node YAML 注册节点，控制面分配 PodCIDR 后能动态注册并同步 VXLAN route。
 
 主要缺口：
 
@@ -214,7 +214,7 @@
 1. 固定启动流程
    - `make build`
    - `./minik8s bridge --listen :18080`
-   - `./minik8s sailer --node-name node-a --harbor http://127.0.0.1:18080`
+   - `./minik8s sailer manifest/node/node_a.yaml --harbor http://127.0.0.1:18080`
    - `./minik8s apply/get/delete`
 
 2. Service proxy 节点权限风险

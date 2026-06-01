@@ -13,6 +13,7 @@ import (
 
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
+	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
 )
 
@@ -122,6 +123,48 @@ func (c *controlPlaneClient) GetService(ctx context.Context, name, namespace str
 
 func (c *controlPlaneClient) DeleteService(ctx context.Context, name, namespace string) error {
 	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "services", name))
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
+}
+
+func (c *controlPlaneClient) ApplyReplicaSet(ctx context.Context, rs *replicaset.ReplicaSet) (*replicaset.ReplicaSet, error) {
+	created, err := c.createReplicaSet(ctx, rs)
+	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {
+		return c.updateReplicaSet(ctx, rs)
+	}
+	return created, err
+}
+
+func (c *controlPlaneClient) ListReplicaSets(ctx context.Context, namespace string) ([]*replicaset.ReplicaSet, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "replicasets"))
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []*replicaset.ReplicaSet `json:"items"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (c *controlPlaneClient) GetReplicaSet(ctx context.Context, name, namespace string) (*replicaset.ReplicaSet, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "replicasets", name))
+	if err != nil {
+		return nil, err
+	}
+	var rs replicaset.ReplicaSet
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &rs); err != nil {
+		return nil, err
+	}
+	return &rs, nil
+}
+
+func (c *controlPlaneClient) DeleteReplicaSet(ctx context.Context, name, namespace string) error {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "replicasets", name))
 	if err != nil {
 		return err
 	}
@@ -253,6 +296,30 @@ func (c *controlPlaneClient) updateService(ctx context.Context, svc *service.Ser
 	}
 	var updated service.Service
 	if err := c.doJSON(ctx, http.MethodPut, endpoint, svc, http.StatusOK, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (c *controlPlaneClient) createReplicaSet(ctx context.Context, rs *replicaset.ReplicaSet) (*replicaset.ReplicaSet, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(rs.Namespace), "replicasets"))
+	if err != nil {
+		return nil, err
+	}
+	var created replicaset.ReplicaSet
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, rs, http.StatusCreated, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (c *controlPlaneClient) updateReplicaSet(ctx context.Context, rs *replicaset.ReplicaSet) (*replicaset.ReplicaSet, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(rs.Namespace), "replicasets", rs.Name))
+	if err != nil {
+		return nil, err
+	}
+	var updated replicaset.ReplicaSet
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, rs, http.StatusOK, &updated); err != nil {
 		return nil, err
 	}
 	return &updated, nil

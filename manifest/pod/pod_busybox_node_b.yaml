@@ -1,12 +1,12 @@
 kind: Pod
 apiVersion: v1
 metadata:
-  name: busybox-client
+  name: busybox-node-b
   namespace: default
   labels:
     app: client
+    node: node-b
 spec:
-  nodeName: node-a
   containers:
   - name: client
     image: busybox

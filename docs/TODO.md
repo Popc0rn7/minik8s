@@ -1,35 +1,123 @@
-# Service
+# TODO：Handout 对齐缺口清单
 
-## 相比 Kubernetes 的主要缺陷
+本文档以 [Handout.md](Handout.md) 为验收基准，记录当前仓库距离课程要求的主要
+缺口。状态口径采用“当前事实优先”：已经有代码和测试用例支撑的能力写为已完成或
+部分完成；还停留在规划文档中的能力写为未实现。
 
-1. kubeproxy 已随 sailer 常驻，但仍是轮询同步，不是 Kubernetes informer/watch 模型。
+## P0：验收稳定与真实演示
 
-2. 多节点规则下发不完整，NodePort 回包和 SNAT 语义较弱。
+- [ ] 固化 v0.1.0 演示路径：`make build`、`bridge`、两个 `sailer`、Pod、
+  Service、ReplicaSet、Node、Logbook 的完整命令需要在 `docs/testcase/` 中保持
+  可复现。
+- [ ] 修复 Go 依赖验证风险：干净缓存下 `go test ./...` 会在 Docker runtime
+  相关包 setup 阶段失败，错误为 `github.com/docker/docker v27.0.0+incompatible`
+  解析到不存在的 `v27.0.0` revision。修复前只能报告部分包测试通过。
+- [ ] 明确 root/network 权限要求：CNI、VXLAN、iptables、NodePort 数据面必须在
+  Linux 且具备 `ip`、`bridge`、`iptables`、`nsenter` 权限的环境中演示。
+- [ ] 给无权限环境保留降级演示：Pod lifecycle 可用 `MINIK8S_CNI_DISABLED=1`，
+  Service 对象/endpoints 可用 `sailer --proxy-disabled`。
+- [ ] 清理/确认示例 Node IP：`manifest/node/node_a.yaml` 和 `node_b.yaml` 中的
+  `InternalIP` 应在演示前改成真实机器地址。
 
-3. API 和 endpoint 模型简化，不支持 readiness、UDP、会话保持等。
+## P1：基础功能补齐
 
-## 相比 Handout 要求的主要缺口
+### Pod
 
-1. 多机下 Service 隐藏 Pod 位置的自动闭环还不完整。
+- [x] YAML 支持 `kind/name/image/imageTag/command/args/volume/port/resources/
+  namespace/labels` 主路径。
+- [x] Docker sandbox + workload 容器、Pod 状态展示、删除后由 sailer 清理。
+- [x] `restartPolicy` 基础重启。
+- [ ] liveness/readiness probe 字段执行、日志/exec/cp、完整多容器 readiness。
+- [ ] Pod 删除语义仍是“控制面删 desired state，sailer 下一轮清理”，需要在演示
+  脚本中保留等待或重试。
 
-2. endpoint 和 kubeproxy 动态更新依赖周期 sync，尚非主动 watch 更新。
+### CNI
 
-3. NodePort、清理、展示主干达标，但复杂边界场景不足。
+- [x] 自研 bridge CNI、host-local IPAM、同节点 Pod IP 通信。
+- [x] 控制面分配 PodCIDR，sailer 写入 CNI 配置并同步 VXLAN/host-gw route。
+- [ ] 跨节点网络仍依赖真实网络、防火墙和 VXLAN 环境；需要继续补 smoke test 和
+  自动清理脚本。
+- [ ] IPAM 并发、异常恢复、CNI 状态可视化仍较弱。
 
-# CNI
+### Service
 
-## 相比 Kubernetes 的主要缺陷
+- [x] ClusterIP、NodePort YAML/API/CLI。
+- [x] selector endpoints、周期同步、删除 Service 清理规则。
+- [x] kube-proxy iptables 规则生成和多 endpoint 简单随机负载均衡。
+- [ ] NodePort 多节点 SNAT/回包语义不完整，node-b 访问 NodePort 仍应作为观察项。
+- [ ] readiness、UDP、session affinity、EndpointSlice、Service CIDR 回收未实现。
 
-1. 缺少成熟网络插件能力，仅实现 bridge 和 host-gw 路由。
+### ReplicaSet
 
-2. PodCIDR 分配依赖手动配置，缺少控制面统一管理。
+- [x] ReplicaSet 类型、YAML loader、file/etcd store、Harbor API、CLI。
+- [x] ReplicaSet controller 能补齐副本、删除多余 owned Pod、级联删除。
+- [ ] 当前控制器是简化实现：没有 ownerReference、adoption/orphan、revision、
+  rollout、资源感知调度。
+- [ ] NodeLost 后 ReplicaSet 是否能可靠跨节点补副本需要补真实双机 case。
 
-3. IPAM 基于本地文件，并发分配和异常恢复能力较弱。
+### HPA / 资源监控
 
-## 相比 Handout 要求的主要缺口
+- [ ] 未实现 `HorizontalPodAutoscaler` YAML/API/CLI。
+- [ ] 未实现 CPU + Memory 等资源指标采集 pipeline。
+- [ ] 未实现基于 ReplicaSet 的扩缩容策略，例如冷却时间、每周期最多扩缩 1 个副本。
 
-1. 单节点 Pod 通信已实现，跨节点通信仍依赖额外配置。
+### DNS 与转发
 
-2. 多机路由自动同步不完整，节点失效后清理能力不足。
+- [ ] 未实现 DNS 配置对象。
+- [ ] 未实现集群内域名解析。
+- [ ] 未实现同一 host 下多个 path 转发到不同 Service 的 HTTP gateway。
 
-3. CNI 可视化和诊断较简单，缺少完整网络状态展示。
+### 多机部署
+
+- [x] Node 抽象、Node YAML 注册、heartbeat、Ready/Unknown 状态。
+- [x] Navigator 对未分配 Pod 做简单 Ready Node 调度。
+- [x] PodCIDR 分配和跨节点 VXLAN/host-gw route 同步主路径。
+- [ ] 调度器不使用 CPU/memory requests、Node capacity、taints、affinity。
+- [ ] 数据面 Node crash 后只标记 Node/Pod 状态，副本重调度和网络清理能力仍有限。
+
+### 容错
+
+- [x] 控制面 crash 不会直接杀死已有 Docker 容器。
+- [x] file store 和 etcd-backed Logbook 可恢复 Pod/Service/ReplicaSet/Node 对象。
+- [x] heartbeat TTL 可将 Node 标为 Unknown，并从 Service endpoints 中移除失联
+  Node 上的 Running Pod。
+- [ ] 控制面重启后所有控制循环完全恢复的真实验收脚本仍需持续维护。
+- [ ] Node 恢复后的 Pod 状态校正、ReplicaSet 补偿和旧网络状态清理仍需加强。
+
+## P2：自选功能与个人作业
+
+### Serverless 自选功能
+
+- [ ] Function 抽象未实现。
+- [ ] HTTP Trigger、Event Trigger、函数上传/update/invoke 未实现。
+- [ ] Workflow DAG、顺序调用、分支控制未实现。
+- [ ] scale-to-0、冷启动、并发扩容未实现。
+- [ ] 结合模型类 workload 的复杂应用未实现。
+
+### 持久化存储
+
+- [ ] PV/PVC 抽象未实现。
+- [ ] 静态/动态 PV provision 未实现。
+- [ ] hostPath PV 与多机共享 PV 未实现。
+- [ ] Pod 删除后重新绑定持久化数据的验收 case 未实现。
+
+### GPU 应用
+
+- [ ] Slurm/交我算提交任务抽象未实现。
+- [ ] GPU job YAML、上传、编译运行、结果回传未实现。
+- [ ] CUDA 示例程序和隔离演示未实现。
+
+### Security Context
+
+- [ ] Pod-level `runAsUser`、`runAsGroup`、`fsGroup` 未实现。
+- [ ] Container-level security context 覆盖 Pod-level 配置未实现。
+- [ ] `supplementalGroupsPolicy` 类似增强未实现。
+
+## P3：工程质量与文档
+
+- [ ] `README.md`、本 TODO、`AGENTS.md` 需要在每次能力变化后同步更新。
+- [ ] `docs/status-report.md` 中关于 ReplicaSet 未实现的旧判断已经过时，需要单独
+  更新或标注历史日期。
+- [ ] `docs/PLAN.md` 仍是目标蓝图，不能作为当前实现状态引用。
+- [ ] CI/CD 需要固定依赖缓存和 `go test` 命令，避免本地缓存掩盖依赖版本问题。
+- [ ] 文档中的 AI 使用说明需要在最终提交前由小组确认。

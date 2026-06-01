@@ -32,6 +32,24 @@ spec:
 	assert.Equal(t, "alpine", p.Spec.Containers[0].ImageTag)
 }
 
+func TestLoadPodFromYAMLClearsUserProvidedNodeName(t *testing.T) {
+	data := []byte(`
+kind: Pod
+metadata:
+  name: scheduler-owned
+spec:
+  nodeName: node-a
+  containers:
+  - name: web
+    image: nginx
+`)
+
+	p, err := LoadPodFromYAML(data)
+
+	require.NoError(t, err)
+	assert.Empty(t, p.Spec.NodeName)
+}
+
 func TestLoadPodFromYAMLRejectsInvalidPod(t *testing.T) {
 	data := []byte(`
 kind: Service
@@ -69,11 +87,11 @@ spec:
 	assert.True(t, strings.Contains(err.Error(), "unknown volume") || strings.Contains(err.Error(), "missing"))
 }
 
-func TestPodVolumeResourceManifestIsAssignedToNodeA(t *testing.T) {
-	path := filepath.Join("..", "..", "manifest", "testdata", "pod_volume_resource.yaml")
+func TestPodVolumeResourceManifestLeavesSchedulingToNavigator(t *testing.T) {
+	path := filepath.Join("..", "..", "manifest", "pod", "pod_volume_resource.yaml")
 
 	p, err := LoadPodFromFile(path)
 
 	require.NoError(t, err)
-	assert.Equal(t, "node-a", p.Spec.NodeName)
+	assert.Empty(t, p.Spec.NodeName)
 }

@@ -17,10 +17,10 @@ bridge: build
 	$(MINIK8S) bridge --listen :18080
 
 sailer-once: build
-	$(RUN) sailer --node-name $(or $(NODE_NAME),node-a) --harbor $(HARBOR) $(if $(NODE_IP),--node-ip $(NODE_IP),) $(if $(POD_CIDR),--pod-cidr $(POD_CIDR),) --once
+	$(RUN) sailer $(or $(NODE_FILE),manifest/node/node_a.yaml) --harbor $(HARBOR) --once
 
 sailer: build
-	$(RUN) sailer --node-name $(or $(NODE_NAME),node-a) --harbor $(HARBOR) $(if $(NODE_IP),--node-ip $(NODE_IP),) $(if $(POD_CIDR),--pod-cidr $(POD_CIDR),)
+	$(RUN) sailer $(or $(NODE_FILE),manifest/node/node_a.yaml) --harbor $(HARBOR)
 
 cni-init: build
 	$(RUN) cni init
@@ -29,14 +29,14 @@ doctor:
 	$(RUN) doctor network
 
 apply-nginx:
-	$(CTL) apply -f manifest/testdata/pod_nginx.yaml
+	$(CTL) apply -f manifest/pod/pod_nginx.yaml
 
 apply-client:
-	$(CTL) apply -f manifest/testdata/pod_busybox_client.yaml
+	$(CTL) apply -f manifest/pod/pod_busybox_client.yaml
 
 apply-volume:
 	mkdir -p /tmp/minik8s-case-data
-	$(CTL) apply -f manifest/testdata/pod_volume_resource.yaml
+	$(CTL) apply -f manifest/pod/pod_volume_resource.yaml
 
 ps:
 	$(CTL) get pods

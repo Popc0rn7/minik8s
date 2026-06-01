@@ -15,6 +15,7 @@ import (
 	"minik8s/internal/cliui"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
+	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
 )
 
@@ -80,7 +81,7 @@ func newApplyCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
-		Use:     "get pods|services|nodes [name]",
+		Use:     "get pods|services|replicasets|nodes [name]",
 		Aliases: []string{"list"},
 		Short:   "Get resources",
 		Args:    cobra.RangeArgs(1, 2),
@@ -99,8 +100,8 @@ func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete pod|service <name>",
-		Short: "Delete a Pod or Service",
+		Use:   "delete pod|service|replicaset <name>",
+		Short: "Delete a Pod, Service, or ReplicaSet",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bind()
@@ -117,8 +118,12 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 				if err := app.delete(cmd.Context(), []string{"service", ref.name, "-n", app.namespace}, out); err != nil {
 					return err
 				}
+			case resourceReplicaSets:
+				if err := app.delete(cmd.Context(), []string{"replicaset", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
 			default:
-				return fmt.Errorf("delete supports pods and services")
+				return fmt.Errorf("delete supports pods, services, and replicasets")
 			}
 			return nil
 		},
@@ -128,7 +133,7 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDescribeCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "describe pod|service|node <name>",
+		Use:   "describe pod|service|replicaset|node <name>",
 		Short: "Show resource details",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -304,7 +309,8 @@ func newNetDCommand(app *App, out io.Writer) *cobra.Command {
 }
 
 func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
-	var listen string
+	var listen, serviceSyncInterval, replicaSetSyncInterval, clusterCIDR string
+	var nodeCIDRMaskSize int
 	cmd := &cobra.Command{
 		Use:   "bridge",
 		Short: "Run the control plane",
@@ -313,10 +319,26 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 			if listen != "" {
 				legacy = append(legacy, "--listen", listen)
 			}
+			if serviceSyncInterval != "" {
+				legacy = append(legacy, "--service-sync-interval", serviceSyncInterval)
+			}
+			if replicaSetSyncInterval != "" {
+				legacy = append(legacy, "--replicaset-sync-interval", replicaSetSyncInterval)
+			}
+			if clusterCIDR != "" {
+				legacy = append(legacy, "--cluster-cidr", clusterCIDR)
+			}
+			if nodeCIDRMaskSize != 0 {
+				legacy = append(legacy, "--node-cidr-mask-size", fmt.Sprintf("%d", nodeCIDRMaskSize))
+			}
 			return app.bridge(cmd.Context(), legacy, out)
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", "", "Listen address")
+	cmd.Flags().StringVar(&serviceSyncInterval, "service-sync-interval", "", "Service sync interval")
+	cmd.Flags().StringVar(&replicaSetSyncInterval, "replicaset-sync-interval", "", "ReplicaSet sync interval")
+	cmd.Flags().StringVar(&clusterCIDR, "cluster-cidr", "", "Cluster CIDR for Node PodCIDR allocation")
+	cmd.Flags().IntVar(&nodeCIDRMaskSize, "node-cidr-mask-size", 0, "Per-node PodCIDR mask size")
 	return cmd
 }
 
@@ -368,9 +390,10 @@ func newSailerCommand(app *App, out io.Writer) *cobra.Command {
 type resourceName string
 
 const (
-	resourcePods     resourceName = "pods"
-	resourceServices resourceName = "services"
-	resourceNodes    resourceName = "nodes"
+	resourcePods        resourceName = "pods"
+	resourceServices    resourceName = "services"
+	resourceReplicaSets resourceName = "replicasets"
+	resourceNodes       resourceName = "nodes"
 )
 
 type resourceRef struct {
@@ -407,6 +430,8 @@ func normalizeResource(resource string) (resourceName, error) {
 		return resourcePods, nil
 	case "service", "services", "svc":
 		return resourceServices, nil
+	case "replicaset", "replicasets", "rs":
+		return resourceReplicaSets, nil
 	case "node", "nodes", "no":
 		return resourceNodes, nil
 	default:
@@ -460,6 +485,26 @@ func (a *App) getResource(ctx context.Context, ref resourceRef, output string, o
 			return writeObject(out, output, map[string]any{"kind": "ServiceList", "apiVersion": "v1", "items": services})
 		}
 		return writeServiceTable(out, services)
+	case resourceReplicaSets:
+		if ref.name != "" {
+			rs, err := client.GetReplicaSet(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, rs)
+			}
+			return writeReplicaSetTable(out, []*replicaset.ReplicaSet{rs})
+		}
+		replicaSets, err := client.ListReplicaSets(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortReplicaSetList(replicaSets)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "ReplicaSetList", "apiVersion": "v1", "items": replicaSets})
+		}
+		return writeReplicaSetTable(out, replicaSets)
 	case resourceNodes:
 		if ref.name != "" {
 			n, err := client.GetNode(ctx, ref.name)
@@ -503,6 +548,12 @@ func (a *App) describeResource(ctx context.Context, ref resourceRef, out io.Writ
 			return err
 		}
 		return describeService(out, svc)
+	case resourceReplicaSets:
+		rs, err := client.GetReplicaSet(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeReplicaSet(out, rs)
 	case resourceNodes:
 		n, err := client.GetNode(ctx, ref.name)
 		if err != nil {
@@ -552,6 +603,15 @@ func sortServiceList(services []*service.Service) {
 			return services[i].Name < services[j].Name
 		}
 		return services[i].Namespace < services[j].Namespace
+	})
+}
+
+func sortReplicaSetList(replicaSets []*replicaset.ReplicaSet) {
+	sort.Slice(replicaSets, func(i, j int) bool {
+		if replicaSets[i].Namespace == replicaSets[j].Namespace {
+			return replicaSets[i].Name < replicaSets[j].Name
+		}
+		return replicaSets[i].Namespace < replicaSets[j].Namespace
 	})
 }
 
@@ -620,6 +680,31 @@ func writeServiceTable(out io.Writer, services []*service.Service) error {
 	return nil
 }
 
+func writeReplicaSetTable(out io.Writer, replicaSets []*replicaset.ReplicaSet) error {
+	if err := writef(out, "%s %s %s %s %s\n",
+		cliui.PadRight("REPLICASET", 31),
+		cliui.PadRight("DESIRED", 10),
+		cliui.PadRight("CURRENT", 10),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
+		return err
+	}
+	for _, rs := range replicaSets {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[rs]"), rs.Name)
+		if err := writef(out, "%s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(fmt.Sprintf("%d", rs.Spec.Replicas), 10),
+			cliui.PadRight(fmt.Sprintf("%d", rs.Status.Replicas), 10),
+			cliui.PadRight(rs.Namespace, 14),
+			formatLabels(rs.Labels),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func writeNodeTable(out io.Writer, nodes []node.Node) error {
 	if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 		cliui.PadRight("NODE", 31),
@@ -677,6 +762,23 @@ func describeService(out io.Writer, svc *service.Service) error {
 		fmt.Sprintf("Ports: %s", formatServicePorts(svc)),
 		fmt.Sprintf("Endpoints: %s", formatServiceEndpoints(svc.Status.Endpoints)),
 		fmt.Sprintf("Labels: %s", formatLabels(svc.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func describeReplicaSet(out io.Writer, rs *replicaset.ReplicaSet) error {
+	lines := []string{
+		fmt.Sprintf("Name: %s", rs.Name),
+		fmt.Sprintf("Namespace: %s", rs.Namespace),
+		fmt.Sprintf("Desired: %d", rs.Spec.Replicas),
+		fmt.Sprintf("Current: %d", rs.Status.Replicas),
+		fmt.Sprintf("Selector: %s", formatServiceSelector(rs.Spec.Selector)),
+		fmt.Sprintf("Labels: %s", formatLabels(rs.Labels)),
 	}
 	for _, line := range lines {
 		if err := writef(out, "%s\n", line); err != nil {

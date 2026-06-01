@@ -52,7 +52,7 @@ func TestHarborPodCRUDDoesNotRunRuntime(t *testing.T) {
 
 	get := serve(t, srv, http.MethodGet, "/api/v1/namespaces/default/pods/nginx", "")
 	require.Equal(t, http.StatusOK, get.Code)
-	assert.Contains(t, get.Body.String(), `"nodeName":"node-a"`)
+	assert.NotContains(t, get.Body.String(), `"nodeName"`)
 
 	list := serve(t, srv, http.MethodGet, "/api/v1/namespaces/default/pods", "")
 	require.Equal(t, http.StatusOK, list.Code)
@@ -70,7 +70,84 @@ func TestHarborDiscoveryIncludesServices(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"name":"pods"`)
 	assert.Contains(t, rec.Body.String(), `"name":"services"`)
+	assert.Contains(t, rec.Body.String(), `"name":"replicasets"`)
 	assert.Contains(t, rec.Body.String(), `"name":"nodes"`)
+}
+
+func TestHarborReplicaSetCRUDReconcilesPods(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	rsStore := store.NewInMemoryReplicaSetStore()
+	srv := New(Config{
+		PodStore:        podStore,
+		ReplicaSetStore: rsStore,
+		NodeStore:       store.NewInMemoryNodeStore(),
+	})
+	body := `{
+		"kind":"ReplicaSet",
+		"apiVersion":"v1",
+		"metadata":{"name":"nginx-rs","namespace":"default","labels":{"tier":"web"}},
+		"spec":{
+			"replicas":2,
+			"selector":{"matchLabels":{"app":"nginx"}},
+			"template":{
+				"metadata":{"labels":{"app":"nginx"}},
+				"spec":{"containers":[{"name":"nginx","image":"nginx"}]}
+			}
+		}
+	}`
+
+	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/replicasets", body)
+	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
+	assert.Contains(t, create.Body.String(), `"replicas":2`)
+	pods, err := podStore.List("default", &pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}})
+	require.NoError(t, err)
+	require.Len(t, pods, 2)
+
+	list := serve(t, srv, http.MethodGet, "/api/v1/namespaces/default/replicasets", "")
+	require.Equal(t, http.StatusOK, list.Code, list.Body.String())
+	assert.Contains(t, list.Body.String(), `"kind":"ReplicaSetList"`)
+	assert.Contains(t, list.Body.String(), `"name":"nginx-rs"`)
+
+	get := serve(t, srv, http.MethodGet, "/api/v1/namespaces/default/replicasets/nginx-rs", "")
+	require.Equal(t, http.StatusOK, get.Code, get.Body.String())
+	assert.Contains(t, get.Body.String(), `"tier":"web"`)
+
+	del := serve(t, srv, http.MethodDelete, "/api/v1/namespaces/default/replicasets/nginx-rs", "")
+	require.Equal(t, http.StatusOK, del.Code, del.Body.String())
+	_, err = rsStore.Get("nginx-rs", "default")
+	assert.ErrorIs(t, err, store.ErrReplicaSetNotFound)
+	pods, err = podStore.List("default", &pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}})
+	require.NoError(t, err)
+	assert.Empty(t, pods)
+}
+
+func TestHarborReplicaSetRecreatesDeletedPod(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	rsStore := store.NewInMemoryReplicaSetStore()
+	srv := New(Config{
+		PodStore:        podStore,
+		ReplicaSetStore: rsStore,
+		NodeStore:       store.NewInMemoryNodeStore(),
+	})
+	body := `{
+		"kind":"ReplicaSet",
+		"metadata":{"name":"nginx-rs","namespace":"default"},
+		"spec":{
+			"replicas":1,
+			"selector":{"matchLabels":{"app":"nginx"}},
+			"template":{"spec":{"containers":[{"name":"nginx","image":"nginx"}]}}
+		}
+	}`
+	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/replicasets", body)
+	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
+
+	del := serve(t, srv, http.MethodDelete, "/api/v1/namespaces/default/pods/nginx-rs-1", "")
+	require.Equal(t, http.StatusOK, del.Code, del.Body.String())
+
+	pods, err := podStore.List("default", &pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}})
+	require.NoError(t, err)
+	require.Len(t, pods, 1)
+	assert.Equal(t, "nginx-rs-1", pods[0].Name)
 }
 
 func TestHarborServesNetRegistryNodesEndpoint(t *testing.T) {
@@ -225,9 +302,12 @@ func TestHarborNodePodsEndpointFiltersByNodeName(t *testing.T) {
 		{name: "a", node: "node-a"},
 		{name: "b", node: "node-b"},
 	} {
-		body := `{"kind":"Pod","apiVersion":"v1","metadata":{"name":"` + item.name + `","namespace":"default"},"spec":{"nodeName":"` + item.node + `","containers":[{"name":"c","image":"busybox"}]}}`
-		rec := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/pods", body)
-		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		require.NoError(t, srv.pods.Create(&pod.Pod{
+			TypeMeta:   pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
+			ObjectMeta: pod.ObjectMeta{Name: item.name, Namespace: "default"},
+			Spec:       pod.PodSpec{NodeName: item.node, Containers: []pod.ContainerSpec{{Name: "c", Image: "busybox"}}},
+			Status:     pod.PodStatus{Phase: pod.PodPending},
+		}))
 	}
 
 	rec := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
@@ -487,6 +567,8 @@ func TestHarborPodStatusEndpointUpdatesOnlyStatus(t *testing.T) {
 		"spec":{"nodeName":"node-a","containers":[{"name":"nginx","image":"nginx"}]}
 	}`)
 	require.Equal(t, http.StatusCreated, create.Code)
+	list := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
+	require.Equal(t, http.StatusOK, list.Code, list.Body.String())
 
 	status := pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.0.2", SandboxID: "sandbox-1"}
 	data, err := json.Marshal(status)

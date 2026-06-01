@@ -6,7 +6,6 @@ metadata:
   labels:
     app: volume-test
 spec:
-  nodeName: node-a
   containers:
   - name: writer
     image: busybox

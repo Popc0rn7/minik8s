@@ -1,0 +1,26 @@
+kind: ReplicaSet
+apiVersion: v1
+metadata:
+  name: nginx-rs
+  namespace: default
+  labels:
+    app: nginx
+    tier: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx-rs
+  template:
+    metadata:
+      labels:
+        app: nginx-rs
+        tier: web
+    spec:
+      containers:
+      - name: nginx
+        image: nginx
+        imageTag: alpine
+        ports:
+        - containerPort: 80
+          protocol: TCP

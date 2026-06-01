@@ -25,9 +25,9 @@
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
 sleep 8
-./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
 sleep 6
 ./minik8s get services
 ./minik8s describe service nginx-service
@@ -53,9 +53,9 @@ sleep 6
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/testdata/pod_busybox_client.yaml
-./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/pod/pod_busybox_client.yaml
+./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
 sleep 8
 iptables-save -t nat | grep -E 'MK8S-SVC|10\.96\.0\.1'
 CLIENT_A_CID=$(docker ps -q --filter label=minik8s.pod.name=busybox-client --filter label=minik8s.container.name=client)
@@ -84,8 +84,8 @@ head -n 1 /tmp/minik8s-service-clusterip.html
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/testdata/service_nodeport_nginx.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/service/service_nodeport_nginx.yaml
 sleep 8
 ./minik8s get services
 iptables-save -t nat | grep -E 'MK8S-SVC|30080|10\.96\.0\.1'
@@ -120,9 +120,9 @@ curl -fsS "http://${NODE_B_IP}:30080" >/tmp/minik8s-service-nodeport-b.html || t
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
-./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_b.yaml
+./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
 sleep 10
 ./minik8s get services
 ./minik8s describe service nginx-service
@@ -149,12 +149,12 @@ iptables-save -t nat | grep MK8S-SVC
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
 sleep 8
 ./minik8s describe service nginx-service
 
-./minik8s apply -f manifest/testdata/pod_nginx_node_b.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_b.yaml
 sleep 8
 ./minik8s describe service nginx-service
 iptables-save -t nat | grep MK8S-SVC
@@ -185,8 +185,8 @@ iptables-save -t nat | grep MK8S-SVC
 流程：
 
 ```bash
-./minik8s apply -f manifest/testdata/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/testdata/service_clusterip_nginx.yaml
+./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
+./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
 sleep 8
 iptables-save -t nat | grep MK8S-SVC
 ./minik8s delete service nginx-service
