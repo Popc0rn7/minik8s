@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	store "minik8s/internal/bridge/logbook"
+	"minik8s/internal/function"
 	"minik8s/internal/minilog"
 	"minik8s/internal/netregistry"
 	"minik8s/internal/node"
@@ -72,6 +73,63 @@ func TestHarborDiscoveryIncludesServices(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"name":"services"`)
 	assert.Contains(t, rec.Body.String(), `"name":"replicasets"`)
 	assert.Contains(t, rec.Body.String(), `"name":"nodes"`)
+	assert.Contains(t, rec.Body.String(), `"name":"functions"`)
+	assert.Contains(t, rec.Body.String(), `"name":"eventtriggers"`)
+	assert.Contains(t, rec.Body.String(), `"name":"workflows"`)
+}
+
+func TestHarborServerlessCRUDAndInvoke(t *testing.T) {
+	srv := New(Config{
+		PodStore:          store.NewInMemoryPodStore(),
+		NodeStore:         store.NewInMemoryNodeStore(),
+		FunctionStore:     store.NewInMemoryFunctionStore(),
+		EventTriggerStore: store.NewInMemoryEventTriggerStore(),
+		WorkflowStore:     store.NewInMemoryWorkflowStore(),
+	})
+	functionBody := `{
+		"kind":"Function",
+		"metadata":{"name":"echo","namespace":"default"},
+		"spec":{
+			"runtime":"python",
+			"handler":"handler",
+			"code":"def handler(event):\n    return event\n"
+		}
+	}`
+
+	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/functions", functionBody)
+	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
+	assert.Contains(t, create.Body.String(), `"name":"echo"`)
+
+	invoke := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/functions/echo/invoke", `{"data":"hello"}`)
+	require.Equal(t, http.StatusOK, invoke.Code, invoke.Body.String())
+	var response function.InvocationResponse
+	require.NoError(t, json.Unmarshal(invoke.Body.Bytes(), &response))
+	assert.Equal(t, "Succeeded", response.Phase)
+	assert.Equal(t, "hello", response.Output)
+
+	triggerBody := `{
+		"kind":"EventTrigger",
+		"metadata":{"name":"echo-events","namespace":"default"},
+		"spec":{"subject":"minik8s.echo","functionRef":{"name":"echo"}}
+	}`
+	trigger := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/eventtriggers", triggerBody)
+	require.Equal(t, http.StatusCreated, trigger.Code, trigger.Body.String())
+	assert.Contains(t, trigger.Body.String(), `"active":true`)
+
+	workflowBody := `{
+		"kind":"Workflow",
+		"metadata":{"name":"echo-chain","namespace":"default"},
+		"spec":{"steps":[{"name":"first","functionRef":{"name":"echo"}}]}
+	}`
+	workflow := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/workflows", workflowBody)
+	require.Equal(t, http.StatusCreated, workflow.Code, workflow.Body.String())
+
+	list := serve(t, srv, http.MethodGet, "/api/v1/namespaces/default/functions", "")
+	require.Equal(t, http.StatusOK, list.Code, list.Body.String())
+	assert.Contains(t, list.Body.String(), `"kind":"FunctionList"`)
+
+	del := serve(t, srv, http.MethodDelete, "/api/v1/namespaces/default/functions/echo", "")
+	require.Equal(t, http.StatusOK, del.Code, del.Body.String())
 }
 
 func TestHarborReplicaSetCRUDReconcilesPods(t *testing.T) {

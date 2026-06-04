@@ -16,11 +16,14 @@ import (
 )
 
 const (
-	podPrefix        = "/registry/pods/"
-	servicePrefix    = "/registry/services/"
-	replicaSetPrefix = "/registry/replicasets/"
-	nodePrefix       = "/registry/nodes/"
-	defaultOpTTL     = 5 * time.Second
+	podPrefix          = "/registry/pods/"
+	servicePrefix      = "/registry/services/"
+	replicaSetPrefix   = "/registry/replicasets/"
+	nodePrefix         = "/registry/nodes/"
+	functionPrefix     = "/registry/functions/"
+	eventTriggerPrefix = "/registry/eventtriggers/"
+	workflowPrefix     = "/registry/workflows/"
+	defaultOpTTL       = 5 * time.Second
 )
 
 // NewClient creates an etcd v3 client for Minik8s stores.
