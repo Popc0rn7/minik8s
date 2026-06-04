@@ -1,12 +1,16 @@
 # Logbook 控制面状态存储测试用例
 
-本文档从 0 开始验证 v0.1.0 的 Logbook 控制面状态存储。设置 `MINIK8S_LOGBOOK_ENDPOINTS` 后，Pod、Service、ReplicaSet、Node 都使用真实 etcd 作为状态源；未设置时回退本地 JSON file store。etcd 只需要运行在 node-a/control plane，node-b worker 不直连 etcd，只访问 Harbor。
+本文档从 0 开始验证 Logbook 控制面状态存储。默认 `bridge` 会启动一个私有本地
+`sailer`，由该内部 worker 运行包含 etcd 的依赖 Pod，并把公开控制面连接到
+`http://127.0.0.1:2379`。Pod、Service、ReplicaSet、Node 都使用真实 etcd 作为状态源。
+如果启动 `bridge --deps none`，且未设置 `MINIK8S_LOGBOOK_ENDPOINTS`，则回退本地 JSON
+file store。node-b worker 不直连 etcd，只访问 Harbor。
 
 ## 测试模型
 
 | 节点 | 宿主机 IP | 运行组件 | etcd 访问 |
 | --- | --- | --- | --- |
-| node-a | `192.168.1.8` | `etcd.service`、`bridge`、`sailer` | 本机 `127.0.0.1:2379` |
+| node-a | `192.168.1.8` | `bridge`、私有依赖 `sailer`、公开 `sailer` | 本机 `127.0.0.1:2379` |
 | node-b | `192.168.1.6` | `sailer` | 不直连 etcd |
 
 etcd key 约定：
@@ -20,7 +24,9 @@ etcd key 约定：
 
 ## 从 0 启动
 
-两台机器都需要 Linux、Docker、`curl` 或 `wget`，并以 root 用户执行命令。node-a 需要 etcd/etcdctl，node-b 不需要访问 `2379/2380`。安全组或防火墙至少放通 node-a 入站 TCP `18080`，供 node-b 访问 Harbor。
+两台机器都需要 Linux、Docker、`curl` 或 `wget`，并以 root 用户执行命令。node-a 需要
+Docker 可拉取 etcd/NATS 镜像；`etcdctl` 只用于人工检查，不是启动前置条件。node-b 不需要访问
+`2379/2380`。安全组或防火墙至少放通 node-a 入站 TCP `18080`，供 node-b 访问 Harbor。
 
 在 node-a 和 node-b 都设置变量：
 
@@ -31,7 +37,8 @@ export HARBOR=http://${NODE_A_IP}:18080
 export MINIK8S_HARBOR=${HARBOR}
 ```
 
-在 node-a 设置 etcd endpoint。注意当前代码不会默认连接 `127.0.0.1:2379`，必须显式设置：
+node-a 默认不需要手动设置 etcd endpoint；`bridge` 会在内部依赖 Pod ready 后设置进程内默认值。
+如果要连接已有外部 etcd，可在启动 `bridge --deps none` 前显式设置：
 
 ```bash
 export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
@@ -44,47 +51,37 @@ export ETCDCTL_API=3
 make build
 ```
 
-在 node-a 初始化或复用本机 etcd：
+在 node-a 终端 1 启动控制面：
 
 ```bash
-bash scripts/init-logbook.sh
+export MINIK8S_HARBOR=${HARBOR}
+./minik8s bridge --listen :18080
 ```
 
-脚本默认优先复用系统已有的 `etcd.service`，启动后会验证：
+在 node-a 另一个终端检查 etcd 与控制面。`bridge` 的默认 endpoint 是进程内设置；
+测试终端如需运行 `doctor logbook` 或 `etcdctl`，仍需显式 export 同一个地址：
 
 ```bash
-ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} endpoint health
+export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
+export ETCDCTL_API=3
+export MINIK8S_HARBOR=${HARBOR}
+./minik8s doctor logbook
+etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} endpoint health
 curl -fsS ${MINIK8S_LOGBOOK_ENDPOINTS}/health
+curl -fsS ${HARBOR}/version
 ```
 
 期望：
 
-- `etcd.service` 或 `minik8s-etcd.service` 为 `active (running)`。
+- `doctor logbook` 显示 `logbook: ok`。
 - `endpoint health` 输出 `is healthy`。
 - `/health` 返回健康 JSON。
 
 在 node-a 清空 Minik8s 测试前缀：
 
 ```bash
-ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} del --prefix /registry
-ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
-```
-
-在 node-a 终端 1 启动控制面：
-
-```bash
-export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
-export MINIK8S_HARBOR=${HARBOR}
-./minik8s bridge --listen :18080
-```
-
-在 node-a 另一个终端检查 etcd 与控制面：
-
-```bash
-export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
-export MINIK8S_HARBOR=${HARBOR}
-./minik8s doctor logbook
-curl -fsS ${HARBOR}/version
+ETCDCTL_API=3 etcdctl --endpoints=http://127.0.0.1:2379 del --prefix /registry
+ETCDCTL_API=3 etcdctl --endpoints=http://127.0.0.1:2379 get --prefix /registry
 ```
 
 在 node-b 先确认能访问控制面：
@@ -157,30 +154,29 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} del --prefix /reg
 
 ## LOGBOOK-01：etcd 服务健康与 CLI 环境
 
-目标：确认 node-a 上 etcd 可用，并且所有测试终端都使用 v3 etcdctl。
+目标：确认 node-a 上由 `bridge` 私有依赖 Pod 启动的 etcd 可用，并且所有测试终端都使用
+v3 etcdctl。
 
 在 node-a：
 
 ```bash
 export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
 export ETCDCTL_API=3
-bash scripts/init-logbook.sh
-systemctl status etcd --no-pager -l || systemctl status minik8s-etcd --no-pager -l
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} endpoint health
 curl -fsS ${MINIK8S_LOGBOOK_ENDPOINTS}/health
 ```
 
 期望：
 
-- systemd service 为 `active (running)`。
 - `endpoint health` 包含 `is healthy`。
 - `curl /health` 返回 `health` 为 `true`。
 
 失败排查：
 
-- `endpoint health` 失败但 service 正常：确认命令带了 `ETCDCTL_API=3`。
-- service 起不来：查看 `journalctl -u etcd -n 120 --no-pager` 或 `journalctl -u minik8s-etcd -n 120 --no-pager`。
-- 端口被占用：执行 `ss -lntp | grep -E ':2379|:2380'`，确认只有一个 etcd 服务监听。
+- `endpoint health` 失败：确认 `bridge` 仍在运行，测试终端已设置
+  `MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379`，并且命令带了 `ETCDCTL_API=3`。
+- 端口被占用：执行 `ss -lntp | grep -E ':2379|:4222'`，确认没有其他服务抢占依赖 Pod
+  需要的端口。
 
 ## LOGBOOK-02：bridge 使用 Logbook 后端
 
