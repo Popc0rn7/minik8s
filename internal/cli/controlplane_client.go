@@ -13,6 +13,7 @@ import (
 
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
+	"minik8s/internal/hpa"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
@@ -312,6 +313,48 @@ func (c *controlPlaneClient) DeleteWorkflow(ctx context.Context, name, namespace
 	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
 }
 
+func (c *controlPlaneClient) ApplyHPA(ctx context.Context, autoscaler *hpa.HorizontalPodAutoscaler) (*hpa.HorizontalPodAutoscaler, error) {
+	created, err := c.createHPA(ctx, autoscaler)
+	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {
+		return c.updateHPA(ctx, autoscaler)
+	}
+	return created, err
+}
+
+func (c *controlPlaneClient) ListHPAs(ctx context.Context, namespace string) ([]*hpa.HorizontalPodAutoscaler, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "horizontalpodautoscalers"))
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []*hpa.HorizontalPodAutoscaler `json:"items"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (c *controlPlaneClient) GetHPA(ctx context.Context, name, namespace string) (*hpa.HorizontalPodAutoscaler, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "horizontalpodautoscalers", name))
+	if err != nil {
+		return nil, err
+	}
+	var autoscaler hpa.HorizontalPodAutoscaler
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &autoscaler); err != nil {
+		return nil, err
+	}
+	return &autoscaler, nil
+}
+
+func (c *controlPlaneClient) DeleteHPA(ctx context.Context, name, namespace string) error {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "horizontalpodautoscalers", name))
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
+}
+
 func (c *controlPlaneClient) ApplyNode(ctx context.Context, n *node.Node) (*node.Node, error) {
 	created, err := c.createNode(ctx, n)
 	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {
@@ -533,6 +576,30 @@ func (c *controlPlaneClient) updateWorkflow(ctx context.Context, wf *workflow.Wo
 	}
 	var updated workflow.Workflow
 	if err := c.doJSON(ctx, http.MethodPut, endpoint, wf, http.StatusOK, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (c *controlPlaneClient) createHPA(ctx context.Context, autoscaler *hpa.HorizontalPodAutoscaler) (*hpa.HorizontalPodAutoscaler, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(autoscaler.Namespace), "horizontalpodautoscalers"))
+	if err != nil {
+		return nil, err
+	}
+	var created hpa.HorizontalPodAutoscaler
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, autoscaler, http.StatusCreated, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (c *controlPlaneClient) updateHPA(ctx context.Context, autoscaler *hpa.HorizontalPodAutoscaler) (*hpa.HorizontalPodAutoscaler, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(autoscaler.Namespace), "horizontalpodautoscalers", autoscaler.Name))
+	if err != nil {
+		return nil, err
+	}
+	var updated hpa.HorizontalPodAutoscaler
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, autoscaler, http.StatusOK, &updated); err != nil {
 		return nil, err
 	}
 	return &updated, nil

@@ -57,9 +57,15 @@
 
 ### HPA / 资源监控
 
-- [ ] 未实现 `HorizontalPodAutoscaler` YAML/API/CLI。
-- [ ] 未实现 CPU + Memory 等资源指标采集 pipeline。
-- [ ] 未实现基于 ReplicaSet 的扩缩容策略，例如冷却时间、每周期最多扩缩 1 个副本。
+- [x] `HorizontalPodAutoscaler` YAML/API/CLI、file/etcd store 已实现。
+- [x] `sailer` 可通过 Docker stats 上报 CPU + Memory metrics，控制面内存保存
+  最新样本。
+- [x] HPA controller 可按 CPU/Memory utilization 调整 ReplicaSet replicas，并
+  支持每轮最多扩缩 1 个副本、缩容冷却。
+- [ ] 当前是简化实现：只支持 target `ReplicaSet`、Resource utilization；
+  metrics 不持久化，缺少 cAdvisor/metrics-server、custom/external metrics 和
+  Kubernetes 完整 stabilization policy。
+- [ ] 真实压力扩缩容需要补 Linux + Docker 人工验收记录。
 
 ### DNS 与转发
 

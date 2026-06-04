@@ -19,6 +19,7 @@ type MockRuntime struct {
 	StopContainerCalls   []string
 	RemoveContainerCalls []string
 	PullImageCalls       []string
+	ContainerStatsByID   map[string]*runtime.ContainerStats
 
 	ShouldFailCreateSandbox   bool
 	ShouldFailStartSandbox    bool
@@ -45,12 +46,13 @@ type CreateContainerCall struct {
 
 func NewMockRuntime() *MockRuntime {
 	return &MockRuntime{
-		Healthy:       true,
-		NetNSPath:     "/proc/100/ns/net",
-		sandboxes:     make(map[string]*runtime.SandboxInfo),
-		containers:    make(map[string]*runtime.ContainerInfo),
-		nextSandbox:   1,
-		nextContainer: 1,
+		Healthy:            true,
+		NetNSPath:          "/proc/100/ns/net",
+		sandboxes:          make(map[string]*runtime.SandboxInfo),
+		containers:         make(map[string]*runtime.ContainerInfo),
+		ContainerStatsByID: make(map[string]*runtime.ContainerStats),
+		nextSandbox:        1,
+		nextContainer:      1,
 	}
 }
 
@@ -210,6 +212,15 @@ func (m *MockRuntime) PullImage(ctx context.Context, imageName string) error {
 	return nil
 }
 
+func (m *MockRuntime) ContainerStats(ctx context.Context, containerID string) (*runtime.ContainerStats, error) {
+	_ = ctx
+	if stats, ok := m.ContainerStatsByID[containerID]; ok {
+		copy := *stats
+		return &copy, nil
+	}
+	return &runtime.ContainerStats{Timestamp: time.Now()}, nil
+}
+
 func (m *MockRuntime) IsHealthy(ctx context.Context) bool {
 	_ = ctx
 	return m.Healthy
@@ -256,6 +267,7 @@ func (m *MockRuntime) Reset() {
 	m.Healthy = true
 	m.sandboxes = make(map[string]*runtime.SandboxInfo)
 	m.containers = make(map[string]*runtime.ContainerInfo)
+	m.ContainerStatsByID = make(map[string]*runtime.ContainerStats)
 	m.nextSandbox = 1
 	m.nextContainer = 1
 }

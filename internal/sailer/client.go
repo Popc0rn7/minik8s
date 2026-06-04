@@ -11,6 +11,7 @@ import (
 	"path"
 	"strings"
 
+	"minik8s/internal/metrics"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
@@ -24,6 +25,7 @@ type PodClient interface {
 	ListAssignedPods(ctx context.Context, heartbeat NodeHeartbeat) ([]*pod.Pod, error)
 	ListServices(ctx context.Context) ([]*service.Service, error)
 	UpdatePodStatus(ctx context.Context, p *pod.Pod) error
+	UpdateNodeMetrics(ctx context.Context, nodeName string, podMetrics []*metrics.PodMetrics) error
 }
 
 type HTTPPodClient struct {
@@ -132,6 +134,31 @@ func (c *HTTPPodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("update pod status: %s", responseError(resp))
+	}
+	return nil
+}
+
+func (c *HTTPPodClient) UpdateNodeMetrics(ctx context.Context, nodeName string, podMetrics []*metrics.PodMetrics) error {
+	data, err := json.Marshal(map[string]any{"items": podMetrics})
+	if err != nil {
+		return err
+	}
+	endpoint, err := c.url(path.Join("/api/v1/nodes", nodeName, "metrics"))
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("update node metrics: %s", responseError(resp))
 	}
 	return nil
 }

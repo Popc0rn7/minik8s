@@ -7,6 +7,7 @@ import (
 
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/kubeproxy"
+	"minik8s/internal/metrics"
 	"minik8s/internal/minilog"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
@@ -35,6 +36,7 @@ type Sailer struct {
 	interval time.Duration
 	local    store.PodStore
 	known    map[string]*pod.Pod
+	stats    map[string]runtime.ContainerStats
 }
 
 func New(config Config) *Sailer {
@@ -52,6 +54,7 @@ func New(config Config) *Sailer {
 		interval: interval,
 		local:    store.NewInMemoryPodStore(),
 		known:    make(map[string]*pod.Pod),
+		stats:    make(map[string]runtime.ContainerStats),
 	}
 }
 
@@ -129,6 +132,10 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 		k.known[podKey(updated)] = updated.DeepCopy()
 	}
 
+	if err := k.reportMetrics(ctx, syncPods); err != nil {
+		minilog.Warn("sailer-metrics", "node=%s error=%v", k.nodeName, err)
+	}
+
 	for key, knownPod := range k.known {
 		if _, ok := desiredByKey[key]; ok {
 			continue
@@ -140,6 +147,50 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 		delete(k.known, key)
 	}
 	return k.SyncProxy(ctx)
+}
+
+func (k *Sailer) reportMetrics(ctx context.Context, pods []*pod.Pod) error {
+	podMetrics := make([]*metrics.PodMetrics, 0, len(pods))
+	now := time.Now()
+	for _, p := range pods {
+		if p == nil || p.Status.Phase != pod.PodRunning {
+			continue
+		}
+		pm := &metrics.PodMetrics{
+			Namespace: p.Namespace,
+			Name:      p.Name,
+			NodeName:  k.nodeName,
+			Timestamp: now,
+		}
+		for _, status := range p.Status.Containers {
+			if status.ContainerID == "" {
+				continue
+			}
+			stats, err := k.runtime.ContainerStats(ctx, status.ContainerID)
+			if err != nil {
+				minilog.Warn("container-metrics", "container=%s error=%v", status.Name, err)
+				continue
+			}
+			usage := metrics.ResourceUsage{MemoryBytes: int64(stats.MemoryUsageBytes), MemoryAvailable: true}
+			if previous, ok := k.stats[status.ContainerID]; ok {
+				elapsed := stats.Timestamp.Sub(previous.Timestamp)
+				if elapsed > 0 && stats.CPUUsageTotalNano >= previous.CPUUsageTotalNano {
+					delta := stats.CPUUsageTotalNano - previous.CPUUsageTotalNano
+					usage.CPUNanoCores = int64(float64(delta) / elapsed.Seconds())
+					usage.CPUAvailable = true
+				}
+			}
+			k.stats[status.ContainerID] = *stats
+			pm.Containers = append(pm.Containers, metrics.ContainerMetrics{Name: status.Name, Usage: usage})
+		}
+		if len(pm.Containers) > 0 {
+			podMetrics = append(podMetrics, pm)
+		}
+	}
+	if len(podMetrics) == 0 {
+		return nil
+	}
+	return k.client.UpdateNodeMetrics(ctx, k.nodeName, podMetrics)
 }
 
 func (k *Sailer) SyncProxy(ctx context.Context) error {

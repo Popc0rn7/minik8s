@@ -67,6 +67,12 @@ type ContainerInfo struct {
 	Labels  map[string]string
 }
 
+type ContainerStats struct {
+	CPUUsageTotalNano uint64
+	MemoryUsageBytes  uint64
+	Timestamp         time.Time
+}
+
 // ContainerStateInfo contains container state information
 type ContainerStateInfo struct {
 	Status       string
@@ -112,6 +118,7 @@ type ContainerRuntime interface {
 	RemoveContainer(ctx context.Context, containerID string) error
 	InspectContainer(ctx context.Context, containerID string) (*ContainerInfo, error)
 	ListContainers(ctx context.Context, sandboxID string) ([]*ContainerInfo, error)
+	ContainerStats(ctx context.Context, containerID string) (*ContainerStats, error)
 
 	// Image operations
 	PullImage(ctx context.Context, imageName string) error
