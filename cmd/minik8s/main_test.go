@@ -24,19 +24,25 @@ func TestNewBridgeConfigDoesNotInjectServiceProxy(t *testing.T) {
 		store.NewInMemoryHPAStore(),
 		store.NewInMemoryMetricsStore(),
 		store.NewInMemoryNodeStore(),
+		store.NewInMemoryFunctionStore(),
+		store.NewInMemoryEventTriggerStore(),
+		store.NewInMemoryWorkflowStore(),
 	)
 
 	assert.NotNil(t, config.PodStore)
 	assert.NotNil(t, config.ServiceStore)
 	assert.NotNil(t, config.ReplicaSetStore)
 	assert.NotNil(t, config.NodeStore)
+	assert.NotNil(t, config.FunctionStore)
+	assert.NotNil(t, config.EventTriggerStore)
+	assert.NotNil(t, config.WorkflowStore)
 }
 
 func TestOpenStoresUsesEtcdBackendForPodServiceReplicaSetAndNodeStores(t *testing.T) {
 	endpoint := newEmbeddedEtcdEndpoint(t)
 	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", endpoint)
 
-	podStore, serviceStore, replicaSetStore, hpaStore, metricsStore, nodeStore, closeStores, err := openStores()
+	podStore, serviceStore, replicaSetStore, hpaStore, metricsStore, nodeStore, functionStore, eventTriggerStore, workflowStore, closeStores, err := openStores()
 	require.NoError(t, err)
 	defer closeStores()
 
@@ -46,6 +52,9 @@ func TestOpenStoresUsesEtcdBackendForPodServiceReplicaSetAndNodeStores(t *testin
 	assert.IsType(t, &store.EtcdHPAStore{}, hpaStore)
 	assert.IsType(t, &store.InMemoryMetricsStore{}, metricsStore)
 	assert.IsType(t, &store.EtcdNodeStore{}, nodeStore)
+	assert.IsType(t, &store.EtcdFunctionStore{}, functionStore)
+	assert.IsType(t, &store.EtcdEventTriggerStore{}, eventTriggerStore)
+	assert.IsType(t, &store.EtcdWorkflowStore{}, workflowStore)
 }
 
 func newEmbeddedEtcdEndpoint(t *testing.T) string {

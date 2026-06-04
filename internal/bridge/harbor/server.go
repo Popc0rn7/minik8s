@@ -17,6 +17,9 @@ import (
 	"minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/bridge/navigator"
+	"minik8s/internal/eventtrigger"
+	"minik8s/internal/function"
+	"minik8s/internal/functionrunner"
 	"minik8s/internal/hpa"
 	"minik8s/internal/metrics"
 	"minik8s/internal/minilog"
@@ -25,34 +28,41 @@ import (
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
+	"minik8s/internal/workflow"
 	podyaml "minik8s/pkg/yaml"
 )
 
 type Config struct {
-	PodStore         store.PodStore
-	ServiceStore     store.ServiceStore
-	ReplicaSetStore  store.ReplicaSetStore
-	HPAStore         store.HPAStore
-	MetricsStore     store.MetricsStore
-	NodeStore        store.NodeStore
-	Navigator        navigator.Navigator
-	NodeTTL          time.Duration
-	NetRegistry      *netregistry.Store
-	ClusterCIDR      string
-	NodeCIDRMaskSize int
+	PodStore          store.PodStore
+	ServiceStore      store.ServiceStore
+	ReplicaSetStore   store.ReplicaSetStore
+	HPAStore          store.HPAStore
+	MetricsStore      store.MetricsStore
+	NodeStore         store.NodeStore
+	FunctionStore     store.FunctionStore
+	EventTriggerStore store.EventTriggerStore
+	WorkflowStore     store.WorkflowStore
+	Navigator         navigator.Navigator
+	NodeTTL           time.Duration
+	NetRegistry       *netregistry.Store
+	ClusterCIDR       string
+	NodeCIDRMaskSize  int
 }
 
 type Server struct {
-	pods        store.PodStore
-	services    store.ServiceStore
-	replicaSets store.ReplicaSetStore
-	hpas        store.HPAStore
-	metrics     store.MetricsStore
-	nodes       store.NodeStore
-	navigator   navigator.Navigator
-	nodeTTL     time.Duration
-	netRegistry *netregistry.Store
-	cidrAlloc   *nodeCIDRAllocator
+	pods          store.PodStore
+	services      store.ServiceStore
+	replicaSets   store.ReplicaSetStore
+	hpas          store.HPAStore
+	metrics       store.MetricsStore
+	nodes         store.NodeStore
+	functions     store.FunctionStore
+	eventTriggers store.EventTriggerStore
+	workflows     store.WorkflowStore
+	navigator     navigator.Navigator
+	nodeTTL       time.Duration
+	netRegistry   *netregistry.Store
+	cidrAlloc     *nodeCIDRAllocator
 }
 
 func New(config Config) *Server {
@@ -80,6 +90,18 @@ func New(config Config) *Server {
 	if nodeStore == nil {
 		nodeStore = store.NewInMemoryNodeStore()
 	}
+	functionStore := config.FunctionStore
+	if functionStore == nil {
+		functionStore = store.NewInMemoryFunctionStore()
+	}
+	eventTriggerStore := config.EventTriggerStore
+	if eventTriggerStore == nil {
+		eventTriggerStore = store.NewInMemoryEventTriggerStore()
+	}
+	workflowStore := config.WorkflowStore
+	if workflowStore == nil {
+		workflowStore = store.NewInMemoryWorkflowStore()
+	}
 	podNavigator := config.Navigator
 	if podNavigator == nil {
 		podNavigator = navigator.NewNaiveNavigator()
@@ -97,16 +119,19 @@ func New(config Config) *Server {
 		panic(err)
 	}
 	return &Server{
-		pods:        podStore,
-		services:    serviceStore,
-		replicaSets: replicaSetStore,
-		hpas:        hpaStore,
-		metrics:     metricsStore,
-		nodes:       nodeStore,
-		navigator:   podNavigator,
-		nodeTTL:     nodeTTL,
-		netRegistry: netRegistryStore,
-		cidrAlloc:   cidrAlloc,
+		pods:          podStore,
+		services:      serviceStore,
+		replicaSets:   replicaSetStore,
+		hpas:          hpaStore,
+		metrics:       metricsStore,
+		nodes:         nodeStore,
+		functions:     functionStore,
+		eventTriggers: eventTriggerStore,
+		workflows:     workflowStore,
+		navigator:     podNavigator,
+		nodeTTL:       nodeTTL,
+		netRegistry:   netRegistryStore,
+		cidrAlloc:     cidrAlloc,
 	}
 }
 
@@ -151,6 +176,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"namespaced": false,
 				"kind":       "Node",
 				"verbs":      []string{"get", "list"},
+			}, {
+				"name":       "functions",
+				"namespaced": true,
+				"kind":       "Function",
+				"verbs":      []string{"get", "list", "create", "update", "delete"},
+			}, {
+				"name":       "eventtriggers",
+				"namespaced": true,
+				"kind":       "EventTrigger",
+				"verbs":      []string{"get", "list", "create", "update", "delete"},
+			}, {
+				"name":       "workflows",
+				"namespaced": true,
+				"kind":       "Workflow",
+				"verbs":      []string{"get", "list", "create", "update", "delete"},
 			}},
 		})
 	case r.URL.Path == "/nodes":
@@ -174,6 +214,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.handleReplicaSets(w, r, namespace, parts[5:])
 		case "horizontalpodautoscalers":
 			s.handleHPAs(w, r, namespace, parts[5:])
+		case "functions":
+			s.handleFunctions(w, r, namespace, parts[5:])
+		case "eventtriggers":
+			s.handleEventTriggers(w, r, namespace, parts[5:])
+		case "workflows":
+			s.handleWorkflows(w, r, namespace, parts[5:])
 		default:
 			writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("resource %q not found", parts[4]))
 		}
@@ -736,6 +782,247 @@ func (s *Server) handleReplicaSets(w http.ResponseWriter, r *http.Request, names
 	}
 }
 
+func (s *Server) handleFunctions(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
+	name := ""
+	if len(parts) > 0 {
+		name = parts[0]
+	}
+	if len(parts) == 2 && parts[1] == "invoke" {
+		s.handleFunctionInvoke(w, r, namespace, name)
+		return
+	}
+	if len(parts) > 1 {
+		writeStatus(w, http.StatusNotFound, "NotFound", "function path not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		if name != "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "create must target function collection")
+			return
+		}
+		fn, err := readFunction(r.Body, namespace, "")
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		fn.Status.Phase = "Ready"
+		if err := s.functions.Create(fn); err != nil {
+			writeStoreError(w, err, "functions", fn.Name)
+			return
+		}
+		writeJSON(w, http.StatusCreated, fn)
+	case http.MethodGet:
+		if name == "" {
+			items, err := s.functions.List(namespace, nil)
+			if err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+				return
+			}
+			sortFunctions(items)
+			writeJSON(w, http.StatusOK, map[string]any{"kind": "FunctionList", "apiVersion": "v1", "items": items})
+			return
+		}
+		fn, err := s.functions.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "functions", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, fn)
+	case http.MethodPut:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "update must target a function")
+			return
+		}
+		existing, err := s.functions.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "functions", name)
+			return
+		}
+		fn, err := readFunction(r.Body, namespace, name)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		fn.Status = existing.Status
+		if err := s.functions.Update(fn); err != nil {
+			writeStoreError(w, err, "functions", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, fn)
+	case http.MethodDelete:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target a function")
+			return
+		}
+		if err := s.functions.Delete(name, namespace); err != nil {
+			writeStoreError(w, err, "functions", name)
+			return
+		}
+		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("function %q deleted", name))
+	default:
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+	}
+}
+
+func (s *Server) handleFunctionInvoke(w http.ResponseWriter, r *http.Request, namespace, name string) {
+	if r.Method != http.MethodPost {
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	fn, err := s.functions.Get(name, namespace)
+	if err != nil {
+		writeStoreError(w, err, "functions", name)
+		return
+	}
+	var req function.InvocationRequest
+	if err := decodeObject(r.Body, &req); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	output, err := functionrunner.RunPython(r.Context(), fn, req.Data)
+	resp := function.InvocationResponse{Function: fn.Name, Namespace: fn.Namespace}
+	fn.Status.LastInvocation = time.Now().UTC()
+	if err != nil {
+		resp.Phase = "Failed"
+		resp.Error = err.Error()
+		fn.Status.Phase = "Failed"
+		fn.Status.LastError = err.Error()
+		_ = s.functions.Update(fn)
+		writeJSON(w, http.StatusInternalServerError, resp)
+		return
+	}
+	resp.Phase = "Succeeded"
+	resp.Output = output
+	fn.Status.Phase = "Ready"
+	fn.Status.LastOutput = output
+	fn.Status.LastError = ""
+	_ = s.functions.Update(fn)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleEventTriggers(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
+	name := ""
+	if len(parts) > 0 {
+		name = parts[0]
+	}
+	if len(parts) > 1 {
+		writeStatus(w, http.StatusNotFound, "NotFound", "eventtrigger path not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		trigger, err := readEventTrigger(r.Body, namespace, "")
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		trigger.Status.Active = true
+		if err := s.eventTriggers.Create(trigger); err != nil {
+			writeStoreError(w, err, "eventtriggers", trigger.Name)
+			return
+		}
+		writeJSON(w, http.StatusCreated, trigger)
+	case http.MethodGet:
+		if name == "" {
+			items, err := s.eventTriggers.List(namespace, nil)
+			if err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+				return
+			}
+			sortEventTriggers(items)
+			writeJSON(w, http.StatusOK, map[string]any{"kind": "EventTriggerList", "apiVersion": "v1", "items": items})
+			return
+		}
+		trigger, err := s.eventTriggers.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "eventtriggers", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, trigger)
+	case http.MethodPut:
+		trigger, err := readEventTrigger(r.Body, namespace, name)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		trigger.Status.Active = true
+		if err := s.eventTriggers.Update(trigger); err != nil {
+			writeStoreError(w, err, "eventtriggers", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, trigger)
+	case http.MethodDelete:
+		if err := s.eventTriggers.Delete(name, namespace); err != nil {
+			writeStoreError(w, err, "eventtriggers", name)
+			return
+		}
+		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("eventtrigger %q deleted", name))
+	default:
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+	}
+}
+
+func (s *Server) handleWorkflows(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
+	name := ""
+	if len(parts) > 0 {
+		name = parts[0]
+	}
+	if len(parts) > 1 {
+		writeStatus(w, http.StatusNotFound, "NotFound", "workflow path not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		wf, err := readWorkflow(r.Body, namespace, "")
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.workflows.Create(wf); err != nil {
+			writeStoreError(w, err, "workflows", wf.Name)
+			return
+		}
+		writeJSON(w, http.StatusCreated, wf)
+	case http.MethodGet:
+		if name == "" {
+			items, err := s.workflows.List(namespace, nil)
+			if err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+				return
+			}
+			sortWorkflows(items)
+			writeJSON(w, http.StatusOK, map[string]any{"kind": "WorkflowList", "apiVersion": "v1", "items": items})
+			return
+		}
+		wf, err := s.workflows.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "workflows", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, wf)
+	case http.MethodPut:
+		wf, err := readWorkflow(r.Body, namespace, name)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.workflows.Update(wf); err != nil {
+			writeStoreError(w, err, "workflows", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, wf)
+	case http.MethodDelete:
+		if err := s.workflows.Delete(name, namespace); err != nil {
+			writeStoreError(w, err, "workflows", name)
+			return
+		}
+		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("workflow %q deleted", name))
+	default:
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+	}
+}
+
 func (s *Server) handleHPAs(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
 	name := ""
 	if len(parts) > 0 {
@@ -934,6 +1221,57 @@ func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (
 	return &svc, nil
 }
 
+func readFunction(r io.Reader, namespace, name string) (*function.Function, error) {
+	var fn function.Function
+	if err := decodeObject(r, &fn); err != nil {
+		return nil, err
+	}
+	if namespace != "" {
+		fn.Namespace = namespace
+	}
+	if name != "" {
+		fn.Name = name
+	}
+	if err := podyaml.DefaultAndValidateFunction(&fn); err != nil {
+		return nil, err
+	}
+	return &fn, nil
+}
+
+func readEventTrigger(r io.Reader, namespace, name string) (*eventtrigger.EventTrigger, error) {
+	var trigger eventtrigger.EventTrigger
+	if err := decodeObject(r, &trigger); err != nil {
+		return nil, err
+	}
+	if namespace != "" {
+		trigger.Namespace = namespace
+	}
+	if name != "" {
+		trigger.Name = name
+	}
+	if err := podyaml.DefaultAndValidateEventTrigger(&trigger); err != nil {
+		return nil, err
+	}
+	return &trigger, nil
+}
+
+func readWorkflow(r io.Reader, namespace, name string) (*workflow.Workflow, error) {
+	var wf workflow.Workflow
+	if err := decodeObject(r, &wf); err != nil {
+		return nil, err
+	}
+	if namespace != "" {
+		wf.Namespace = namespace
+	}
+	if name != "" {
+		wf.Name = name
+	}
+	if err := podyaml.DefaultAndValidateWorkflow(&wf); err != nil {
+		return nil, err
+	}
+	return &wf, nil
+}
+
 func (s *Server) syncServices(ctx context.Context) error {
 	ctrl := captain.NewServiceController(s.pods, s.services)
 	return ctrl.Sync(ctx)
@@ -1097,6 +1435,33 @@ func sortReplicaSets(replicaSets []*replicaset.ReplicaSet) {
 	})
 }
 
+func sortFunctions(functions []*function.Function) {
+	sort.Slice(functions, func(i, j int) bool {
+		if functions[i].Namespace == functions[j].Namespace {
+			return functions[i].Name < functions[j].Name
+		}
+		return functions[i].Namespace < functions[j].Namespace
+	})
+}
+
+func sortEventTriggers(triggers []*eventtrigger.EventTrigger) {
+	sort.Slice(triggers, func(i, j int) bool {
+		if triggers[i].Namespace == triggers[j].Namespace {
+			return triggers[i].Name < triggers[j].Name
+		}
+		return triggers[i].Namespace < triggers[j].Namespace
+	})
+}
+
+func sortWorkflows(workflows []*workflow.Workflow) {
+	sort.Slice(workflows, func(i, j int) bool {
+		if workflows[i].Namespace == workflows[j].Namespace {
+			return workflows[i].Name < workflows[j].Name
+		}
+		return workflows[i].Namespace < workflows[j].Namespace
+	})
+}
+
 func sortHPAs(hpas []*hpa.HorizontalPodAutoscaler) {
 	sort.Slice(hpas, func(i, j int) bool {
 		if hpas[i].Namespace == hpas[j].Namespace {
@@ -1153,6 +1518,18 @@ func writeStoreError(w http.ResponseWriter, err error, resource, name string) {
 	case errors.Is(err, store.ErrHPANotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
 	case errors.Is(err, store.ErrHPAAlreadyExists):
+		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
+	case errors.Is(err, store.ErrFunctionNotFound):
+		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
+	case errors.Is(err, store.ErrFunctionAlreadyExists):
+		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
+	case errors.Is(err, store.ErrEventTriggerNotFound):
+		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
+	case errors.Is(err, store.ErrEventTriggerAlreadyExists):
+		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
+	case errors.Is(err, store.ErrWorkflowNotFound):
+		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
+	case errors.Is(err, store.ErrWorkflowAlreadyExists):
 		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
 	case errors.Is(err, store.ErrNodeNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))

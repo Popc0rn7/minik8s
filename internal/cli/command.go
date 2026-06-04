@@ -13,11 +13,14 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"minik8s/internal/cliui"
+	"minik8s/internal/eventtrigger"
+	"minik8s/internal/function"
 	"minik8s/internal/hpa"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
+	"minik8s/internal/workflow"
 )
 
 // NewRootCommand builds the Cobra command tree for minik8s.
@@ -51,6 +54,8 @@ func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 	root.AddCommand(newGetCommand(app, out, bind))
 	root.AddCommand(newDeleteCommand(app, out, bind))
 	root.AddCommand(newDescribeCommand(app, out, bind))
+	root.AddCommand(newInvokeCommand(app, out, bind))
+	root.AddCommand(newPublishCommand(app, out))
 	root.AddCommand(newAPIResourcesCommand(app, out, bind))
 	root.AddCommand(newVersionCommand(app, out, bind))
 	root.AddCommand(newDoctorCommand(app, out))
@@ -60,6 +65,38 @@ func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 	root.AddCommand(newBridgeCommand(app, out))
 	root.AddCommand(newSailerCommand(app, out))
 	return root
+}
+
+func newPublishCommand(app *App, out io.Writer) *cobra.Command {
+	var data string
+	cmd := &cobra.Command{
+		Use:   "publish <subject>",
+		Short: "Publish a message to the configured NATS subject",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.publishNATS(cmd.Context(), args[0], data, out)
+		},
+	}
+	cmd.Flags().StringVar(&data, "data", "", "Message payload")
+	return cmd
+}
+
+func newInvokeCommand(app *App, out io.Writer, bind func()) *cobra.Command {
+	var data string
+	cmd := &cobra.Command{
+		Use:   "invoke function <name>",
+		Short: "Invoke a serverless function",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			bind()
+			if args[0] != "function" && args[0] != "fn" {
+				return fmt.Errorf("invoke supports function")
+			}
+			return app.invokeFunction(cmd.Context(), args[1], data, out)
+		},
+	}
+	cmd.Flags().StringVar(&data, "data", "", "Invocation payload")
+	return cmd
 }
 
 func newApplyCommand(app *App, out io.Writer, bind func()) *cobra.Command {
@@ -127,8 +164,20 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 				if err := app.delete(cmd.Context(), []string{"hpa", ref.name, "-n", app.namespace}, out); err != nil {
 					return err
 				}
+			case resourceFunctions:
+				if err := app.delete(cmd.Context(), []string{"function", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
+			case resourceEventTriggers:
+				if err := app.delete(cmd.Context(), []string{"eventtrigger", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
+			case resourceWorkflows:
+				if err := app.delete(cmd.Context(), []string{"workflow", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
 			default:
-				return fmt.Errorf("delete supports pods, services, replicasets, and hpas")
+				return fmt.Errorf("delete supports pods, services, replicasets, hpas, functions, eventtriggers, and workflows")
 			}
 			return nil
 		},
@@ -399,11 +448,14 @@ func newSailerCommand(app *App, out io.Writer) *cobra.Command {
 type resourceName string
 
 const (
-	resourcePods        resourceName = "pods"
-	resourceServices    resourceName = "services"
-	resourceReplicaSets resourceName = "replicasets"
-	resourceHPAs        resourceName = "horizontalpodautoscalers"
-	resourceNodes       resourceName = "nodes"
+	resourcePods          resourceName = "pods"
+	resourceServices      resourceName = "services"
+	resourceReplicaSets   resourceName = "replicasets"
+	resourceHPAs          resourceName = "horizontalpodautoscalers"
+	resourceNodes         resourceName = "nodes"
+	resourceFunctions     resourceName = "functions"
+	resourceEventTriggers resourceName = "eventtriggers"
+	resourceWorkflows     resourceName = "workflows"
 )
 
 type resourceRef struct {
@@ -446,6 +498,12 @@ func normalizeResource(resource string) (resourceName, error) {
 		return resourceHPAs, nil
 	case "node", "nodes", "no":
 		return resourceNodes, nil
+	case "function", "functions", "fn":
+		return resourceFunctions, nil
+	case "eventtrigger", "eventtriggers", "trigger", "triggers":
+		return resourceEventTriggers, nil
+	case "workflow", "workflows", "wf":
+		return resourceWorkflows, nil
 	default:
 		return "", fmt.Errorf("unsupported resource %q", resource)
 	}
@@ -557,6 +615,66 @@ func (a *App) getResource(ctx context.Context, ref resourceRef, output string, o
 			return writeObject(out, output, map[string]any{"kind": "NodeList", "apiVersion": "v1", "items": nodes})
 		}
 		return writeNodeTable(out, nodes)
+	case resourceFunctions:
+		if ref.name != "" {
+			fn, err := client.GetFunction(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, fn)
+			}
+			return writeFunctionTable(out, []*function.Function{fn})
+		}
+		functions, err := client.ListFunctions(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortFunctionList(functions)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "FunctionList", "apiVersion": "v1", "items": functions})
+		}
+		return writeFunctionTable(out, functions)
+	case resourceEventTriggers:
+		if ref.name != "" {
+			trigger, err := client.GetEventTrigger(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, trigger)
+			}
+			return writeEventTriggerTable(out, []*eventtrigger.EventTrigger{trigger})
+		}
+		triggers, err := client.ListEventTriggers(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortEventTriggerList(triggers)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "EventTriggerList", "apiVersion": "v1", "items": triggers})
+		}
+		return writeEventTriggerTable(out, triggers)
+	case resourceWorkflows:
+		if ref.name != "" {
+			wf, err := client.GetWorkflow(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, wf)
+			}
+			return writeWorkflowTable(out, []*workflow.Workflow{wf})
+		}
+		workflows, err := client.ListWorkflows(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortWorkflowList(workflows)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "WorkflowList", "apiVersion": "v1", "items": workflows})
+		}
+		return writeWorkflowTable(out, workflows)
 	default:
 		return fmt.Errorf("unsupported resource %q", ref.resource)
 	}
@@ -598,6 +716,24 @@ func (a *App) describeResource(ctx context.Context, ref resourceRef, out io.Writ
 			return err
 		}
 		return describeNode(out, n)
+	case resourceFunctions:
+		fn, err := client.GetFunction(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeFunction(out, fn)
+	case resourceEventTriggers:
+		trigger, err := client.GetEventTrigger(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeEventTrigger(out, trigger)
+	case resourceWorkflows:
+		wf, err := client.GetWorkflow(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeWorkflow(out, wf)
 	default:
 		return fmt.Errorf("unsupported resource %q", ref.resource)
 	}
@@ -665,6 +801,33 @@ func sortHPAList(hpas []*hpa.HorizontalPodAutoscaler) {
 func sortNodeList(nodes []node.Node) {
 	sort.Slice(nodes, func(i, j int) bool {
 		return nodes[i].Name() < nodes[j].Name()
+	})
+}
+
+func sortFunctionList(functions []*function.Function) {
+	sort.Slice(functions, func(i, j int) bool {
+		if functions[i].Namespace == functions[j].Namespace {
+			return functions[i].Name < functions[j].Name
+		}
+		return functions[i].Namespace < functions[j].Namespace
+	})
+}
+
+func sortEventTriggerList(triggers []*eventtrigger.EventTrigger) {
+	sort.Slice(triggers, func(i, j int) bool {
+		if triggers[i].Namespace == triggers[j].Namespace {
+			return triggers[i].Name < triggers[j].Name
+		}
+		return triggers[i].Namespace < triggers[j].Namespace
+	})
+}
+
+func sortWorkflowList(workflows []*workflow.Workflow) {
+	sort.Slice(workflows, func(i, j int) bool {
+		if workflows[i].Namespace == workflows[j].Namespace {
+			return workflows[i].Name < workflows[j].Name
+		}
+		return workflows[i].Namespace < workflows[j].Namespace
 	})
 }
 
@@ -813,6 +976,79 @@ func writeNodeTable(out io.Writer, nodes []node.Node) error {
 	return nil
 }
 
+func writeFunctionTable(out io.Writer, functions []*function.Function) error {
+	if err := writef(out, "%s %s %s %s %s\n",
+		cliui.PadRight("FUNCTION", 31),
+		cliui.PadRight("RUNTIME", 12),
+		cliui.PadRight("STATUS", 12),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
+		return err
+	}
+	for _, fn := range functions {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[fn]"), fn.Name)
+		if err := writef(out, "%s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(fn.Spec.Runtime, 12),
+			cliui.PadRight(emptyDash(fn.Status.Phase), 12),
+			cliui.PadRight(fn.Namespace, 14),
+			formatLabels(fn.Labels),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeEventTriggerTable(out io.Writer, triggers []*eventtrigger.EventTrigger) error {
+	if err := writef(out, "%s %s %s %s %s\n",
+		cliui.PadRight("EVENTTRIGGER", 31),
+		cliui.PadRight("SUBJECT", 24),
+		cliui.PadRight("FUNCTION", 18),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
+		return err
+	}
+	for _, trigger := range triggers {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[trigger]"), trigger.Name)
+		if err := writef(out, "%s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(trigger.Spec.Subject, 24),
+			cliui.PadRight(trigger.Spec.FunctionRef.Name, 18),
+			cliui.PadRight(trigger.Namespace, 14),
+			formatLabels(trigger.Labels),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeWorkflowTable(out io.Writer, workflows []*workflow.Workflow) error {
+	if err := writef(out, "%s %s %s %s\n",
+		cliui.PadRight("WORKFLOW", 31),
+		cliui.PadRight("STEPS", 8),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
+		return err
+	}
+	for _, wf := range workflows {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[wf]"), wf.Name)
+		if err := writef(out, "%s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(fmt.Sprintf("%d", len(wf.Spec.Steps)), 8),
+			cliui.PadRight(wf.Namespace, 14),
+			formatLabels(wf.Labels),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func describePod(out io.Writer, p *pod.Pod) error {
 	lines := []string{
 		fmt.Sprintf("Name: %s", p.Name),
@@ -908,6 +1144,60 @@ func describeNode(out io.Writer, n *node.Node) error {
 		fmt.Sprintf("LastHeartbeat: %s", formatNodeLastHeartbeat(n.Status.LastHeartbeat)),
 		fmt.Sprintf("Age: %s", formatNodeAge(*n)),
 		fmt.Sprintf("Labels: %s", strings.Join(labels, ",")),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func describeFunction(out io.Writer, fn *function.Function) error {
+	lines := []string{
+		fmt.Sprintf("Name: %s", fn.Name),
+		fmt.Sprintf("Namespace: %s", fn.Namespace),
+		fmt.Sprintf("Runtime: %s", fn.Spec.Runtime),
+		fmt.Sprintf("Handler: %s", fn.Spec.Handler),
+		fmt.Sprintf("Status: %s", emptyDash(fn.Status.Phase)),
+		fmt.Sprintf("Labels: %s", formatLabels(fn.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func describeEventTrigger(out io.Writer, trigger *eventtrigger.EventTrigger) error {
+	lines := []string{
+		fmt.Sprintf("Name: %s", trigger.Name),
+		fmt.Sprintf("Namespace: %s", trigger.Namespace),
+		fmt.Sprintf("Subject: %s", trigger.Spec.Subject),
+		fmt.Sprintf("Function: %s", trigger.Spec.FunctionRef.Name),
+		fmt.Sprintf("Active: %t", trigger.Status.Active),
+		fmt.Sprintf("Labels: %s", formatLabels(trigger.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func describeWorkflow(out io.Writer, wf *workflow.Workflow) error {
+	steps := make([]string, 0, len(wf.Spec.Steps))
+	for _, step := range wf.Spec.Steps {
+		steps = append(steps, fmt.Sprintf("%s=%s", step.Name, step.FunctionRef.Name))
+	}
+	lines := []string{
+		fmt.Sprintf("Name: %s", wf.Name),
+		fmt.Sprintf("Namespace: %s", wf.Namespace),
+		fmt.Sprintf("Steps: %s", strings.Join(steps, ",")),
+		fmt.Sprintf("Status: %s", emptyDash(wf.Status.Phase)),
+		fmt.Sprintf("Labels: %s", formatLabels(wf.Labels)),
 	}
 	for _, line := range lines {
 		if err := writef(out, "%s\n", line); err != nil {

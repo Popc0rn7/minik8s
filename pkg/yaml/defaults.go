@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	"minik8s/internal/eventtrigger"
+	"minik8s/internal/function"
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
+	"minik8s/internal/workflow"
 )
 
 // DefaultAndValidatePod applies Minik8s Pod defaults and validates the fields
@@ -162,6 +165,92 @@ func DefaultAndValidateReplicaSet(rs *replicaset.ReplicaSet) error {
 	}
 	if err := DefaultAndValidatePod(template); err != nil {
 		return fmt.Errorf("spec.template: %w", err)
+	}
+	return nil
+}
+
+func DefaultAndValidateFunction(fn *function.Function) error {
+	if fn == nil {
+		return fmt.Errorf("function is nil")
+	}
+	if fn.Kind != "" && fn.Kind != "Function" {
+		return fmt.Errorf("kind must be Function, got %q", fn.Kind)
+	}
+	if fn.Kind == "" {
+		fn.Kind = "Function"
+	}
+	if fn.Namespace == "" {
+		fn.Namespace = "default"
+	}
+	if strings.TrimSpace(fn.Name) == "" {
+		return fmt.Errorf("metadata.name is required")
+	}
+	if strings.TrimSpace(fn.Spec.Runtime) == "" {
+		fn.Spec.Runtime = "python"
+	}
+	if fn.Spec.Runtime != "python" {
+		return fmt.Errorf("spec.runtime %q is not supported", fn.Spec.Runtime)
+	}
+	if strings.TrimSpace(fn.Spec.Handler) == "" {
+		return fmt.Errorf("spec.handler is required")
+	}
+	if strings.TrimSpace(fn.Spec.Code) == "" {
+		return fmt.Errorf("spec.code is required")
+	}
+	return nil
+}
+
+func DefaultAndValidateEventTrigger(trigger *eventtrigger.EventTrigger) error {
+	if trigger == nil {
+		return fmt.Errorf("eventtrigger is nil")
+	}
+	if trigger.Kind != "" && trigger.Kind != "EventTrigger" {
+		return fmt.Errorf("kind must be EventTrigger, got %q", trigger.Kind)
+	}
+	if trigger.Kind == "" {
+		trigger.Kind = "EventTrigger"
+	}
+	if trigger.Namespace == "" {
+		trigger.Namespace = "default"
+	}
+	if strings.TrimSpace(trigger.Name) == "" {
+		return fmt.Errorf("metadata.name is required")
+	}
+	if strings.TrimSpace(trigger.Spec.Subject) == "" {
+		return fmt.Errorf("spec.subject is required")
+	}
+	if strings.TrimSpace(trigger.Spec.FunctionRef.Name) == "" {
+		return fmt.Errorf("spec.functionRef.name is required")
+	}
+	return nil
+}
+
+func DefaultAndValidateWorkflow(wf *workflow.Workflow) error {
+	if wf == nil {
+		return fmt.Errorf("workflow is nil")
+	}
+	if wf.Kind != "" && wf.Kind != "Workflow" {
+		return fmt.Errorf("kind must be Workflow, got %q", wf.Kind)
+	}
+	if wf.Kind == "" {
+		wf.Kind = "Workflow"
+	}
+	if wf.Namespace == "" {
+		wf.Namespace = "default"
+	}
+	if strings.TrimSpace(wf.Name) == "" {
+		return fmt.Errorf("metadata.name is required")
+	}
+	if len(wf.Spec.Steps) == 0 {
+		return fmt.Errorf("spec.steps must contain at least one step")
+	}
+	for i, step := range wf.Spec.Steps {
+		if strings.TrimSpace(step.Name) == "" {
+			return fmt.Errorf("spec.steps[%d].name is required", i)
+		}
+		if strings.TrimSpace(step.FunctionRef.Name) == "" {
+			return fmt.Errorf("spec.steps[%d].functionRef.name is required", i)
+		}
 	}
 	return nil
 }

@@ -18,11 +18,13 @@ import (
 	bridge "minik8s/internal/bridge"
 	bridgeCaptain "minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
+	bridgeServerless "minik8s/internal/bridge/serverless"
 	"minik8s/internal/cliui"
 	"minik8s/internal/cni"
 	"minik8s/internal/hpa"
 	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
+	"minik8s/internal/natslite"
 	"minik8s/internal/netagent"
 	"minik8s/internal/netregistry"
 	"minik8s/internal/node"
@@ -36,36 +38,42 @@ import (
 
 // Config contains CLI dependencies.
 type Config struct {
-	Runtime         runtime.ContainerRuntime
-	Store           store.PodStore
-	ServiceStore    store.ServiceStore
-	ReplicaSetStore store.ReplicaSetStore
-	HPAStore        store.HPAStore
-	MetricsStore    store.MetricsStore
-	NodeStore       store.NodeStore
-	Bridge          *bridge.Bridge
-	Network         nodeSailer.PodNetworkManager
-	ServiceProxy    kubeproxy.Proxy
-	HTTPClient      *http.Client
-	NetRunner       netagent.Runner
+	Runtime           runtime.ContainerRuntime
+	Store             store.PodStore
+	ServiceStore      store.ServiceStore
+	ReplicaSetStore   store.ReplicaSetStore
+	HPAStore          store.HPAStore
+	MetricsStore      store.MetricsStore
+	NodeStore         store.NodeStore
+	FunctionStore     store.FunctionStore
+	EventTriggerStore store.EventTriggerStore
+	WorkflowStore     store.WorkflowStore
+	Bridge            *bridge.Bridge
+	Network           nodeSailer.PodNetworkManager
+	ServiceProxy      kubeproxy.Proxy
+	HTTPClient        *http.Client
+	NetRunner         netagent.Runner
 }
 
 // App is the Minik8s command-line application.
 type App struct {
-	runtime         runtime.ContainerRuntime
-	store           store.PodStore
-	serviceStore    store.ServiceStore
-	replicaSetStore store.ReplicaSetStore
-	hpaStore        store.HPAStore
-	metricsStore    store.MetricsStore
-	nodeStore       store.NodeStore
-	controlBridge   *bridge.Bridge
-	network         nodeSailer.PodNetworkManager
-	serviceProxy    kubeproxy.Proxy
-	httpClient      *http.Client
-	netRunner       netagent.Runner
-	server          string
-	namespace       string
+	runtime           runtime.ContainerRuntime
+	store             store.PodStore
+	serviceStore      store.ServiceStore
+	replicaSetStore   store.ReplicaSetStore
+	hpaStore          store.HPAStore
+	metricsStore      store.MetricsStore
+	nodeStore         store.NodeStore
+	functionStore     store.FunctionStore
+	eventTriggerStore store.EventTriggerStore
+	workflowStore     store.WorkflowStore
+	controlBridge     *bridge.Bridge
+	network           nodeSailer.PodNetworkManager
+	serviceProxy      kubeproxy.Proxy
+	httpClient        *http.Client
+	netRunner         netagent.Runner
+	server            string
+	namespace         string
 }
 
 // New creates an App.
@@ -94,32 +102,50 @@ func New(config Config) *App {
 	if nodeStore == nil {
 		nodeStore = store.NewInMemoryNodeStore()
 	}
+	functionStore := config.FunctionStore
+	if functionStore == nil {
+		functionStore = store.NewInMemoryFunctionStore()
+	}
+	eventTriggerStore := config.EventTriggerStore
+	if eventTriggerStore == nil {
+		eventTriggerStore = store.NewInMemoryEventTriggerStore()
+	}
+	workflowStore := config.WorkflowStore
+	if workflowStore == nil {
+		workflowStore = store.NewInMemoryWorkflowStore()
+	}
 	serviceProxy := config.ServiceProxy
 	controlBridge := config.Bridge
 	if controlBridge == nil {
 		controlBridge = bridge.New(bridge.Config{
-			PodStore:        config.Store,
-			ServiceStore:    serviceStore,
-			ReplicaSetStore: replicaSetStore,
-			HPAStore:        hpaStore,
-			MetricsStore:    metricsStore,
-			NodeStore:       nodeStore,
+			PodStore:          config.Store,
+			ServiceStore:      serviceStore,
+			ReplicaSetStore:   replicaSetStore,
+			HPAStore:          hpaStore,
+			MetricsStore:      metricsStore,
+			NodeStore:         nodeStore,
+			FunctionStore:     functionStore,
+			EventTriggerStore: eventTriggerStore,
+			WorkflowStore:     workflowStore,
 		})
 	}
 	return &App{
-		runtime:         config.Runtime,
-		store:           config.Store,
-		serviceStore:    serviceStore,
-		replicaSetStore: replicaSetStore,
-		hpaStore:        hpaStore,
-		metricsStore:    metricsStore,
-		nodeStore:       nodeStore,
-		controlBridge:   controlBridge,
-		network:         network,
-		serviceProxy:    serviceProxy,
-		httpClient:      config.HTTPClient,
-		netRunner:       config.NetRunner,
-		namespace:       "default",
+		runtime:           config.Runtime,
+		store:             config.Store,
+		serviceStore:      serviceStore,
+		replicaSetStore:   replicaSetStore,
+		hpaStore:          hpaStore,
+		metricsStore:      metricsStore,
+		nodeStore:         nodeStore,
+		functionStore:     functionStore,
+		eventTriggerStore: eventTriggerStore,
+		workflowStore:     workflowStore,
+		controlBridge:     controlBridge,
+		network:           network,
+		serviceProxy:      serviceProxy,
+		httpClient:        config.HTTPClient,
+		netRunner:         config.NetRunner,
+		namespace:         "default",
 	}
 }
 
@@ -178,6 +204,39 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return writes(out, cliui.SuccessLine("replicaset/%s created (%d/%d)", updated.Name, updated.Status.Replicas, updated.Spec.Replicas))
 	}
+	if kind == "Function" {
+		fn, err := podyaml.LoadFunctionFromFile(path)
+		if err != nil {
+			return err
+		}
+		updated, err := client.ApplyFunction(ctx, fn)
+		if err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("function/%s created (%s)", updated.Name, updated.Spec.Runtime))
+	}
+	if kind == "EventTrigger" {
+		trigger, err := podyaml.LoadEventTriggerFromFile(path)
+		if err != nil {
+			return err
+		}
+		updated, err := client.ApplyEventTrigger(ctx, trigger)
+		if err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("eventtrigger/%s created (%s)", updated.Name, updated.Spec.Subject))
+	}
+	if kind == "Workflow" {
+		wf, err := podyaml.LoadWorkflowFromFile(path)
+		if err != nil {
+			return err
+		}
+		updated, err := client.ApplyWorkflow(ctx, wf)
+		if err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("workflow/%s created (%d steps)", updated.Name, len(updated.Spec.Steps)))
+	}
 	if kind == hpa.Kind {
 		autoscaler, err := podyaml.LoadHPAFromFile(path)
 		if err != nil {
@@ -221,7 +280,7 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	if len(args) < 2 {
-		return fmt.Errorf("usage: minik8s delete pod|service|replicaset|hpa <name> [-n namespace]")
+		return fmt.Errorf("usage: minik8s delete pod|service|replicaset|hpa|function|eventtrigger|workflow <name> [-n namespace]")
 	}
 	if args[0] == "service" || args[0] == "svc" {
 		name := args[1]
@@ -247,8 +306,32 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return writes(out, cliui.SuccessLine("hpa/%s deleted", name))
 	}
+	if args[0] == "function" || args[0] == "functions" || args[0] == "fn" {
+		name := args[1]
+		namespace := namespaceFlag(args[2:])
+		if err := client.DeleteFunction(ctx, name, namespace); err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("function/%s deleted", name))
+	}
+	if args[0] == "eventtrigger" || args[0] == "eventtriggers" || args[0] == "trigger" || args[0] == "triggers" {
+		name := args[1]
+		namespace := namespaceFlag(args[2:])
+		if err := client.DeleteEventTrigger(ctx, name, namespace); err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("eventtrigger/%s deleted", name))
+	}
+	if args[0] == "workflow" || args[0] == "workflows" || args[0] == "wf" {
+		name := args[1]
+		namespace := namespaceFlag(args[2:])
+		if err := client.DeleteWorkflow(ctx, name, namespace); err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("workflow/%s deleted", name))
+	}
 	if args[0] != "pod" {
-		return fmt.Errorf("usage: minik8s delete pod|service|replicaset|hpa <name> [-n namespace]")
+		return fmt.Errorf("usage: minik8s delete pod|service|replicaset|hpa|function|eventtrigger|workflow <name> [-n namespace]")
 	}
 	name := args[1]
 	namespace := namespaceFlag(args[2:])
@@ -266,9 +349,32 @@ func (a *App) controlPlaneClient() (*controlPlaneClient, error) {
 	return newControlPlaneClient(server, a.httpClient)
 }
 
+func (a *App) invokeFunction(ctx context.Context, name, data string, out io.Writer) error {
+	client, err := a.controlPlaneClient()
+	if err != nil {
+		return err
+	}
+	resp, err := client.InvokeFunction(ctx, name, a.namespace, data)
+	if err != nil {
+		return err
+	}
+	if resp.Phase == "Failed" {
+		return writes(out, cliui.WarnLine("function/%s failed: %s", name, resp.Error))
+	}
+	return writes(out, cliui.SuccessLine("function/%s invoked output=%s", name, resp.Output))
+}
+
+func (a *App) publishNATS(ctx context.Context, subject, data string, out io.Writer) error {
+	natsURL := os.Getenv("MINIK8S_NATS_URL")
+	if err := natslite.Publish(ctx, natsURL, subject, []byte(data)); err != nil {
+		return err
+	}
+	return writes(out, cliui.SuccessLine("published subject=%s bytes=%d", subject, len(data)))
+}
+
 func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minik8s doctor docker|network|logbook")
+		return fmt.Errorf("usage: minik8s doctor docker|network|logbook|serverless")
 	}
 	if args[0] == "network" {
 		return a.doctorNetwork(out)
@@ -276,8 +382,11 @@ func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 	if args[0] == "logbook" {
 		return a.doctorLogbook(ctx, out)
 	}
+	if args[0] == "serverless" {
+		return a.doctorServerless(ctx, out)
+	}
 	if args[0] != "docker" {
-		return fmt.Errorf("usage: minik8s doctor docker|network|logbook")
+		return fmt.Errorf("usage: minik8s doctor docker|network|logbook|serverless")
 	}
 	minilog.Info("doctor-docker", "start args=%v", args)
 	endpoint := dockerruntime.ResolveDockerEndpoint()
@@ -314,6 +423,22 @@ func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("pull: ok image=%s", imageName))
 	}
 	return nil
+}
+
+func (a *App) doctorServerless(ctx context.Context, out io.Writer) error {
+	natsURL := os.Getenv("MINIK8S_NATS_URL")
+	if strings.TrimSpace(natsURL) == "" {
+		return writes(out, cliui.WarnLine("serverless: MINIK8S_NATS_URL is not set; NATS event triggers are disabled"))
+	}
+	if err := writes(out, cliui.InfoLine("nats: %s", natsURL)); err != nil {
+		return err
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := natslite.Probe(probeCtx, natsURL); err != nil {
+		return writes(out, cliui.WarnLine("serverless: NATS failed %v", err))
+	}
+	return writes(out, cliui.SuccessLine("serverless: nats ok"))
 }
 
 func (a *App) doctorLogbook(ctx context.Context, out io.Writer) error {
@@ -862,6 +987,9 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	}
 	if options.hpaSyncInterval > 0 {
 		go a.runHPASyncLoop(ctx, options.hpaSyncInterval)
+	}
+	if natsURL := strings.TrimSpace(os.Getenv("MINIK8S_NATS_URL")); natsURL != "" {
+		go bridgeServerless.NewController(a.controlBridge.FunctionStore(), a.controlBridge.EventTriggerStore(), natsURL).Run(ctx, 5*time.Second)
 	}
 	go a.runNodeLivenessLoop(ctx, 5*time.Second)
 	if err := writes(out, cliui.InfoLine("bridge listening on %s", options.listen)); err != nil {
@@ -1432,6 +1560,27 @@ func DefaultNodeStatePath() string {
 		return filepath.Join(dir, "nodes.json")
 	}
 	return filepath.Join(".minik8s", "state", "nodes.json")
+}
+
+func DefaultFunctionStatePath() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "functions.json")
+	}
+	return filepath.Join(".minik8s", "state", "functions.json")
+}
+
+func DefaultEventTriggerStatePath() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "eventtriggers.json")
+	}
+	return filepath.Join(".minik8s", "state", "eventtriggers.json")
+}
+
+func DefaultWorkflowStatePath() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "workflows.json")
+	}
+	return filepath.Join(".minik8s", "state", "workflows.json")
 }
 
 // DefaultCNIBinDir returns the default CNI plugin directory.

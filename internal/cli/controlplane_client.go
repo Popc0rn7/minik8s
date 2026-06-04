@@ -11,11 +11,14 @@ import (
 	"path"
 	"strings"
 
+	"minik8s/internal/eventtrigger"
+	"minik8s/internal/function"
 	"minik8s/internal/hpa"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
+	"minik8s/internal/workflow"
 )
 
 type controlPlaneClient struct {
@@ -166,6 +169,144 @@ func (c *controlPlaneClient) GetReplicaSet(ctx context.Context, name, namespace 
 
 func (c *controlPlaneClient) DeleteReplicaSet(ctx context.Context, name, namespace string) error {
 	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "replicasets", name))
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
+}
+
+func (c *controlPlaneClient) ApplyFunction(ctx context.Context, fn *function.Function) (*function.Function, error) {
+	created, err := c.createFunction(ctx, fn)
+	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {
+		return c.updateFunction(ctx, fn)
+	}
+	return created, err
+}
+
+func (c *controlPlaneClient) ListFunctions(ctx context.Context, namespace string) ([]*function.Function, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "functions"))
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []*function.Function `json:"items"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (c *controlPlaneClient) GetFunction(ctx context.Context, name, namespace string) (*function.Function, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "functions", name))
+	if err != nil {
+		return nil, err
+	}
+	var fn function.Function
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &fn); err != nil {
+		return nil, err
+	}
+	return &fn, nil
+}
+
+func (c *controlPlaneClient) DeleteFunction(ctx context.Context, name, namespace string) error {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "functions", name))
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
+}
+
+func (c *controlPlaneClient) InvokeFunction(ctx context.Context, name, namespace, data string) (*function.InvocationResponse, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "functions", name, "invoke"))
+	if err != nil {
+		return nil, err
+	}
+	var resp function.InvocationResponse
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, function.InvocationRequest{Data: data}, http.StatusOK, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *controlPlaneClient) ApplyEventTrigger(ctx context.Context, trigger *eventtrigger.EventTrigger) (*eventtrigger.EventTrigger, error) {
+	created, err := c.createEventTrigger(ctx, trigger)
+	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {
+		return c.updateEventTrigger(ctx, trigger)
+	}
+	return created, err
+}
+
+func (c *controlPlaneClient) ListEventTriggers(ctx context.Context, namespace string) ([]*eventtrigger.EventTrigger, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "eventtriggers"))
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []*eventtrigger.EventTrigger `json:"items"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (c *controlPlaneClient) GetEventTrigger(ctx context.Context, name, namespace string) (*eventtrigger.EventTrigger, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "eventtriggers", name))
+	if err != nil {
+		return nil, err
+	}
+	var trigger eventtrigger.EventTrigger
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &trigger); err != nil {
+		return nil, err
+	}
+	return &trigger, nil
+}
+
+func (c *controlPlaneClient) DeleteEventTrigger(ctx context.Context, name, namespace string) error {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "eventtriggers", name))
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
+}
+
+func (c *controlPlaneClient) ApplyWorkflow(ctx context.Context, wf *workflow.Workflow) (*workflow.Workflow, error) {
+	created, err := c.createWorkflow(ctx, wf)
+	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {
+		return c.updateWorkflow(ctx, wf)
+	}
+	return created, err
+}
+
+func (c *controlPlaneClient) ListWorkflows(ctx context.Context, namespace string) ([]*workflow.Workflow, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "workflows"))
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []*workflow.Workflow `json:"items"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (c *controlPlaneClient) GetWorkflow(ctx context.Context, name, namespace string) (*workflow.Workflow, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "workflows", name))
+	if err != nil {
+		return nil, err
+	}
+	var wf workflow.Workflow
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &wf); err != nil {
+		return nil, err
+	}
+	return &wf, nil
+}
+
+func (c *controlPlaneClient) DeleteWorkflow(ctx context.Context, name, namespace string) error {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "workflows", name))
 	if err != nil {
 		return err
 	}
@@ -363,6 +504,78 @@ func (c *controlPlaneClient) updateReplicaSet(ctx context.Context, rs *replicase
 	}
 	var updated replicaset.ReplicaSet
 	if err := c.doJSON(ctx, http.MethodPut, endpoint, rs, http.StatusOK, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (c *controlPlaneClient) createFunction(ctx context.Context, fn *function.Function) (*function.Function, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(fn.Namespace), "functions"))
+	if err != nil {
+		return nil, err
+	}
+	var created function.Function
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, fn, http.StatusCreated, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (c *controlPlaneClient) updateFunction(ctx context.Context, fn *function.Function) (*function.Function, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(fn.Namespace), "functions", fn.Name))
+	if err != nil {
+		return nil, err
+	}
+	var updated function.Function
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, fn, http.StatusOK, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (c *controlPlaneClient) createEventTrigger(ctx context.Context, trigger *eventtrigger.EventTrigger) (*eventtrigger.EventTrigger, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(trigger.Namespace), "eventtriggers"))
+	if err != nil {
+		return nil, err
+	}
+	var created eventtrigger.EventTrigger
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, trigger, http.StatusCreated, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (c *controlPlaneClient) updateEventTrigger(ctx context.Context, trigger *eventtrigger.EventTrigger) (*eventtrigger.EventTrigger, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(trigger.Namespace), "eventtriggers", trigger.Name))
+	if err != nil {
+		return nil, err
+	}
+	var updated eventtrigger.EventTrigger
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, trigger, http.StatusOK, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (c *controlPlaneClient) createWorkflow(ctx context.Context, wf *workflow.Workflow) (*workflow.Workflow, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(wf.Namespace), "workflows"))
+	if err != nil {
+		return nil, err
+	}
+	var created workflow.Workflow
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, wf, http.StatusCreated, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (c *controlPlaneClient) updateWorkflow(ctx context.Context, wf *workflow.Workflow) (*workflow.Workflow, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(wf.Namespace), "workflows", wf.Name))
+	if err != nil {
+		return nil, err
+	}
+	var updated workflow.Workflow
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, wf, http.StatusOK, &updated); err != nil {
 		return nil, err
 	}
 	return &updated, nil

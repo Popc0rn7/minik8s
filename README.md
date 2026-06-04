@@ -35,7 +35,7 @@ Service 转发和控制面状态恢复。
 尚未实现或不应作为当前版本承诺：
 
 - DNS 对象、域名解析和同 host 多 path 转发。
-- Serverless Function、Event Trigger、Workflow、scale-to-0。
+- Serverless 的事件 ack/retry、Workflow 自动执行、scale-to-0。
 - PV/PVC 持久化卷、GPU 应用、Security Context。
 - 完整 Kubernetes API machinery，例如 watch、resourceVersion、admission、
   RBAC、EndpointSlice、probe 执行和资源感知调度。
@@ -152,7 +152,7 @@ export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
 | DNS 与转发 | 未实现 | 没有 DNS 对象、DNS server 或 HTTP path gateway。 |
 | 多机部署 | 部分完成 | Node、heartbeat、PodCIDR、简单调度、跨节点网络同步已有；调度不做资源过滤，故障迁移能力有限。 |
 | 容错 | 部分完成 | 控制面状态可持久化，重启后可恢复对象；Node heartbeat 可标记 Unknown；没有完整故障自愈和副本重调度。 |
-| 自选 Serverless | 未实现 | Function、Workflow、Event Trigger、scale-to-0 均未实现。 |
+| 自选 Serverless | 部分完成 | Function/EventTrigger/Workflow 对象、YAML/API/CLI、file/etcd store、HTTP invoke、NATS 订阅触发和 publish/doctor 辅助命令已有；事件 ack/retry、Workflow 自动执行、scale-to-0 未实现。 |
 | 个人 PV/PVC | 未实现 | 尚无 PV/PVC 抽象和多机存储实现。 |
 | 个人 GPU | 未实现 | 尚无 Slurm/GPU job 抽象。 |
 | 个人 Security Context | 未实现 | 尚无 runAsUser、runAsGroup、fsGroup 映射。 |

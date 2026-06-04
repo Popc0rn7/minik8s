@@ -77,11 +77,52 @@ func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
 		{"get", "nodes"},
 		{"get", "rs"},
 		{"delete", "rs", "nginx-rs"},
+		{"get", "functions"},
+		{"delete", "function", "echo"},
 	} {
 		err := app.Run(context.Background(), args, &out)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "MINIK8S_HARBOR is required for apply/get/delete")
 	}
+}
+
+func TestCLIServerlessApplyGetInvokeDelete(t *testing.T) {
+	srv := harbor.New(harbor.Config{
+		PodStore:          store.NewInMemoryPodStore(),
+		NodeStore:         store.NewInMemoryNodeStore(),
+		FunctionStore:     store.NewInMemoryFunctionStore(),
+		EventTriggerStore: store.NewInMemoryEventTriggerStore(),
+		WorkflowStore:     store.NewInMemoryWorkflowStore(),
+	})
+	app := newHTTPTestApp(t, srv, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	path := filepath.Join(t.TempDir(), "function.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`kind: Function
+metadata:
+  name: echo
+spec:
+  runtime: python
+  handler: handler
+  code: |
+    def handler(event):
+      return event
+`), 0o644))
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", path}, &out))
+	assert.Contains(t, out.String(), "function/echo created")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"get", "functions"}, &out))
+	assert.Contains(t, out.String(), "echo")
+	assert.Contains(t, out.String(), "python")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"invoke", "function", "echo", "--data", "hello"}, &out))
+	assert.Contains(t, out.String(), "hello")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"delete", "function", "echo"}, &out))
+	assert.Contains(t, out.String(), "function/echo deleted")
 }
 
 func TestCLIDoctorLogbookWarnsWhenEndpointsUnset(t *testing.T) {
