@@ -1,0 +1,10 @@
+kind: EventTrigger
+apiVersion: v1
+metadata:
+  name: echo-events
+  labels:
+    app: serverless-demo
+spec:
+  subject: minik8s.echo
+  functionRef:
+    name: echo

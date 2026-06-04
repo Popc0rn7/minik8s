@@ -1,0 +1,11 @@
+kind: Workflow
+apiVersion: v1
+metadata:
+  name: echo-chain
+  labels:
+    app: serverless-demo
+spec:
+  steps:
+  - name: echo
+    functionRef:
+      name: echo

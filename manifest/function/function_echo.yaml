@@ -1,0 +1,12 @@
+kind: Function
+apiVersion: v1
+metadata:
+  name: echo
+  labels:
+    app: serverless-demo
+spec:
+  runtime: python
+  handler: handler
+  code: |
+    def handler(event):
+      return event

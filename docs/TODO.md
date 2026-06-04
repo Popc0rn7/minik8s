@@ -88,9 +88,15 @@
 
 ### Serverless 自选功能
 
-- [ ] Function 抽象未实现。
-- [ ] HTTP Trigger、Event Trigger、函数上传/update/invoke 未实现。
-- [ ] Workflow DAG、顺序调用、分支控制未实现。
+- [x] Function 抽象、YAML/API/CLI、file/etcd store 已有最小实现。
+- [x] HTTP invoke 已有最小实现：`invoke function <name> --data ...` 调用内联
+  Python handler。
+- [x] EventTrigger 对象、NATS 订阅触发、publish/doctor 辅助命令已有最小实现；
+  外部 NATS 由 `MINIK8S_NATS_URL` 指定。
+- [x] Workflow 对象、YAML/API/CLI、file/etcd store 已有最小实现。
+- [ ] EventTrigger ack/retry、dead-letter、订阅状态可视化尚未实现。
+- [ ] Workflow DAG 自动执行、顺序调用、分支控制尚未实现。
+- [ ] 函数 zip/代码文件上传、update 的完整语义尚未实现；当前以 YAML 内联代码为主。
 - [ ] scale-to-0、冷启动、并发扩容未实现。
 - [ ] 结合模型类 workload 的复杂应用未实现。
 
