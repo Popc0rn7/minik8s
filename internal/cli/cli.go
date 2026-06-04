@@ -16,6 +16,7 @@ import (
 	"time"
 
 	bridge "minik8s/internal/bridge"
+	"minik8s/internal/bridge/bootstrap"
 	bridgeCaptain "minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
 	bridgeServerless "minik8s/internal/bridge/serverless"
@@ -958,12 +959,18 @@ func parseNetDOptions(args []string) (netDOptions, error) {
 
 type bridgeOptions struct {
 	listen                 string
+	deps                   string
 	serviceSyncInterval    time.Duration
 	replicaSetSyncInterval time.Duration
 	hpaSyncInterval        time.Duration
 	clusterCIDR            string
 	nodeCIDRMaskSize       int
 }
+
+const (
+	bridgeDepsInternal = "internal"
+	bridgeDepsNone     = "none"
+)
 
 func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	options, err := parseBridgeOptions(args)
@@ -1011,8 +1018,117 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	}
 }
 
+func BridgeDependencyMode(args []string) (string, error) {
+	if len(args) == 0 || args[0] != "bridge" {
+		return bridgeDepsNone, nil
+	}
+	options, err := parseBridgeOptions(args[1:])
+	if err != nil {
+		return "", err
+	}
+	return options.deps, nil
+}
+
+func StartBridgeDependencies(ctx context.Context, out io.Writer) (func(), error) {
+	if err := ensureBridgeDependencyPortsFree(); err != nil {
+		return func() {}, err
+	}
+	etcdDir := filepath.Join(filepath.Dir(DefaultStatePath()), "bridge-deps", "etcd")
+	if err := os.MkdirAll(etcdDir, 0o755); err != nil {
+		return func() {}, fmt.Errorf("creating bridge dependency state dir: %w", err)
+	}
+	runtime, err := dockerruntime.NewDockerRuntime()
+	if err != nil {
+		return func() {}, fmt.Errorf("creating docker runtime for bridge dependencies: %w", err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	privateNode := bootstrap.DefaultNode()
+	privateClient := bootstrap.NewPrivatePodClient(privateNode, bootstrap.DependencyPod(etcdDir))
+	k := nodeSailer.New(nodeSailer.Config{
+		Node:     privateNode,
+		Runtime:  runtime,
+		Client:   privateClient,
+		Interval: 2 * time.Second,
+	})
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- k.Run(runCtx)
+	}()
+	cleanup := func() {
+		cancel()
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+		}
+		privateClient.SetPods()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = k.SyncOnce(shutdownCtx)
+		shutdownCancel()
+		_ = runtime.Close()
+	}
+	if err := writes(out, cliui.InfoLine("bridge dependencies starting via private sailer node=%s", bootstrap.DefaultNodeName)); err != nil {
+		cleanup()
+		return func() {}, err
+	}
+	if err := waitForBridgeDependencyPorts(runCtx, errCh, 45*time.Second); err != nil {
+		cleanup()
+		return func() {}, err
+	}
+	if err := writes(out, cliui.SuccessLine("bridge dependencies ready etcd=http://127.0.0.1:2379 nats=nats://127.0.0.1:4222")); err != nil {
+		cleanup()
+		return func() {}, err
+	}
+	return cleanup, nil
+}
+
+func ensureBridgeDependencyPortsFree() error {
+	for _, port := range []string{"2379", "4222"} {
+		ln, err := net.Listen("tcp", "127.0.0.1:"+port)
+		if err != nil {
+			return fmt.Errorf("bridge dependency port %s is already in use", port)
+		}
+		if err := ln.Close(); err != nil {
+			return fmt.Errorf("closing bridge dependency port probe %s: %w", port, err)
+		}
+	}
+	return nil
+}
+
+func waitForBridgeDependencyPorts(ctx context.Context, errCh <-chan error, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if tcpPortReady("127.0.0.1:2379") && tcpPortReady("127.0.0.1:4222") {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-errCh:
+			if err != nil && err != context.Canceled {
+				return fmt.Errorf("private bridge dependency sailer stopped: %w", err)
+			}
+			return fmt.Errorf("private bridge dependency sailer stopped")
+		case <-deadline.C:
+			return fmt.Errorf("timed out waiting for bridge dependency ports 2379 and 4222")
+		case <-ticker.C:
+		}
+	}
+}
+
+func tcpPortReady(address string) bool {
+	conn, err := net.DialTimeout("tcp", address, 250*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 func parseBridgeOptions(args []string) (bridgeOptions, error) {
-	options := bridgeOptions{listen: ":8080", serviceSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24}
+	options := bridgeOptions{listen: ":8080", deps: bridgeDepsInternal, serviceSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -1021,6 +1137,17 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 				return options, fmt.Errorf("missing value for --listen")
 			}
 			options.listen = args[i]
+		case "--deps":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --deps")
+			}
+			switch args[i] {
+			case bridgeDepsInternal, bridgeDepsNone:
+				options.deps = args[i]
+			default:
+				return options, fmt.Errorf("invalid --deps %q: must be internal or none", args[i])
+			}
 		case "--service-sync-interval":
 			i++
 			if i >= len(args) {
@@ -1383,6 +1510,9 @@ func parseSailerOptions(args []string) (sailerOptions, error) {
 	}
 	if options.nodeFile == "" {
 		return options, fmt.Errorf("node yaml is required")
+	}
+	if options.harbor == "" {
+		options.harbor = os.Getenv("MINIK8S_HARBOR")
 	}
 	if options.harbor == "" {
 		return options, fmt.Errorf("--harbor is required")

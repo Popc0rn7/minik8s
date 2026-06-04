@@ -140,6 +140,27 @@ func TestCLIDoctorLogbookWarnsWhenEndpointsUnset(t *testing.T) {
 	assert.Contains(t, out.String(), "MINIK8S_LOGBOOK_ENDPOINTS is not set")
 }
 
+func TestBridgeOptionsDefaultToInternalDependencies(t *testing.T) {
+	options, err := parseBridgeOptions([]string{"--listen", ":18080"})
+
+	require.NoError(t, err)
+	assert.Equal(t, bridgeDepsInternal, options.deps)
+}
+
+func TestBridgeOptionsAllowDisablingDependencies(t *testing.T) {
+	options, err := parseBridgeOptions([]string{"--deps", "none"})
+
+	require.NoError(t, err)
+	assert.Equal(t, bridgeDepsNone, options.deps)
+}
+
+func TestBridgeOptionsRejectUnknownDependencies(t *testing.T) {
+	_, err := parseBridgeOptions([]string{"--deps", "external"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --deps")
+}
+
 func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
@@ -455,6 +476,15 @@ func TestSailerOptionsUseDefaultVXLANConfig(t *testing.T) {
 	assert.Equal(t, 42, options.vxlanID)
 	assert.Equal(t, 4789, options.vxlanPort)
 	assert.Equal(t, "mk8s-vxlan", options.vxlanName)
+}
+
+func TestSailerOptionsUseHarborFromEnvironment(t *testing.T) {
+	t.Setenv("MINIK8S_HARBOR", "http://127.0.0.1:18080")
+
+	options, err := parseSailerOptions([]string{"node-a.yaml"})
+
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:18080", options.harbor)
 }
 
 func TestSailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {

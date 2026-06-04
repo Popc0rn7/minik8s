@@ -3,16 +3,31 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	bridge "minik8s/internal/bridge"
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/cli"
 	"minik8s/internal/cliui"
+	"minik8s/internal/config"
 	dockerruntime "minik8s/internal/runtime/docker"
 )
 
 func main() {
+	if err := loadRuntimeConfig(".env"); err != nil {
+		fmt.Fprint(os.Stderr, cliui.ErrorLine("loading runtime config: %v", err))
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+	dependencyCleanup, err := prepareBridgeDependencies(ctx, os.Args[1:], os.Stdout, cli.StartBridgeDependencies)
+	if err != nil {
+		fmt.Fprint(os.Stderr, cliui.ErrorLine("starting bridge dependencies: %v", err))
+		os.Exit(1)
+	}
+	defer dependencyCleanup()
+
 	podStore, serviceStore, replicaSetStore, hpaStore, metricsStore, nodeStore, functionStore, eventTriggerStore, workflowStore, closeStores, err := openStores()
 	if err != nil {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening stores: %v", err))
@@ -50,10 +65,43 @@ func main() {
 	app := cli.New(config)
 	cmd := cli.NewRootCommand(app, os.Stdout)
 	cmd.SetArgs(os.Args[1:])
-	if err := cmd.ExecuteContext(context.Background()); err != nil {
+	if err := cmd.ExecuteContext(ctx); err != nil {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("minik8s: %v", err))
 		os.Exit(1)
 	}
+}
+
+func loadRuntimeConfig(path string) error {
+	return config.LoadDotEnv(path)
+}
+
+type bridgeDependencyStarter func(context.Context, io.Writer) (func(), error)
+
+func prepareBridgeDependencies(ctx context.Context, args []string, out io.Writer, starter bridgeDependencyStarter) (func(), error) {
+	mode, err := cli.BridgeDependencyMode(args)
+	if err != nil {
+		return func() {}, err
+	}
+	if mode != "internal" {
+		return func() {}, nil
+	}
+	cleanup, err := starter(ctx, out)
+	if err != nil {
+		return func() {}, err
+	}
+	if os.Getenv("MINIK8S_LOGBOOK_ENDPOINTS") == "" {
+		if err := os.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", "http://127.0.0.1:2379"); err != nil {
+			cleanup()
+			return func() {}, err
+		}
+	}
+	if os.Getenv("MINIK8S_NATS_URL") == "" {
+		if err := os.Setenv("MINIK8S_NATS_URL", "nats://127.0.0.1:4222"); err != nil {
+			cleanup()
+			return func() {}, err
+		}
+	}
+	return cleanup, nil
 }
 
 func needsDockerRuntime(args []string) bool {

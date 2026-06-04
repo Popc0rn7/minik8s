@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,6 +17,26 @@ import (
 
 	store "minik8s/internal/bridge/logbook"
 )
+
+func TestLoadRuntimeConfigReadsDotEnv(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	require.NoError(t, os.WriteFile(path, []byte("MINIK8S_HARBOR=http://from-dotenv:18080\n"), 0o644))
+	t.Setenv("MINIK8S_HARBOR", "")
+
+	require.NoError(t, loadRuntimeConfig(path))
+
+	assert.Equal(t, "http://from-dotenv:18080", os.Getenv("MINIK8S_HARBOR"))
+}
+
+func TestLoadRuntimeConfigPreservesEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	require.NoError(t, os.WriteFile(path, []byte("MINIK8S_HARBOR=http://from-dotenv:18080\n"), 0o644))
+	t.Setenv("MINIK8S_HARBOR", "http://from-shell:18080")
+
+	require.NoError(t, loadRuntimeConfig(path))
+
+	assert.Equal(t, "http://from-shell:18080", os.Getenv("MINIK8S_HARBOR"))
+}
 
 func TestNewBridgeConfigDoesNotInjectServiceProxy(t *testing.T) {
 	config := newBridgeConfig(
@@ -55,6 +77,56 @@ func TestOpenStoresUsesEtcdBackendForPodServiceReplicaSetAndNodeStores(t *testin
 	assert.IsType(t, &store.EtcdFunctionStore{}, functionStore)
 	assert.IsType(t, &store.EtcdEventTriggerStore{}, eventTriggerStore)
 	assert.IsType(t, &store.EtcdWorkflowStore{}, workflowStore)
+}
+
+func TestPrepareBridgeDependenciesSetsDefaultEnvForBridge(t *testing.T) {
+	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", "")
+	t.Setenv("MINIK8S_NATS_URL", "")
+	called := false
+	cleaned := false
+
+	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"bridge", "--listen", ":18080"}, io.Discard, func(context.Context, io.Writer) (func(), error) {
+		called = true
+		return func() { cleaned = true }, nil
+	})
+
+	require.NoError(t, err)
+	require.True(t, called)
+	assert.Equal(t, "http://127.0.0.1:2379", os.Getenv("MINIK8S_LOGBOOK_ENDPOINTS"))
+	assert.Equal(t, "nats://127.0.0.1:4222", os.Getenv("MINIK8S_NATS_URL"))
+	cleanup()
+	assert.True(t, cleaned)
+}
+
+func TestPrepareBridgeDependenciesNoneDoesNotSetEnv(t *testing.T) {
+	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", "")
+	t.Setenv("MINIK8S_NATS_URL", "")
+	called := false
+
+	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"bridge", "--deps", "none"}, io.Discard, func(context.Context, io.Writer) (func(), error) {
+		called = true
+		return func() {}, nil
+	})
+
+	require.NoError(t, err)
+	assert.False(t, called)
+	assert.Empty(t, os.Getenv("MINIK8S_LOGBOOK_ENDPOINTS"))
+	assert.Empty(t, os.Getenv("MINIK8S_NATS_URL"))
+	cleanup()
+}
+
+func TestPrepareBridgeDependenciesPreservesExplicitEnv(t *testing.T) {
+	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", "http://10.0.0.1:2379")
+	t.Setenv("MINIK8S_NATS_URL", "nats://10.0.0.1:4222")
+
+	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"bridge"}, io.Discard, func(context.Context, io.Writer) (func(), error) {
+		return func() {}, nil
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "http://10.0.0.1:2379", os.Getenv("MINIK8S_LOGBOOK_ENDPOINTS"))
+	assert.Equal(t, "nats://10.0.0.1:4222", os.Getenv("MINIK8S_NATS_URL"))
+	cleanup()
 }
 
 func newEmbeddedEtcdEndpoint(t *testing.T) string {
