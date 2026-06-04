@@ -17,6 +17,8 @@ import (
 	"minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/bridge/navigator"
+	"minik8s/internal/hpa"
+	"minik8s/internal/metrics"
 	"minik8s/internal/minilog"
 	"minik8s/internal/netregistry"
 	"minik8s/internal/node"
@@ -30,6 +32,8 @@ type Config struct {
 	PodStore         store.PodStore
 	ServiceStore     store.ServiceStore
 	ReplicaSetStore  store.ReplicaSetStore
+	HPAStore         store.HPAStore
+	MetricsStore     store.MetricsStore
 	NodeStore        store.NodeStore
 	Navigator        navigator.Navigator
 	NodeTTL          time.Duration
@@ -42,6 +46,8 @@ type Server struct {
 	pods        store.PodStore
 	services    store.ServiceStore
 	replicaSets store.ReplicaSetStore
+	hpas        store.HPAStore
+	metrics     store.MetricsStore
 	nodes       store.NodeStore
 	navigator   navigator.Navigator
 	nodeTTL     time.Duration
@@ -61,6 +67,14 @@ func New(config Config) *Server {
 	replicaSetStore := config.ReplicaSetStore
 	if replicaSetStore == nil {
 		replicaSetStore = store.NewInMemoryReplicaSetStore()
+	}
+	hpaStore := config.HPAStore
+	if hpaStore == nil {
+		hpaStore = store.NewInMemoryHPAStore()
+	}
+	metricsStore := config.MetricsStore
+	if metricsStore == nil {
+		metricsStore = store.NewInMemoryMetricsStore()
 	}
 	nodeStore := config.NodeStore
 	if nodeStore == nil {
@@ -86,6 +100,8 @@ func New(config Config) *Server {
 		pods:        podStore,
 		services:    serviceStore,
 		replicaSets: replicaSetStore,
+		hpas:        hpaStore,
+		metrics:     metricsStore,
 		nodes:       nodeStore,
 		navigator:   podNavigator,
 		nodeTTL:     nodeTTL,
@@ -126,6 +142,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"kind":       "ReplicaSet",
 				"verbs":      []string{"get", "list", "create", "update", "delete"},
 			}, {
+				"name":       "horizontalpodautoscalers",
+				"namespaced": true,
+				"kind":       "HorizontalPodAutoscaler",
+				"verbs":      []string{"get", "list", "create", "update", "delete"},
+			}, {
 				"name":       "nodes",
 				"namespaced": false,
 				"kind":       "Node",
@@ -140,6 +161,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleNodes(w, r, parts[3])
 	case len(parts) == 5 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes" && parts[4] == "pods":
 		s.handleNodePods(w, r, parts[3])
+	case len(parts) == 5 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes" && parts[4] == "metrics":
+		s.handleNodeMetrics(w, r, parts[3])
 	case len(parts) >= 5 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "namespaces":
 		namespace := parts[3]
 		switch parts[4] {
@@ -149,6 +172,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.handleServices(w, r, namespace, parts[5:])
 		case "replicasets":
 			s.handleReplicaSets(w, r, namespace, parts[5:])
+		case "horizontalpodautoscalers":
+			s.handleHPAs(w, r, namespace, parts[5:])
 		default:
 			writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("resource %q not found", parts[4]))
 		}
@@ -711,6 +736,129 @@ func (s *Server) handleReplicaSets(w http.ResponseWriter, r *http.Request, names
 	}
 }
 
+func (s *Server) handleHPAs(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
+	name := ""
+	if len(parts) > 0 {
+		name = parts[0]
+	}
+	if len(parts) > 1 {
+		writeStatus(w, http.StatusNotFound, "NotFound", "hpa path not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		if name != "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "create must target hpa collection")
+			return
+		}
+		autoscaler, err := readHPA(r.Body, namespace, "")
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.hpas.Create(autoscaler); err != nil {
+			writeStoreError(w, err, "horizontalpodautoscalers", autoscaler.Name)
+			return
+		}
+		if err := s.syncHPAs(r.Context()); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		updated, err := s.hpas.Get(autoscaler.Name, autoscaler.Namespace)
+		if err != nil {
+			writeStoreError(w, err, "horizontalpodautoscalers", autoscaler.Name)
+			return
+		}
+		minilog.Info("hpa-create", "hpa=%s/%s", updated.Namespace, updated.Name)
+		writeJSON(w, http.StatusCreated, updated)
+	case http.MethodGet:
+		if err := s.syncHPAs(r.Context()); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		if name == "" {
+			hpas, err := s.hpas.List(namespace, nil)
+			if err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+				return
+			}
+			sortHPAs(hpas)
+			writeJSON(w, http.StatusOK, map[string]any{"kind": "HorizontalPodAutoscalerList", "apiVersion": "v1", "items": hpas})
+			return
+		}
+		autoscaler, err := s.hpas.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "horizontalpodautoscalers", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, autoscaler)
+	case http.MethodPut:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "update must target an hpa")
+			return
+		}
+		existing, err := s.hpas.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "horizontalpodautoscalers", name)
+			return
+		}
+		autoscaler, err := readHPA(r.Body, namespace, name)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		autoscaler.Status = existing.Status
+		if err := s.hpas.Update(autoscaler); err != nil {
+			writeStoreError(w, err, "horizontalpodautoscalers", name)
+			return
+		}
+		if err := s.syncHPAs(r.Context()); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		updated, err := s.hpas.Get(autoscaler.Name, autoscaler.Namespace)
+		if err != nil {
+			writeStoreError(w, err, "horizontalpodautoscalers", name)
+			return
+		}
+		minilog.Info("hpa-update", "hpa=%s/%s", updated.Namespace, updated.Name)
+		writeJSON(w, http.StatusOK, updated)
+	case http.MethodDelete:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target an hpa")
+			return
+		}
+		if err := s.hpas.Delete(name, namespace); err != nil {
+			writeStoreError(w, err, "horizontalpodautoscalers", name)
+			return
+		}
+		minilog.Info("hpa-delete", "hpa=%s/%s", namespace, name)
+		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("hpa %q deleted", name))
+	default:
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+	}
+}
+
+func (s *Server) handleNodeMetrics(w http.ResponseWriter, r *http.Request, nodeName string) {
+	if r.Method != http.MethodPut {
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	var list struct {
+		Items []*metrics.PodMetrics `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&list); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("decode metrics: %v", err))
+		return
+	}
+	if err := s.metrics.UpsertNodeMetrics(nodeName, list.Items); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	minilog.Info("node-metrics", "node=%s pods=%d", nodeName, len(list.Items))
+	writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("metrics for node %q updated", nodeName))
+}
+
 func readPod(r io.Reader, namespace, name string) (*pod.Pod, error) {
 	var p pod.Pod
 	if err := decodeObject(r, &p); err != nil {
@@ -745,6 +893,23 @@ func readReplicaSet(r io.Reader, namespace, name string) (*replicaset.ReplicaSet
 	return &rs, nil
 }
 
+func readHPA(r io.Reader, namespace, name string) (*hpa.HorizontalPodAutoscaler, error) {
+	var autoscaler hpa.HorizontalPodAutoscaler
+	if err := decodeObject(r, &autoscaler); err != nil {
+		return nil, err
+	}
+	if namespace != "" {
+		autoscaler.Namespace = namespace
+	}
+	if name != "" {
+		autoscaler.Name = name
+	}
+	if err := podyaml.DefaultAndValidateHPA(&autoscaler); err != nil {
+		return nil, err
+	}
+	return &autoscaler, nil
+}
+
 func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (*service.Service, error) {
 	var svc service.Service
 	if err := decodeObject(r, &svc); err != nil {
@@ -776,6 +941,11 @@ func (s *Server) syncServices(ctx context.Context) error {
 
 func (s *Server) syncReplicaSets(ctx context.Context) error {
 	ctrl := captain.NewReplicaSetController(s.pods, s.replicaSets)
+	return ctrl.Sync(ctx)
+}
+
+func (s *Server) syncHPAs(ctx context.Context) error {
+	ctrl := captain.NewHPAController(s.pods, s.replicaSets, s.hpas, s.metrics, captain.HPAControllerConfig{})
 	return ctrl.Sync(ctx)
 }
 
@@ -927,6 +1097,15 @@ func sortReplicaSets(replicaSets []*replicaset.ReplicaSet) {
 	})
 }
 
+func sortHPAs(hpas []*hpa.HorizontalPodAutoscaler) {
+	sort.Slice(hpas, func(i, j int) bool {
+		if hpas[i].Namespace == hpas[j].Namespace {
+			return hpas[i].Name < hpas[j].Name
+		}
+		return hpas[i].Namespace < hpas[j].Namespace
+	})
+}
+
 func sortNodes(nodes []node.Node) {
 	sort.Slice(nodes, func(i, j int) bool {
 		return nodes[i].Name() < nodes[j].Name()
@@ -970,6 +1149,10 @@ func writeStoreError(w http.ResponseWriter, err error, resource, name string) {
 	case errors.Is(err, store.ErrReplicaSetNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
 	case errors.Is(err, store.ErrReplicaSetAlreadyExists):
+		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
+	case errors.Is(err, store.ErrHPANotFound):
+		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
+	case errors.Is(err, store.ErrHPAAlreadyExists):
 		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
 	case errors.Is(err, store.ErrNodeNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))

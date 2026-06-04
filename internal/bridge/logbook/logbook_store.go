@@ -9,6 +9,7 @@ import (
 
 	"go.etcd.io/etcd/client/v3"
 
+	"minik8s/internal/hpa"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
@@ -19,6 +20,7 @@ const (
 	podPrefix        = "/registry/pods/"
 	servicePrefix    = "/registry/services/"
 	replicaSetPrefix = "/registry/replicasets/"
+	hpaPrefix        = "/registry/horizontalpodautoscalers/"
 	nodePrefix       = "/registry/nodes/"
 	defaultOpTTL     = 5 * time.Second
 )
@@ -404,6 +406,118 @@ func (s *EtcdReplicaSetStore) Delete(name, namespace string) error {
 	return nil
 }
 
+// EtcdHPAStore persists HorizontalPodAutoscaler state in real etcd.
+type EtcdHPAStore struct {
+	client *clientv3.Client
+}
+
+func NewEtcdHPAStore(client *clientv3.Client) *EtcdHPAStore {
+	return &EtcdHPAStore{client: client}
+}
+
+func (s *EtcdHPAStore) Create(autoscaler *hpa.HorizontalPodAutoscaler) error {
+	copy := normalizeHPA(autoscaler)
+	data, err := json.Marshal(copy)
+	if err != nil {
+		return fmt.Errorf("encoding hpa: %w", err)
+	}
+	key := etcdHPAKey(copy.Namespace, copy.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(key), "=", 0)).
+		Then(clientv3.OpPut(key, string(data))).
+		Commit()
+	if err != nil {
+		return fmt.Errorf("creating hpa in etcd: %w", err)
+	}
+	if !resp.Succeeded {
+		return ErrHPAAlreadyExists
+	}
+	return nil
+}
+
+func (s *EtcdHPAStore) Get(name, namespace string) (*hpa.HorizontalPodAutoscaler, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Get(ctx, etcdHPAKey(namespace, name))
+	if err != nil {
+		return nil, fmt.Errorf("getting hpa from etcd: %w", err)
+	}
+	if len(resp.Kvs) == 0 {
+		return nil, ErrHPANotFound
+	}
+	var autoscaler hpa.HorizontalPodAutoscaler
+	if err := json.Unmarshal(resp.Kvs[0].Value, &autoscaler); err != nil {
+		return nil, fmt.Errorf("decoding hpa: %w", err)
+	}
+	return normalizeHPA(&autoscaler), nil
+}
+
+func (s *EtcdHPAStore) List(namespace string, selector *pod.LabelSelector) ([]*hpa.HorizontalPodAutoscaler, error) {
+	prefix := hpaPrefix
+	if namespace != "" {
+		prefix = hpaPrefix + podNamespace(namespace) + "/"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Get(ctx, prefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, fmt.Errorf("listing hpas from etcd: %w", err)
+	}
+	result := make([]*hpa.HorizontalPodAutoscaler, 0, len(resp.Kvs))
+	for _, kv := range resp.Kvs {
+		var autoscaler hpa.HorizontalPodAutoscaler
+		if err := json.Unmarshal(kv.Value, &autoscaler); err != nil {
+			return nil, fmt.Errorf("decoding hpa %q: %w", string(kv.Key), err)
+		}
+		copy := normalizeHPA(&autoscaler)
+		if selector == nil || selector.Matches(copy.Labels) {
+			result = append(result, copy)
+		}
+	}
+	return result, nil
+}
+
+func (s *EtcdHPAStore) Update(autoscaler *hpa.HorizontalPodAutoscaler) error {
+	copy := normalizeHPA(autoscaler)
+	data, err := json.Marshal(copy)
+	if err != nil {
+		return fmt.Errorf("encoding hpa: %w", err)
+	}
+	key := etcdHPAKey(copy.Namespace, copy.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(key), ">", 0)).
+		Then(clientv3.OpPut(key, string(data))).
+		Commit()
+	if err != nil {
+		return fmt.Errorf("updating hpa in etcd: %w", err)
+	}
+	if !resp.Succeeded {
+		return ErrHPANotFound
+	}
+	return nil
+}
+
+func (s *EtcdHPAStore) Delete(name, namespace string) error {
+	key := etcdHPAKey(namespace, name)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(key), ">", 0)).
+		Then(clientv3.OpDelete(key)).
+		Commit()
+	if err != nil {
+		return fmt.Errorf("deleting hpa from etcd: %w", err)
+	}
+	if !resp.Succeeded {
+		return ErrHPANotFound
+	}
+	return nil
+}
+
 // EtcdNodeStore persists Node state in real etcd.
 type EtcdNodeStore struct {
 	client *clientv3.Client
@@ -544,6 +658,10 @@ func etcdServiceKey(namespace, name string) string {
 
 func etcdReplicaSetKey(namespace, name string) string {
 	return replicaSetPrefix + podNamespace(namespace) + "/" + name
+}
+
+func etcdHPAKey(namespace, name string) string {
+	return hpaPrefix + podNamespace(namespace) + "/" + name
 }
 
 func etcdNodeKey(name string) string {

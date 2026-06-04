@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"minik8s/internal/cliui"
+	"minik8s/internal/hpa"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
@@ -81,7 +82,7 @@ func newApplyCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
-		Use:     "get pods|services|replicasets|nodes [name]",
+		Use:     "get pods|services|replicasets|hpa|nodes [name]",
 		Aliases: []string{"list"},
 		Short:   "Get resources",
 		Args:    cobra.RangeArgs(1, 2),
@@ -100,8 +101,8 @@ func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete pod|service|replicaset <name>",
-		Short: "Delete a Pod, Service, or ReplicaSet",
+		Use:   "delete pod|service|replicaset|hpa <name>",
+		Short: "Delete a Pod, Service, ReplicaSet, or HPA",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bind()
@@ -122,8 +123,12 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 				if err := app.delete(cmd.Context(), []string{"replicaset", ref.name, "-n", app.namespace}, out); err != nil {
 					return err
 				}
+			case resourceHPAs:
+				if err := app.delete(cmd.Context(), []string{"hpa", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
 			default:
-				return fmt.Errorf("delete supports pods, services, and replicasets")
+				return fmt.Errorf("delete supports pods, services, replicasets, and hpas")
 			}
 			return nil
 		},
@@ -133,7 +138,7 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDescribeCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "describe pod|service|replicaset|node <name>",
+		Use:   "describe pod|service|replicaset|hpa|node <name>",
 		Short: "Show resource details",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -309,7 +314,7 @@ func newNetDCommand(app *App, out io.Writer) *cobra.Command {
 }
 
 func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
-	var listen, serviceSyncInterval, replicaSetSyncInterval, clusterCIDR string
+	var listen, serviceSyncInterval, replicaSetSyncInterval, hpaSyncInterval, clusterCIDR string
 	var nodeCIDRMaskSize int
 	cmd := &cobra.Command{
 		Use:   "bridge",
@@ -325,6 +330,9 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 			if replicaSetSyncInterval != "" {
 				legacy = append(legacy, "--replicaset-sync-interval", replicaSetSyncInterval)
 			}
+			if hpaSyncInterval != "" {
+				legacy = append(legacy, "--hpa-sync-interval", hpaSyncInterval)
+			}
 			if clusterCIDR != "" {
 				legacy = append(legacy, "--cluster-cidr", clusterCIDR)
 			}
@@ -337,6 +345,7 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&listen, "listen", "", "Listen address")
 	cmd.Flags().StringVar(&serviceSyncInterval, "service-sync-interval", "", "Service sync interval")
 	cmd.Flags().StringVar(&replicaSetSyncInterval, "replicaset-sync-interval", "", "ReplicaSet sync interval")
+	cmd.Flags().StringVar(&hpaSyncInterval, "hpa-sync-interval", "", "HPA sync interval")
 	cmd.Flags().StringVar(&clusterCIDR, "cluster-cidr", "", "Cluster CIDR for Node PodCIDR allocation")
 	cmd.Flags().IntVar(&nodeCIDRMaskSize, "node-cidr-mask-size", 0, "Per-node PodCIDR mask size")
 	return cmd
@@ -393,6 +402,7 @@ const (
 	resourcePods        resourceName = "pods"
 	resourceServices    resourceName = "services"
 	resourceReplicaSets resourceName = "replicasets"
+	resourceHPAs        resourceName = "horizontalpodautoscalers"
 	resourceNodes       resourceName = "nodes"
 )
 
@@ -432,6 +442,8 @@ func normalizeResource(resource string) (resourceName, error) {
 		return resourceServices, nil
 	case "replicaset", "replicasets", "rs":
 		return resourceReplicaSets, nil
+	case "hpa", "hpas", "horizontalpodautoscaler", "horizontalpodautoscalers":
+		return resourceHPAs, nil
 	case "node", "nodes", "no":
 		return resourceNodes, nil
 	default:
@@ -505,6 +517,26 @@ func (a *App) getResource(ctx context.Context, ref resourceRef, output string, o
 			return writeObject(out, output, map[string]any{"kind": "ReplicaSetList", "apiVersion": "v1", "items": replicaSets})
 		}
 		return writeReplicaSetTable(out, replicaSets)
+	case resourceHPAs:
+		if ref.name != "" {
+			autoscaler, err := client.GetHPA(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, autoscaler)
+			}
+			return writeHPATable(out, []*hpa.HorizontalPodAutoscaler{autoscaler})
+		}
+		hpas, err := client.ListHPAs(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortHPAList(hpas)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "HorizontalPodAutoscalerList", "apiVersion": "v1", "items": hpas})
+		}
+		return writeHPATable(out, hpas)
 	case resourceNodes:
 		if ref.name != "" {
 			n, err := client.GetNode(ctx, ref.name)
@@ -554,6 +586,12 @@ func (a *App) describeResource(ctx context.Context, ref resourceRef, out io.Writ
 			return err
 		}
 		return describeReplicaSet(out, rs)
+	case resourceHPAs:
+		autoscaler, err := client.GetHPA(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeHPA(out, autoscaler)
 	case resourceNodes:
 		n, err := client.GetNode(ctx, ref.name)
 		if err != nil {
@@ -612,6 +650,15 @@ func sortReplicaSetList(replicaSets []*replicaset.ReplicaSet) {
 			return replicaSets[i].Name < replicaSets[j].Name
 		}
 		return replicaSets[i].Namespace < replicaSets[j].Namespace
+	})
+}
+
+func sortHPAList(hpas []*hpa.HorizontalPodAutoscaler) {
+	sort.Slice(hpas, func(i, j int) bool {
+		if hpas[i].Namespace == hpas[j].Namespace {
+			return hpas[i].Name < hpas[j].Name
+		}
+		return hpas[i].Namespace < hpas[j].Namespace
 	})
 }
 
@@ -705,6 +752,36 @@ func writeReplicaSetTable(out io.Writer, replicaSets []*replicaset.ReplicaSet) e
 	return nil
 }
 
+func writeHPATable(out io.Writer, hpas []*hpa.HorizontalPodAutoscaler) error {
+	if err := writef(out, "%s %s %s %s %s %s %s\n",
+		cliui.PadRight("HPA", 31),
+		cliui.PadRight("TARGET", 18),
+		cliui.PadRight("MIN", 6),
+		cliui.PadRight("MAX", 6),
+		cliui.PadRight("REPLICAS", 12),
+		cliui.PadRight("METRICS", 22),
+		"NAMESPACE",
+	); err != nil {
+		return err
+	}
+	for _, autoscaler := range hpas {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[hpa]"), autoscaler.Name)
+		replicas := fmt.Sprintf("%d/%d", autoscaler.Status.CurrentReplicas, autoscaler.Status.DesiredReplicas)
+		if err := writef(out, "%s %s %s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(formatHPATarget(autoscaler), 18),
+			cliui.PadRight(fmt.Sprintf("%d", autoscaler.Spec.MinReplicas), 6),
+			cliui.PadRight(fmt.Sprintf("%d", autoscaler.Spec.MaxReplicas), 6),
+			cliui.PadRight(replicas, 12),
+			cliui.PadRight(formatHPAMetrics(autoscaler.Status.CurrentMetrics), 22),
+			autoscaler.Namespace,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func writeNodeTable(out io.Writer, nodes []node.Node) error {
 	if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 		cliui.PadRight("NODE", 31),
@@ -788,6 +865,27 @@ func describeReplicaSet(out io.Writer, rs *replicaset.ReplicaSet) error {
 	return nil
 }
 
+func describeHPA(out io.Writer, autoscaler *hpa.HorizontalPodAutoscaler) error {
+	lines := []string{
+		fmt.Sprintf("Name: %s", autoscaler.Name),
+		fmt.Sprintf("Namespace: %s", autoscaler.Namespace),
+		fmt.Sprintf("Target: %s", formatHPATarget(autoscaler)),
+		fmt.Sprintf("MinReplicas: %d", autoscaler.Spec.MinReplicas),
+		fmt.Sprintf("MaxReplicas: %d", autoscaler.Spec.MaxReplicas),
+		fmt.Sprintf("CurrentReplicas: %d", autoscaler.Status.CurrentReplicas),
+		fmt.Sprintf("DesiredReplicas: %d", autoscaler.Status.DesiredReplicas),
+		fmt.Sprintf("Metrics: %s", formatHPAMetrics(autoscaler.Status.CurrentMetrics)),
+		fmt.Sprintf("Conditions: %s", formatHPAConditions(autoscaler.Status.Conditions)),
+		fmt.Sprintf("Labels: %s", formatLabels(autoscaler.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func describeNode(out io.Writer, n *node.Node) error {
 	labelMap := n.LabelMap()
 	labels := make([]string, 0, len(labelMap))
@@ -817,6 +915,38 @@ func describeNode(out io.Writer, n *node.Node) error {
 		}
 	}
 	return nil
+}
+
+func formatHPATarget(autoscaler *hpa.HorizontalPodAutoscaler) string {
+	return fmt.Sprintf("%s/%s", autoscaler.Spec.ScaleTargetRef.Kind, autoscaler.Spec.ScaleTargetRef.Name)
+}
+
+func formatHPAMetrics(metrics []hpa.MetricStatus) string {
+	if len(metrics) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(metrics))
+	for _, metric := range metrics {
+		parts = append(parts, fmt.Sprintf("%s=%d%%", metric.Name, metric.CurrentAverageUtilization))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func formatHPAConditions(conditions []hpa.HorizontalPodCondition) string {
+	if len(conditions) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(conditions))
+	for _, condition := range conditions {
+		if condition.Reason != "" {
+			parts = append(parts, fmt.Sprintf("%s=%s(%s)", condition.Type, condition.Status, condition.Reason))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", condition.Type, condition.Status))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }
 
 func formatNodeConditions(conditions []node.NodeCondition) string {

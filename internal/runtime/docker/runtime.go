@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
@@ -326,6 +327,23 @@ func (d *DockerRuntime) ListContainers(ctx context.Context, sandboxID string) ([
 		result = append(result, info)
 	}
 	return result, nil
+}
+
+func (d *DockerRuntime) ContainerStats(ctx context.Context, containerID string) (*runtime.ContainerStats, error) {
+	resp, err := d.client.ContainerStatsOneShot(ctx, containerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var stats dockertypes.StatsJSON
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return nil, fmt.Errorf("decoding container stats: %w", err)
+	}
+	return &runtime.ContainerStats{
+		CPUUsageTotalNano: stats.CPUStats.CPUUsage.TotalUsage,
+		MemoryUsageBytes:  stats.MemoryStats.Usage,
+		Timestamp:         stats.Read,
+	}, nil
 }
 
 // PullImage pulls an image from registry

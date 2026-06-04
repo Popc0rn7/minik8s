@@ -20,6 +20,7 @@ import (
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/cliui"
 	"minik8s/internal/cni"
+	"minik8s/internal/hpa"
 	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/netagent"
@@ -39,6 +40,8 @@ type Config struct {
 	Store           store.PodStore
 	ServiceStore    store.ServiceStore
 	ReplicaSetStore store.ReplicaSetStore
+	HPAStore        store.HPAStore
+	MetricsStore    store.MetricsStore
 	NodeStore       store.NodeStore
 	Bridge          *bridge.Bridge
 	Network         nodeSailer.PodNetworkManager
@@ -53,6 +56,8 @@ type App struct {
 	store           store.PodStore
 	serviceStore    store.ServiceStore
 	replicaSetStore store.ReplicaSetStore
+	hpaStore        store.HPAStore
+	metricsStore    store.MetricsStore
 	nodeStore       store.NodeStore
 	controlBridge   *bridge.Bridge
 	network         nodeSailer.PodNetworkManager
@@ -77,6 +82,14 @@ func New(config Config) *App {
 	if replicaSetStore == nil {
 		replicaSetStore = store.NewInMemoryReplicaSetStore()
 	}
+	hpaStore := config.HPAStore
+	if hpaStore == nil {
+		hpaStore = store.NewInMemoryHPAStore()
+	}
+	metricsStore := config.MetricsStore
+	if metricsStore == nil {
+		metricsStore = store.NewInMemoryMetricsStore()
+	}
 	nodeStore := config.NodeStore
 	if nodeStore == nil {
 		nodeStore = store.NewInMemoryNodeStore()
@@ -88,6 +101,8 @@ func New(config Config) *App {
 			PodStore:        config.Store,
 			ServiceStore:    serviceStore,
 			ReplicaSetStore: replicaSetStore,
+			HPAStore:        hpaStore,
+			MetricsStore:    metricsStore,
 			NodeStore:       nodeStore,
 		})
 	}
@@ -96,6 +111,8 @@ func New(config Config) *App {
 		store:           config.Store,
 		serviceStore:    serviceStore,
 		replicaSetStore: replicaSetStore,
+		hpaStore:        hpaStore,
+		metricsStore:    metricsStore,
 		nodeStore:       nodeStore,
 		controlBridge:   controlBridge,
 		network:         network,
@@ -161,6 +178,17 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return writes(out, cliui.SuccessLine("replicaset/%s created (%d/%d)", updated.Name, updated.Status.Replicas, updated.Spec.Replicas))
 	}
+	if kind == hpa.Kind {
+		autoscaler, err := podyaml.LoadHPAFromFile(path)
+		if err != nil {
+			return err
+		}
+		updated, err := client.ApplyHPA(ctx, autoscaler)
+		if err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("hpa/%s created (%d/%d)", updated.Name, updated.Status.DesiredReplicas, updated.Spec.MaxReplicas))
+	}
 	if kind != "" && kind != "Pod" {
 		return fmt.Errorf("unsupported kind %q", kind)
 	}
@@ -193,7 +221,7 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	if len(args) < 2 {
-		return fmt.Errorf("usage: minik8s delete pod|service|replicaset <name> [-n namespace]")
+		return fmt.Errorf("usage: minik8s delete pod|service|replicaset|hpa <name> [-n namespace]")
 	}
 	if args[0] == "service" || args[0] == "svc" {
 		name := args[1]
@@ -211,8 +239,16 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return writes(out, cliui.SuccessLine("replicaset/%s deleted", name))
 	}
+	if args[0] == "hpa" || args[0] == "hpas" || args[0] == "horizontalpodautoscaler" || args[0] == "horizontalpodautoscalers" {
+		name := args[1]
+		namespace := namespaceFlag(args[2:])
+		if err := client.DeleteHPA(ctx, name, namespace); err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("hpa/%s deleted", name))
+	}
 	if args[0] != "pod" {
-		return fmt.Errorf("usage: minik8s delete pod|service|replicaset <name> [-n namespace]")
+		return fmt.Errorf("usage: minik8s delete pod|service|replicaset|hpa <name> [-n namespace]")
 	}
 	name := args[1]
 	namespace := namespaceFlag(args[2:])
@@ -799,6 +835,7 @@ type bridgeOptions struct {
 	listen                 string
 	serviceSyncInterval    time.Duration
 	replicaSetSyncInterval time.Duration
+	hpaSyncInterval        time.Duration
 	clusterCIDR            string
 	nodeCIDRMaskSize       int
 }
@@ -823,6 +860,9 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	if options.replicaSetSyncInterval > 0 {
 		go a.runReplicaSetSyncLoop(ctx, options.replicaSetSyncInterval)
 	}
+	if options.hpaSyncInterval > 0 {
+		go a.runHPASyncLoop(ctx, options.hpaSyncInterval)
+	}
 	go a.runNodeLivenessLoop(ctx, 5*time.Second)
 	if err := writes(out, cliui.InfoLine("bridge listening on %s", options.listen)); err != nil {
 		return err
@@ -844,7 +884,7 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func parseBridgeOptions(args []string) (bridgeOptions, error) {
-	options := bridgeOptions{listen: ":8080", serviceSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24}
+	options := bridgeOptions{listen: ":8080", serviceSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -873,6 +913,16 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 				return options, fmt.Errorf("invalid --replicaset-sync-interval %q: %w", args[i], err)
 			}
 			options.replicaSetSyncInterval = interval
+		case "--hpa-sync-interval":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --hpa-sync-interval")
+			}
+			interval, err := time.ParseDuration(args[i])
+			if err != nil {
+				return options, fmt.Errorf("invalid --hpa-sync-interval %q: %w", args[i], err)
+			}
+			options.hpaSyncInterval = interval
 		case "--cluster-cidr":
 			i++
 			if i >= len(args) {
@@ -935,6 +985,26 @@ func (a *App) runReplicaSetSyncLoop(ctx context.Context, interval time.Duration)
 		ctrl := bridgeCaptain.NewReplicaSetController(a.controlBridge.PodStore(), a.controlBridge.ReplicaSetStore())
 		if err := ctrl.Sync(ctx); err != nil {
 			minilog.Warn("replicaset-periodic-sync", "error=%v", err)
+		}
+	}
+	syncOnce()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncOnce()
+		}
+	}
+}
+
+func (a *App) runHPASyncLoop(ctx context.Context, interval time.Duration) {
+	syncOnce := func() {
+		ctrl := bridgeCaptain.NewHPAController(a.controlBridge.PodStore(), a.controlBridge.ReplicaSetStore(), a.controlBridge.HPAStore(), a.controlBridge.MetricsStore(), bridgeCaptain.HPAControllerConfig{})
+		if err := ctrl.Sync(ctx); err != nil {
+			minilog.Warn("hpa-periodic-sync", "error=%v", err)
 		}
 	}
 	syncOnce()
@@ -1348,6 +1418,13 @@ func DefaultReplicaSetStatePath() string {
 		return filepath.Join(dir, "replicasets.json")
 	}
 	return filepath.Join(".minik8s", "state", "replicasets.json")
+}
+
+func DefaultHPAStatePath() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "hpas.json")
+	}
+	return filepath.Join(".minik8s", "state", "hpas.json")
 }
 
 func DefaultNodeStatePath() string {

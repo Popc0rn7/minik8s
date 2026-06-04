@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"minik8s/internal/metrics"
 	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
@@ -20,6 +21,7 @@ type fakePodClient struct {
 	services  []*service.Service
 	heartbeat NodeHeartbeat
 	updates   []*pod.Pod
+	metrics   []*metrics.PodMetrics
 }
 
 func (f *fakePodClient) ListAssignedPods(ctx context.Context, heartbeat NodeHeartbeat) ([]*pod.Pod, error) {
@@ -46,6 +48,13 @@ func (f *fakePodClient) ListServices(ctx context.Context) ([]*service.Service, e
 func (f *fakePodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {
 	_ = ctx
 	f.updates = append(f.updates, p.DeepCopy())
+	return nil
+}
+
+func (f *fakePodClient) UpdateNodeMetrics(ctx context.Context, nodeName string, podMetrics []*metrics.PodMetrics) error {
+	_ = ctx
+	_ = nodeName
+	f.metrics = append(f.metrics, podMetrics...)
 	return nil
 }
 

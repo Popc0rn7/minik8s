@@ -3,7 +3,7 @@
 Minik8s 是一个面向云操作系统课程 Lab 的轻量容器编排系统。项目目标参考
 Kubernetes，但当前实现更适合描述为“教学版 Kubernetes 核心闭环”：一个
 `bridge` 控制面加多个节点本地 `sailer` agent，支持通过 YAML 管理 Pod、
-Service、ReplicaSet 和 Node，并在 Linux + Docker 环境中演示 Pod 网络、
+Service、ReplicaSet、HorizontalPodAutoscaler 和 Node，并在 Linux + Docker 环境中演示 Pod 网络、
 Service 转发和控制面状态恢复。
 
 课程规格以 [docs/Handout.md](docs/Handout.md) 为准。本 README 只描述仓库
@@ -26,13 +26,14 @@ Service 转发和控制面状态恢复。
   `--proxy-disabled` 在无 root/iptables 环境下关闭数据面规则。
 - ReplicaSet YAML、API、CLI、file/etcd store、controller，同步 desired/current
   副本，并在删除 ReplicaSet 时级联删除 owned Pods。
+- HPA YAML、API、CLI、file/etcd store、控制器和 `sailer` Docker metrics 上报；
+  当前只支持基于 ReplicaSet 的 CPU/Memory utilization 扩缩容。
 - Logbook 状态存储：默认本地 JSON；设置 `MINIK8S_LOGBOOK_ENDPOINTS` 后，
-  Pod、Service、ReplicaSet、Node 使用 etcd-backed store。
+  Pod、Service、ReplicaSet、HPA、Node 使用 etcd-backed store。
 - 控制面重启后可从 file/etcd 恢复声明对象；worker 继续心跳后状态重新收敛。
 
 尚未实现或不应作为当前版本承诺：
 
-- HPA / HorizontalPodAutoscaler、资源监控驱动的自动扩缩容。
 - DNS 对象、域名解析和同 host 多 path 转发。
 - Serverless Function、Event Trigger、Workflow、scale-to-0。
 - PV/PVC 持久化卷、GPU 应用、Security Context。
@@ -48,18 +49,18 @@ Service 转发和控制面状态恢复。
 - `internal/bridge/`：控制面边界，组合 Harbor API、Logbook store、Navigator
   scheduler 和 Captain controllers。
 - `internal/bridge/harbor/`：Kubernetes-like HTTP API，服务 Pod、Service、
-  ReplicaSet、Node 和节点心跳接口。
+  ReplicaSet、HPA、Node、节点心跳和节点 metrics 接口。
 - `internal/bridge/logbook/`：控制面状态存储，提供 in-memory、file 和 etcd
   后端。
 - `internal/bridge/navigator/`：轻量调度器，目前按 Ready Node 做简单分配。
-- `internal/bridge/captain/`：控制器集合，当前包括 Service endpoint controller
-  和 ReplicaSet controller。
+- `internal/bridge/captain/`：控制器集合，当前包括 Service endpoint controller、
+  ReplicaSet controller 和 HPA controller。
 - `internal/sailer/`：节点本地 agent，轮询 assigned Pods，管理 Docker 容器、
   CNI、Pod status 和 kube-proxy 规则。
 - `internal/cniplugin/`、`internal/cni/`、`internal/netagent/`：CNI 插件、CNI
   runner 和跨节点网络同步。
 - `internal/kubeproxy/`：iptables Service 数据面规则生成。
-- `pkg/yaml/`：Pod、Service、ReplicaSet、Node YAML loader 与校验。
+- `pkg/yaml/`：Pod、Service、ReplicaSet、HPA、Node YAML loader 与校验。
 - `manifest/`：可直接用于演示的示例 YAML。
 - `docs/testcase/`：按功能拆分的人工验收脚本和排查说明。
 
@@ -147,7 +148,7 @@ export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
 | CNI Pod 间通信 | 部分完成 | 单节点 bridge/IPAM 可演示；跨节点 VXLAN/host-gw 可演示但依赖环境和节点配置。 |
 | Service ClusterIP/NodePort | 部分完成 | Service 对象、endpoints、iptables proxy 和简单负载均衡已有；复杂 SNAT、readiness、EndpointSlice 未完成。 |
 | ReplicaSet | 部分完成 | YAML/API/CLI/controller/store 已有；当前是简化控制器，没有 ownerReference、adoption/orphan 等完整 K8s 语义。 |
-| 资源监控与 HPA | 未实现 | 没有 metrics pipeline、HPA 对象和扩缩容策略。 |
+| 资源监控与 HPA | 部分完成 | HPA 对象/API/CLI/store、Docker CPU/Memory metrics 上报和 ReplicaSet 扩缩容已有；只支持 Resource utilization，metrics 不持久化。 |
 | DNS 与转发 | 未实现 | 没有 DNS 对象、DNS server 或 HTTP path gateway。 |
 | 多机部署 | 部分完成 | Node、heartbeat、PodCIDR、简单调度、跨节点网络同步已有；调度不做资源过滤，故障迁移能力有限。 |
 | 容错 | 部分完成 | 控制面状态可持久化，重启后可恢复对象；Node heartbeat 可标记 Unknown；没有完整故障自愈和副本重调度。 |

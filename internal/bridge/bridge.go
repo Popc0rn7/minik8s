@@ -14,6 +14,8 @@ type Config struct {
 	PodStore         store.PodStore
 	ServiceStore     store.ServiceStore
 	ReplicaSetStore  store.ReplicaSetStore
+	HPAStore         store.HPAStore
+	MetricsStore     store.MetricsStore
 	NodeStore        store.NodeStore
 	Navigator        navigator.Navigator
 	NodeTTL          time.Duration
@@ -25,6 +27,8 @@ type Bridge struct {
 	podStore         store.PodStore
 	serviceStore     store.ServiceStore
 	replicaSetStore  store.ReplicaSetStore
+	hpaStore         store.HPAStore
+	metricsStore     store.MetricsStore
 	nodeStore        store.NodeStore
 	navigator        navigator.Navigator
 	nodeTTL          time.Duration
@@ -45,6 +49,14 @@ func New(config Config) *Bridge {
 	if replicaSetStore == nil {
 		replicaSetStore = store.NewInMemoryReplicaSetStore()
 	}
+	hpaStore := config.HPAStore
+	if hpaStore == nil {
+		hpaStore = store.NewInMemoryHPAStore()
+	}
+	metricsStore := config.MetricsStore
+	if metricsStore == nil {
+		metricsStore = store.NewInMemoryMetricsStore()
+	}
 	nodeStore := config.NodeStore
 	if nodeStore == nil {
 		nodeStore = store.NewInMemoryNodeStore()
@@ -61,6 +73,8 @@ func New(config Config) *Bridge {
 		podStore:         podStore,
 		serviceStore:     serviceStore,
 		replicaSetStore:  replicaSetStore,
+		hpaStore:         hpaStore,
+		metricsStore:     metricsStore,
 		nodeStore:        nodeStore,
 		navigator:        podNavigator,
 		nodeTTL:          nodeTTL,
@@ -74,6 +88,8 @@ func (k *Bridge) Handler() http.Handler {
 		PodStore:         k.podStore,
 		ServiceStore:     k.serviceStore,
 		ReplicaSetStore:  k.replicaSetStore,
+		HPAStore:         k.hpaStore,
+		MetricsStore:     k.metricsStore,
 		NodeStore:        k.nodeStore,
 		Navigator:        k.navigator,
 		NodeTTL:          k.nodeTTL,
@@ -92,6 +108,8 @@ func (k *Bridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 		PodStore:         k.podStore,
 		ServiceStore:     k.serviceStore,
 		ReplicaSetStore:  k.replicaSetStore,
+		HPAStore:         k.hpaStore,
+		MetricsStore:     k.metricsStore,
 		NodeStore:        k.nodeStore,
 		Navigator:        k.navigator,
 		NodeTTL:          k.nodeTTL,
@@ -110,6 +128,14 @@ func (k *Bridge) ServiceStore() store.ServiceStore {
 
 func (k *Bridge) ReplicaSetStore() store.ReplicaSetStore {
 	return k.replicaSetStore
+}
+
+func (k *Bridge) HPAStore() store.HPAStore {
+	return k.hpaStore
+}
+
+func (k *Bridge) MetricsStore() store.MetricsStore {
+	return k.metricsStore
 }
 
 func (k *Bridge) NodeStore() store.NodeStore {

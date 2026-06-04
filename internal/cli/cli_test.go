@@ -717,6 +717,74 @@ spec:
 	assert.Empty(t, pods)
 }
 
+func TestCLIApplyGetDescribeDeleteHPA(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	podStore := store.NewInMemoryPodStore()
+	rsStore := store.NewInMemoryReplicaSetStore()
+	hpaStore := store.NewInMemoryHPAStore()
+	server := harbor.New(harbor.Config{
+		PodStore:        podStore,
+		ReplicaSetStore: rsStore,
+		HPAStore:        hpaStore,
+		MetricsStore:    store.NewInMemoryMetricsStore(),
+		NodeStore:       store.NewInMemoryNodeStore(),
+	})
+	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	require.NoError(t, rsStore.Create(&replicaset.ReplicaSet{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx-rs", Namespace: "default"},
+		Spec: replicaset.ReplicaSetSpec{
+			Replicas: 1,
+			Selector: pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}},
+			Template: pod.Pod{
+				ObjectMeta: pod.ObjectMeta{Labels: map[string]string{"app": "nginx"}},
+				Spec: pod.PodSpec{Containers: []pod.ContainerSpec{{
+					Name: "nginx", Image: "nginx",
+					Resources: pod.ResourceRequirements{Requests: pod.ResourceList{CPU: "1", Memory: "128Mi"}},
+				}}},
+			},
+		},
+	}))
+	manifest := filepath.Join(t.TempDir(), "hpa.yaml")
+	require.NoError(t, os.WriteFile(manifest, []byte(`
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nginx-hpa
+spec:
+  scaleTargetRef:
+    kind: ReplicaSet
+    name: nginx-rs
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+`), 0o644))
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
+	assert.Contains(t, out.String(), "hpa/nginx-hpa created")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"get", "hpa"}, &out))
+	assert.Contains(t, out.String(), "HPA")
+	assert.Contains(t, out.String(), "nginx-hpa")
+	assert.Contains(t, out.String(), "ReplicaSet/nginx-rs")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"describe", "hpa", "nginx-hpa"}, &out))
+	assert.Contains(t, out.String(), "Name: nginx-hpa")
+	assert.Contains(t, out.String(), "Target: ReplicaSet/nginx-rs")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"delete", "hpa/nginx-hpa"}, &out))
+	assert.Contains(t, out.String(), "hpa/nginx-hpa deleted")
+}
+
 func TestParseBridgeOptionsServiceSyncInterval(t *testing.T) {
 	defaults, err := parseBridgeOptions(nil)
 	require.NoError(t, err)
