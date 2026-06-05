@@ -1030,16 +1030,26 @@ func BridgeDependencyMode(args []string) (string, error) {
 }
 
 func StartBridgeDependencies(ctx context.Context, out io.Writer) (func(), error) {
-	if err := ensureBridgeDependencyPortsFree(); err != nil {
-		return func() {}, err
-	}
-	etcdDir := filepath.Join(filepath.Dir(DefaultStatePath()), "bridge-deps", "etcd")
-	if err := os.MkdirAll(etcdDir, 0o755); err != nil {
-		return func() {}, fmt.Errorf("creating bridge dependency state dir: %w", err)
-	}
 	runtime, err := dockerruntime.NewDockerRuntime()
 	if err != nil {
 		return func() {}, fmt.Errorf("creating docker runtime for bridge dependencies: %w", err)
+	}
+	if err := runtime.CleanupPod(ctx, "minik8s-system", "bridge-deps"); err != nil {
+		_ = runtime.Close()
+		return func() {}, fmt.Errorf("cleaning stale bridge dependencies: %w", err)
+	}
+	if err := ensureBridgeDependencyPortsFree(); err != nil {
+		_ = runtime.Close()
+		return func() {}, err
+	}
+	etcdDir, err := bridgeDependencyEtcdDir()
+	if err != nil {
+		_ = runtime.Close()
+		return func() {}, err
+	}
+	if err := os.MkdirAll(etcdDir, 0o755); err != nil {
+		_ = runtime.Close()
+		return func() {}, fmt.Errorf("creating bridge dependency state dir: %w", err)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	privateNode := bootstrap.DefaultNode()
@@ -1079,6 +1089,15 @@ func StartBridgeDependencies(ctx context.Context, out io.Writer) (func(), error)
 		return func() {}, err
 	}
 	return cleanup, nil
+}
+
+func bridgeDependencyEtcdDir() (string, error) {
+	etcdDir := filepath.Join(filepath.Dir(DefaultStatePath()), "bridge-deps", "etcd")
+	absolute, err := filepath.Abs(etcdDir)
+	if err != nil {
+		return "", fmt.Errorf("resolving bridge dependency state dir: %w", err)
+	}
+	return absolute, nil
 }
 
 func ensureBridgeDependencyPortsFree() error {

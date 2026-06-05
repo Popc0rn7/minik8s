@@ -24,6 +24,7 @@ type SandboxConfig struct {
 	ID          string
 	Name        string
 	Namespace   string
+	NodeName    string
 	Labels      map[string]string
 	Ports       []ContainerPort
 	NetworkMode string
@@ -119,6 +120,8 @@ type ContainerRuntime interface {
 	InspectContainer(ctx context.Context, containerID string) (*ContainerInfo, error)
 	ListContainers(ctx context.Context, sandboxID string) ([]*ContainerInfo, error)
 	ContainerStats(ctx context.Context, containerID string) (*ContainerStats, error)
+	CleanupPod(ctx context.Context, namespace, name string) error
+	CleanupNodePods(ctx context.Context, nodeName string) error
 
 	// Image operations
 	PullImage(ctx context.Context, imageName string) error

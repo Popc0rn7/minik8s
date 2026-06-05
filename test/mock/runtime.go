@@ -18,6 +18,8 @@ type MockRuntime struct {
 	StartContainerCalls  []string
 	StopContainerCalls   []string
 	RemoveContainerCalls []string
+	CleanupPodCalls      []string
+	CleanupNodePodsCalls []string
 	PullImageCalls       []string
 	ContainerStatsByID   map[string]*runtime.ContainerStats
 
@@ -66,10 +68,13 @@ func (m *MockRuntime) CreateSandbox(ctx context.Context, config *runtime.Sandbox
 	m.sandboxes[id] = &runtime.SandboxInfo{
 		ID:        id,
 		Name:      config.Name,
-		Labels:    config.Labels,
+		Labels:    cloneLabels(config.Labels),
 		CreatedAt: time.Now(),
 		State:     runtime.SandboxStateNotReady,
 	}
+	m.sandboxes[id].Labels["minik8s.pod.name"] = config.Name
+	m.sandboxes[id].Labels["minik8s.pod.namespace"] = config.Namespace
+	m.sandboxes[id].Labels["minik8s.node.name"] = config.NodeName
 	_ = ctx
 	return id, nil
 }
@@ -132,9 +137,10 @@ func (m *MockRuntime) CreateContainer(ctx context.Context, sandboxID string, con
 		ID:     id,
 		Name:   config.Name,
 		Image:  config.Image,
-		Labels: map[string]string{"sandbox": sandboxID},
+		Labels: cloneLabels(config.Labels),
 		State:  &runtime.ContainerStateInfo{Status: "created"},
 	}
+	m.containers[id].Labels["sandbox"] = sandboxID
 	_ = ctx
 	return id, nil
 }
@@ -221,6 +227,39 @@ func (m *MockRuntime) ContainerStats(ctx context.Context, containerID string) (*
 	return &runtime.ContainerStats{Timestamp: time.Now()}, nil
 }
 
+func (m *MockRuntime) CleanupPod(ctx context.Context, namespace, name string) error {
+	_ = ctx
+	key := namespace + "/" + name
+	m.CleanupPodCalls = append(m.CleanupPodCalls, key)
+	for id, info := range m.containers {
+		if info.Labels["minik8s.pod.namespace"] == namespace && info.Labels["minik8s.pod.name"] == name {
+			delete(m.containers, id)
+		}
+	}
+	for id, info := range m.sandboxes {
+		if info.Labels["minik8s.pod.namespace"] == namespace && info.Labels["minik8s.pod.name"] == name {
+			delete(m.sandboxes, id)
+		}
+	}
+	return nil
+}
+
+func (m *MockRuntime) CleanupNodePods(ctx context.Context, nodeName string) error {
+	_ = ctx
+	m.CleanupNodePodsCalls = append(m.CleanupNodePodsCalls, nodeName)
+	for id, info := range m.containers {
+		if info.Labels["minik8s.node.name"] == nodeName {
+			delete(m.containers, id)
+		}
+	}
+	for id, info := range m.sandboxes {
+		if info.Labels["minik8s.node.name"] == nodeName {
+			delete(m.sandboxes, id)
+		}
+	}
+	return nil
+}
+
 func (m *MockRuntime) IsHealthy(ctx context.Context) bool {
 	_ = ctx
 	return m.Healthy
@@ -254,6 +293,8 @@ func (m *MockRuntime) Reset() {
 	m.StartContainerCalls = nil
 	m.StopContainerCalls = nil
 	m.RemoveContainerCalls = nil
+	m.CleanupPodCalls = nil
+	m.CleanupNodePodsCalls = nil
 	m.PullImageCalls = nil
 	m.ShouldFailCreateSandbox = false
 	m.ShouldFailStartSandbox = false
@@ -270,4 +311,12 @@ func (m *MockRuntime) Reset() {
 	m.ContainerStatsByID = make(map[string]*runtime.ContainerStats)
 	m.nextSandbox = 1
 	m.nextContainer = 1
+}
+
+func cloneLabels(labels map[string]string) map[string]string {
+	out := make(map[string]string, len(labels)+3)
+	for k, v := range labels {
+		out[k] = v
+	}
+	return out
 }

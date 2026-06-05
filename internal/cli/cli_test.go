@@ -161,6 +161,17 @@ func TestBridgeOptionsRejectUnknownDependencies(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid --deps")
 }
 
+func TestBridgeDependencyEtcdDirIsAbsolute(t *testing.T) {
+	t.Setenv("MINIK8S_STATE_DIR", "")
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+
+	dir, err := bridgeDependencyEtcdDir()
+
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(cwd, ".minik8s", "state", "bridge-deps", "etcd"), dir)
+}
+
 func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))

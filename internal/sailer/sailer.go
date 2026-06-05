@@ -63,6 +63,9 @@ func (k *Sailer) Run(ctx context.Context) error {
 		return err
 	}
 	if err := k.SyncOnce(ctx); err != nil {
+		if ctx.Err() != nil {
+			k.shutdownAfterCancel()
+		}
 		return err
 	}
 	ticker := time.NewTicker(k.interval)
@@ -70,12 +73,24 @@ func (k *Sailer) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			k.shutdownAfterCancel()
 			return ctx.Err()
 		case <-ticker.C:
 			if err := k.SyncOnce(ctx); err != nil {
+				if ctx.Err() != nil {
+					k.shutdownAfterCancel()
+				}
 				return err
 			}
 		}
+	}
+}
+
+func (k *Sailer) shutdownAfterCancel() {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := k.Shutdown(shutdownCtx); err != nil {
+		minilog.Warn("sailer-shutdown", "node=%s error=%v", k.nodeName, err)
 	}
 }
 
@@ -96,22 +111,29 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 			continue
 		}
 		key := podKey(p)
-		desiredByKey[key] = p.DeepCopy()
+		desiredPod := p.DeepCopy()
 		if _, ok := k.known[key]; !ok {
 			minilog.Info("sailer-pod-assigned", "pod=%s/%s phase=%s", podNamespace(p.Namespace), p.Name, p.Status.Phase)
+			if hasRuntimeStatus(desiredPod) {
+				if err := k.runtime.CleanupPod(ctx, podNamespace(desiredPod.Namespace), desiredPod.Name); err != nil {
+					return err
+				}
+				resetPodRuntimeStatus(desiredPod)
+			}
 		}
-		if _, err := k.local.Get(p.Name, podNamespace(p.Namespace)); err == nil {
-			if err := k.local.Update(p); err != nil {
+		desiredByKey[key] = desiredPod.DeepCopy()
+		if _, err := k.local.Get(desiredPod.Name, podNamespace(desiredPod.Namespace)); err == nil {
+			if err := k.local.Update(desiredPod); err != nil {
 				return err
 			}
 		} else if err == store.ErrPodNotFound {
-			if err := k.local.Create(p); err != nil {
+			if err := k.local.Create(desiredPod); err != nil {
 				return err
 			}
 		} else {
 			return err
 		}
-		localPod, err := k.local.Get(p.Name, podNamespace(p.Namespace))
+		localPod, err := k.local.Get(desiredPod.Name, podNamespace(desiredPod.Namespace))
 		if err != nil {
 			return err
 		}
@@ -147,6 +169,47 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 		delete(k.known, key)
 	}
 	return k.SyncProxy(ctx)
+}
+
+func (k *Sailer) Shutdown(ctx context.Context) error {
+	if err := k.validate(); err != nil {
+		return err
+	}
+	var firstErr error
+	if k.proxy != nil {
+		if err := k.proxy.SyncAll(ctx, nil); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("clearing service proxy rules: %w", err)
+		}
+	}
+	if len(k.known) == 0 {
+		if err := k.runtime.CleanupNodePods(ctx, k.nodeName); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		return firstErr
+	}
+	for key, knownPod := range k.known {
+		namespace := podNamespace(knownPod.Namespace)
+		if err := k.runtime.CleanupPod(ctx, namespace, knownPod.Name); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if err := k.local.Delete(knownPod.Name, namespace); err != nil && err != store.ErrPodNotFound && firstErr == nil {
+			firstErr = fmt.Errorf("deleting local pod %s: %w", key, err)
+		}
+		delete(k.known, key)
+	}
+	return firstErr
+}
+
+func resetPodRuntimeStatus(p *pod.Pod) {
+	p.Status.Phase = pod.PodPending
+	p.Status.Reason = ""
+	p.Status.Message = ""
+	p.Status.PodIP = ""
+	p.Status.SandboxID = ""
+	p.Status.NetNSPath = ""
+	p.Status.CNIResult = ""
+	p.Status.StartTime = 0
+	p.Status.Containers = nil
 }
 
 func (k *Sailer) reportMetrics(ctx context.Context, pods []*pod.Pod) error {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	bridge "minik8s/internal/bridge"
 	store "minik8s/internal/bridge/logbook"
@@ -20,7 +22,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 	dependencyCleanup, err := prepareBridgeDependencies(ctx, os.Args[1:], os.Stdout, cli.StartBridgeDependencies)
 	if err != nil {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("starting bridge dependencies: %v", err))
@@ -66,6 +69,9 @@ func main() {
 	cmd := cli.NewRootCommand(app, os.Stdout)
 	cmd.SetArgs(os.Args[1:])
 	if err := cmd.ExecuteContext(ctx); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("minik8s: %v", err))
 		os.Exit(1)
 	}
