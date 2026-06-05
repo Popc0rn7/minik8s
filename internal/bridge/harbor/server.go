@@ -138,6 +138,12 @@ func New(config Config) *Server {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	switch {
+	case r.URL.Path == "/ui":
+		http.Redirect(w, r, "/ui/", http.StatusFound)
+	case r.URL.Path == "/ui/" || r.URL.Path == "/ui/index.html":
+		s.handleWebUI(w, r)
+	case r.URL.Path == "/ui/api/snapshot":
+		s.handleWebUISnapshot(w, r)
 	case r.URL.Path == "/version":
 		writeJSON(w, http.StatusOK, map[string]any{
 			"component":  "harbor",

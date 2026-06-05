@@ -351,6 +351,75 @@ func TestHarborServiceCRUDUpdatesEndpointsWithoutServiceProxy(t *testing.T) {
 	assert.ErrorIs(t, err, store.ErrServiceNotFound)
 }
 
+func TestHarborServesWebUI(t *testing.T) {
+	rec := serve(t, newTestServer(), http.MethodGet, "/ui/", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Header().Get("Content-Type"), "text/html")
+	assert.Contains(t, rec.Body.String(), "Minik8s Harbor")
+	assert.Contains(t, rec.Body.String(), "/ui/api/snapshot")
+	assert.Contains(t, rec.Body.String(), "function timestampMillis")
+}
+
+func TestHarborWebUISnapshotListsClusterResources(t *testing.T) {
+	srv := newTestServer()
+	require.NoError(t, srv.nodes.Upsert(node.New("node-a", node.NodeSpec{Role: node.NodeRoleWorker, PodCIDR: "10.244.0.0/24"}, node.NodeStatus{Phase: node.NodeReady})))
+	require.NoError(t, srv.nodes.Upsert(node.New("node-b", node.NodeSpec{Role: node.NodeRoleWorker, PodCIDR: "10.244.1.0/24"}, node.NodeStatus{Phase: node.NodeUnknown})))
+	require.NoError(t, srv.pods.Create(&pod.Pod{
+		TypeMeta:   pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{Name: "api", Namespace: "default", Labels: map[string]string{"app": "api"}},
+		Spec:       pod.PodSpec{NodeName: "node-a", Containers: []pod.ContainerSpec{{Name: "api", Image: "nginx"}}},
+		Status:     pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.0.2"},
+	}))
+	require.NoError(t, srv.pods.Create(&pod.Pod{
+		TypeMeta:   pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{Name: "worker", Namespace: "ops", Labels: map[string]string{"app": "worker"}},
+		Spec:       pod.PodSpec{NodeName: "node-b", Containers: []pod.ContainerSpec{{Name: "worker", Image: "busybox"}}},
+		Status:     pod.PodStatus{Phase: pod.PodPending, PodIP: "10.244.1.2"},
+	}))
+	require.NoError(t, srv.services.Create(&service.Service{
+		TypeMeta:   pod.TypeMeta{Kind: "Service", APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{Name: "api-svc", Namespace: "default"},
+		Spec: service.ServiceSpec{
+			Type:     service.ServiceTypeClusterIP,
+			Selector: pod.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+			Ports:    []service.ServicePort{{Port: 80, TargetPort: 8080, Protocol: "TCP"}},
+		},
+		Status: service.ServiceStatus{
+			ClusterIP: "10.96.0.10",
+			Endpoints: []service.Endpoint{{
+				PodName:    "api",
+				IP:         "10.244.0.2",
+				Port:       80,
+				TargetPort: 8080,
+				Protocol:   "TCP",
+			}},
+		},
+	}))
+
+	rec := serve(t, srv, http.MethodGet, "/ui/api/snapshot", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var snapshot struct {
+		Kind     string             `json:"kind"`
+		Nodes    []node.Node        `json:"nodes"`
+		Pods     []*pod.Pod         `json:"pods"`
+		Services []*service.Service `json:"services"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &snapshot))
+	assert.Equal(t, "WebUISnapshot", snapshot.Kind)
+	require.Len(t, snapshot.Nodes, 2)
+	assert.Equal(t, "node-a", snapshot.Nodes[0].Name())
+	require.Len(t, snapshot.Pods, 2)
+	assert.Equal(t, "default", snapshot.Pods[0].Namespace)
+	assert.Equal(t, "api", snapshot.Pods[0].Name)
+	assert.Equal(t, "ops", snapshot.Pods[1].Namespace)
+	require.Len(t, snapshot.Services, 1)
+	assert.Equal(t, "api-svc", snapshot.Services[0].Name)
+	require.Len(t, snapshot.Services[0].Status.Endpoints, 1)
+	assert.Equal(t, "api", snapshot.Services[0].Status.Endpoints[0].PodName)
+}
+
 func TestHarborNodePodsEndpointFiltersByNodeName(t *testing.T) {
 	srv := newTestServer()
 	for _, item := range []struct {
