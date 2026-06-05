@@ -144,6 +144,28 @@ func TestApplyResourcesUsesDockerCPUAndMemoryLimits(t *testing.T) {
 	assert.Equal(t, int64(134217728), hostConfig.Memory)
 }
 
+func TestContainerConfigLeavesImageDefaultsWhenCommandAndArgsEmpty(t *testing.T) {
+	config := dockerContainerConfig(&runtime.ContainerConfig{
+		Image:   "nats:2",
+		Command: []string{},
+		Args:    []string{},
+	})
+
+	assert.Nil(t, config.Entrypoint)
+	assert.Nil(t, config.Cmd)
+}
+
+func TestContainerConfigSetsExplicitCommandAndArgs(t *testing.T) {
+	config := dockerContainerConfig(&runtime.ContainerConfig{
+		Image:   "quay.io/coreos/etcd:v3.5.15",
+		Command: []string{"/usr/local/bin/etcd"},
+		Args:    []string{"--name", "minik8s-etcd"},
+	})
+
+	assert.Equal(t, []string{"/usr/local/bin/etcd"}, []string(config.Entrypoint))
+	assert.Equal(t, []string{"--name", "minik8s-etcd"}, []string(config.Cmd))
+}
+
 func TestProcessPullStreamReturnsDockerError(t *testing.T) {
 	err := processPullStream(strings.NewReader(`{"status":"Pulling"}
 {"errorDetail":{"message":"proxy connect failed"},"error":"proxy connect failed"}

@@ -79,10 +79,16 @@ sailer = kubelet 子集 + node network agent + kube-proxy
 make build
 ```
 
+可选：复制 `.env.example` 为 `.env`，把常用运行配置放在文件中。`minik8s`
+启动时会读取当前目录 `.env`，但 shell 中已设置的环境变量优先。
+
+```bash
+cp .env.example .env
+```
+
 启动控制面：
 
 ```bash
-export MINIK8S_HARBOR=http://127.0.0.1:18080
 ./minik8s bridge \
   --listen :18080 \
   --cluster-cidr 10.244.0.0/16 \
@@ -92,7 +98,7 @@ export MINIK8S_HARBOR=http://127.0.0.1:18080
 在另一个终端启动本机 worker：
 
 ```bash
-./minik8s sailer manifest/node/node_a.yaml --harbor http://127.0.0.1:18080
+./minik8s sailer manifest/node/node_a.yaml
 ```
 
 常用 CLI：
@@ -132,13 +138,16 @@ CNI 和 kube-proxy 需要 Linux network namespace、`ip`、`bridge`、`iptables`
 4. `sailer` 写入本机 CNI 配置并同步 VXLAN overlay。
 5. 通过 `get nodes`、PodIP 互通、Service endpoints 和 iptables 规则验证结果。
 
-etcd/Logbook 流程见 [docs/testcase/logbook.md](docs/testcase/logbook.md)。设置：
+etcd/Logbook 流程见 [docs/testcase/logbook.md](docs/testcase/logbook.md)。默认
+`bridge` 会启动一个私有本地 `sailer`，由该内部 worker 运行 etcd/NATS 依赖 Pod，
+并把控制面连接到 `http://127.0.0.1:2379` 和 `nats://127.0.0.1:4222`。如果只想使用
+本地 JSON file store，可启动：
 
 ```bash
-export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
+./minik8s bridge --listen :18080 --deps none
 ```
 
-之后启动 `bridge`，Pod、Service、ReplicaSet、Node 会写入 `/registry/...` 前缀。
+默认 etcd 模式下，Pod、Service、ReplicaSet、Node 会写入 `/registry/...` 前缀。
 
 ## Handout 覆盖状态
 

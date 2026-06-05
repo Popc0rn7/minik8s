@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,7 @@ type fakePodClient struct {
 	heartbeat NodeHeartbeat
 	updates   []*pod.Pod
 	metrics   []*metrics.PodMetrics
+	onUpdate  func()
 }
 
 func (f *fakePodClient) ListAssignedPods(ctx context.Context, heartbeat NodeHeartbeat) ([]*pod.Pod, error) {
@@ -48,6 +50,9 @@ func (f *fakePodClient) ListServices(ctx context.Context) ([]*service.Service, e
 func (f *fakePodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {
 	_ = ctx
 	f.updates = append(f.updates, p.DeepCopy())
+	if f.onUpdate != nil {
+		f.onUpdate()
+	}
 	return nil
 }
 
@@ -142,9 +147,63 @@ func TestSailerSyncOnceCleansRemovedAssignedPods(t *testing.T) {
 	client.pods = nil
 	require.NoError(t, k.SyncOnce(context.Background()))
 
-	assert.NotEmpty(t, rt.RemoveSandboxCalls)
-	assert.NotEmpty(t, rt.RemoveContainerCalls)
+	assert.Contains(t, rt.CleanupPodCalls, "default/nginx")
 	assert.Contains(t, logs.String(), "sailer-pod-removed: pod=default/nginx")
+}
+
+func TestSailerSyncOnceResetsStaleRuntimeStatusForNewAssignment(t *testing.T) {
+	rt := mock.NewMockRuntime()
+	rt.NetNSPath = "/proc/101/ns/net"
+	stale := testPod("nginx", "node-a")
+	stale.Status = pod.PodStatus{
+		Phase:     pod.PodRunning,
+		SandboxID: "old-sandbox",
+		PodIP:     "10.244.0.9",
+		Containers: []pod.ContainerStatus{{
+			Name:        "c",
+			ContainerID: "old-container",
+			Ready:       true,
+		}},
+	}
+	client := &fakePodClient{pods: []*pod.Pod{stale}}
+	k := New(Config{NodeName: "node-a", Runtime: rt, Client: client})
+
+	require.NoError(t, k.SyncOnce(context.Background()))
+
+	assert.Contains(t, rt.CleanupPodCalls, "default/nginx")
+	assert.Len(t, rt.CreateSandboxCalls, 1)
+	require.Len(t, client.updates, 1)
+	assert.Equal(t, pod.PodRunning, client.updates[0].Status.Phase)
+	assert.NotEqual(t, "old-sandbox", client.updates[0].Status.SandboxID)
+	assert.NotEqual(t, "old-container", client.updates[0].Status.Containers[0].ContainerID)
+}
+
+func TestSailerRunCleansKnownPodsOnCancel(t *testing.T) {
+	rt := mock.NewMockRuntime()
+	rt.NetNSPath = "/proc/101/ns/net"
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &fakePodClient{
+		pods: []*pod.Pod{testPod("nginx", "node-a")},
+		onUpdate: func() {
+			cancel()
+		},
+	}
+	k := New(Config{NodeName: "node-a", Runtime: rt, Client: client, Interval: time.Hour})
+
+	err := k.Run(ctx)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, rt.CleanupPodCalls, "default/nginx")
+}
+
+func TestSailerShutdownCleansNodePodsWhenKnownIsEmpty(t *testing.T) {
+	rt := mock.NewMockRuntime()
+	client := &fakePodClient{}
+	k := New(Config{NodeName: "node-a", Runtime: rt, Client: client})
+
+	require.NoError(t, k.Shutdown(context.Background()))
+
+	assert.Contains(t, rt.CleanupNodePodsCalls, "node-a")
 }
 
 func testPod(name, nodeName string) *pod.Pod {

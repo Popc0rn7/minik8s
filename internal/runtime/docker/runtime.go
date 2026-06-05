@@ -20,6 +20,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/errdefs"
 	"github.com/docker/go-connections/nat"
 
 	"minik8s/internal/minilog"
@@ -108,8 +109,11 @@ func (d *DockerRuntime) CreateSandbox(ctx context.Context, config *runtime.Sandb
 	labels["minik8s.kind"] = "pod-sandbox"
 	labels["minik8s.pod.name"] = config.Name
 	labels["minik8s.pod.namespace"] = config.Namespace
+	if config.NodeName != "" {
+		labels["minik8s.node.name"] = config.NodeName
+	}
 	name := dockerName("minik8s-pod", config.Namespace, config.Name, "sandbox")
-	if err := d.cleanupExistingPodContainers(ctx, config.Namespace, config.Name); err != nil {
+	if err := d.CleanupPod(ctx, config.Namespace, config.Name); err != nil {
 		return "", err
 	}
 	hostConfig := sandboxHostConfig(portBindings, config.NetworkMode)
@@ -159,12 +163,18 @@ func (d *DockerRuntime) StartSandbox(ctx context.Context, sandboxID string) erro
 // StopSandbox stops the sandbox container.
 func (d *DockerRuntime) StopSandbox(ctx context.Context, sandboxID string, timeout time.Duration) error {
 	seconds := int(timeout.Seconds())
-	return d.client.ContainerStop(ctx, sandboxID, container.StopOptions{Timeout: &seconds})
+	if err := d.client.ContainerStop(ctx, sandboxID, container.StopOptions{Timeout: &seconds}); err != nil && !errdefs.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // RemoveSandbox removes the sandbox container.
 func (d *DockerRuntime) RemoveSandbox(ctx context.Context, sandboxID string) error {
-	return d.client.ContainerRemove(ctx, sandboxID, container.RemoveOptions{Force: true})
+	if err := d.client.ContainerRemove(ctx, sandboxID, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // GetSandboxStatus returns the status of the sandbox container.
@@ -214,23 +224,35 @@ func (d *DockerRuntime) CreateContainer(ctx context.Context, sandboxID string, c
 	}
 	applyResources(hostConfig, config.Resources)
 
-	// Create the container
-	resp, err := d.client.ContainerCreate(ctx, &container.Config{
-		Image:        imageName,
-		Entrypoint:   config.Command,
-		Cmd:          config.Args,
+	containerConfig := dockerContainerConfig(config)
+	containerConfig.Image = imageName
+	resp, err := d.client.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, config.Name)
+	if err != nil {
+		return "", fmt.Errorf("failed to create container: %w", err)
+	}
+	minilog.Success("container-create", "created container=%s id=%s", config.Name, resp.ID)
+	return resp.ID, nil
+}
+
+func dockerContainerConfig(config *runtime.ContainerConfig) *container.Config {
+	return &container.Config{
+		Image:        config.Image,
+		Entrypoint:   nonEmptySlice(config.Command),
+		Cmd:          nonEmptySlice(config.Args),
 		Env:          config.Env,
 		WorkingDir:   config.WorkingDir,
 		Labels:       config.Labels,
 		Tty:          false,
 		AttachStdout: false,
 		AttachStderr: false,
-	}, hostConfig, nil, nil, config.Name)
-	if err != nil {
-		return "", fmt.Errorf("failed to create container: %w", err)
 	}
-	minilog.Success("container-create", "created container=%s id=%s", config.Name, resp.ID)
-	return resp.ID, nil
+}
+
+func nonEmptySlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	return values
 }
 
 // StartContainer starts a Docker container
@@ -242,27 +264,52 @@ func (d *DockerRuntime) StartContainer(ctx context.Context, containerID string) 
 // StopContainer stops a Docker container
 func (d *DockerRuntime) StopContainer(ctx context.Context, containerID string, timeout time.Duration) error {
 	seconds := int(timeout.Seconds())
-	return d.client.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &seconds})
+	if err := d.client.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &seconds}); err != nil && !errdefs.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // RemoveContainer removes a Docker container
 func (d *DockerRuntime) RemoveContainer(ctx context.Context, containerID string) error {
-	return d.client.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+	if err := d.client.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
-func (d *DockerRuntime) cleanupExistingPodContainers(ctx context.Context, namespace, name string) error {
+func (d *DockerRuntime) CleanupPod(ctx context.Context, namespace, name string) error {
 	args := filters.NewArgs(
+		filters.Arg("label", "minik8s.kind"),
 		filters.Arg("label", "minik8s.pod.name="+name),
 		filters.Arg("label", "minik8s.pod.namespace="+namespace),
 	)
 	containers, err := d.client.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
 	if err != nil {
-		return fmt.Errorf("listing existing pod containers: %w", err)
+		return fmt.Errorf("listing pod containers: %w", err)
 	}
 	for _, existing := range containers {
-		minilog.Warn("pod-cleanup", "remove stale container=%s pod=%s/%s", existing.ID, namespace, name)
-		if err := d.client.ContainerRemove(ctx, existing.ID, container.RemoveOptions{Force: true}); err != nil {
-			return fmt.Errorf("removing stale pod container %s: %w", existing.ID, err)
+		minilog.Warn("pod-cleanup", "remove container=%s pod=%s/%s", existing.ID, namespace, name)
+		if err := d.client.ContainerRemove(ctx, existing.ID, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+			return fmt.Errorf("removing pod container %s: %w", existing.ID, err)
+		}
+	}
+	return nil
+}
+
+func (d *DockerRuntime) CleanupNodePods(ctx context.Context, nodeName string) error {
+	args := filters.NewArgs(
+		filters.Arg("label", "minik8s.kind"),
+		filters.Arg("label", "minik8s.node.name="+nodeName),
+	)
+	containers, err := d.client.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+	if err != nil {
+		return fmt.Errorf("listing node pod containers: %w", err)
+	}
+	for _, existing := range containers {
+		minilog.Warn("node-cleanup", "remove container=%s node=%s", existing.ID, nodeName)
+		if err := d.client.ContainerRemove(ctx, existing.ID, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+			return fmt.Errorf("removing node pod container %s: %w", existing.ID, err)
 		}
 	}
 	return nil

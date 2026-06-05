@@ -78,10 +78,7 @@ func TestPodControllerDeletePodCleansRuntimeAndStore(t *testing.T) {
 	err := ctrl.DeletePod(context.Background(), "delete-me", "default")
 
 	require.NoError(t, err)
-	assert.NotEmpty(t, mockRuntime.StopContainerCalls)
-	assert.NotEmpty(t, mockRuntime.RemoveContainerCalls)
-	assert.NotEmpty(t, mockRuntime.StopSandboxCalls)
-	assert.NotEmpty(t, mockRuntime.RemoveSandboxCalls)
+	assert.Contains(t, mockRuntime.CleanupPodCalls, "default/delete-me")
 	_, err = podStore.Get("delete-me", "default")
 	assert.Error(t, err)
 }

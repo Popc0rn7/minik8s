@@ -173,6 +173,15 @@ func TestPodController_ReconcilePendingPod(t *testing.T) {
 	assert.NotEmpty(t, mockRuntime.StartContainerCalls)
 }
 
+func TestPodControllerInternalDependencyPodUsesDockerBridgeNetwork(t *testing.T) {
+	controller := NewPodController(mock.NewMockRuntime(), NewMockPodStore())
+	internalPod := newTestPod("bridge-deps", "minik8s-system", pod.RestartPolicyAlways)
+	internalPod.Annotations = map[string]string{"minik8s.internal": "true"}
+
+	assert.Equal(t, "bridge", controller.sandboxNetworkMode(internalPod))
+	assert.Equal(t, "", controller.sandboxNetworkMode(newTestPod("normal", "default", pod.RestartPolicyAlways)))
+}
+
 func TestPodController_DeletePodTearsDownNetworkBeforeRemovingSandbox(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	mockRuntime.NetNSPath = "/proc/101/ns/net"
@@ -187,7 +196,16 @@ func TestPodController_DeletePodTearsDownNetworkBeforeRemovingSandbox(t *testing
 	require.NoError(t, controller.DeletePod(context.Background(), "test-pod", "default"))
 
 	assert.Equal(t, []string{"sandbox-1|/proc/101/ns/net"}, podNetwork.teardownCalls)
-	assert.NotEmpty(t, mockRuntime.RemoveSandboxCalls)
+	assert.Contains(t, mockRuntime.CleanupPodCalls, "default/test-pod")
+}
+
+func TestPodController_DeleteMissingPodStillCleansRuntimeByLabel(t *testing.T) {
+	mockRuntime := mock.NewMockRuntime()
+	controller := NewPodController(mockRuntime, NewMockPodStore())
+
+	require.NoError(t, controller.DeletePod(context.Background(), "missing", "default"))
+
+	assert.Contains(t, mockRuntime.CleanupPodCalls, "default/missing")
 }
 
 func TestPodController_ReconcilePendingPod_SandboxCreationFailure(t *testing.T) {
@@ -457,10 +475,7 @@ func TestPodController_ReconcileTerminalPod(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify containers and sandbox were cleaned up
-	assert.NotEmpty(t, mockRuntime.StopContainerCalls)
-	assert.NotEmpty(t, mockRuntime.RemoveContainerCalls)
-	assert.NotEmpty(t, mockRuntime.StopSandboxCalls)
-	assert.NotEmpty(t, mockRuntime.RemoveSandboxCalls)
+	assert.Contains(t, mockRuntime.CleanupPodCalls, "default/test-pod")
 }
 
 func TestPodController_ShouldRestart(t *testing.T) {

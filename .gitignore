@@ -39,3 +39,6 @@ go.work.sum
 # vibe coding
 /.agents/
 /.claude/
+
+# env
+.env

@@ -196,9 +196,10 @@ func (pc *PodController) handlePendingPod(ctx context.Context, p *pod.Pod) error
 		ID:          p.Name,
 		Name:        p.Name,
 		Namespace:   p.Namespace,
+		NodeName:    p.Spec.NodeName,
 		Labels:      p.Labels,
 		Ports:       podPorts(p),
-		NetworkMode: pc.sandboxNetworkMode(),
+		NetworkMode: pc.sandboxNetworkMode(p),
 	})
 	if err != nil {
 		minilog.Error("pod-failed", "pod=%s/%s reason=%v", p.Namespace, p.Name, err)
@@ -372,7 +373,7 @@ func (pc *PodController) handleRunningPod(ctx context.Context, p *pod.Pod) error
 // handleTerminalPod cleans up resources for terminal Pods
 func (pc *PodController) handleTerminalPod(ctx context.Context, p *pod.Pod) error {
 	if p.Status.SandboxID == "" && len(p.Status.Containers) == 0 {
-		return nil
+		return pc.runtime.CleanupPod(ctx, podNamespace(p.Namespace), p.Name)
 	}
 
 	sandboxID := p.Status.SandboxID
@@ -389,19 +390,6 @@ func (pc *PodController) handleTerminalPod(ctx context.Context, p *pod.Pod) erro
 		sandboxID = fmt.Sprintf("sandbox-%s", p.Name)
 	}
 
-	// Delete containers
-	for _, containerStatus := range p.Status.Containers {
-		minilog.Step("docker-runtime", "stop container=%s pod=%s/%s", containerStatus.ContainerID, p.Namespace, p.Name)
-		if err := pc.runtime.StopContainer(ctx, containerStatus.ContainerID, DefaultTimeout); err != nil {
-			return fmt.Errorf("stopping container %s: %w", containerStatus.ContainerID, err)
-		}
-		minilog.Step("docker-runtime", "remove container=%s pod=%s/%s", containerStatus.ContainerID, p.Namespace, p.Name)
-		if err := pc.runtime.RemoveContainer(ctx, containerStatus.ContainerID); err != nil {
-			return fmt.Errorf("removing container %s: %w", containerStatus.ContainerID, err)
-		}
-	}
-
-	// Delete sandbox
 	if pc.network != nil && sandboxID != "" {
 		minilog.Step("pod-delete", "teardown network sandbox=%s pod=%s/%s", sandboxID, p.Namespace, p.Name)
 		if err := pc.network.Del(ctx, PodNetworkRequest{
@@ -412,15 +400,9 @@ func (pc *PodController) handleTerminalPod(ctx context.Context, p *pod.Pod) erro
 			return fmt.Errorf("tearing down pod network: %w", err)
 		}
 	}
-	minilog.Step("docker-runtime", "stop sandbox=%s pod=%s/%s", sandboxID, p.Namespace, p.Name)
-	if err := pc.runtime.StopSandbox(ctx, sandboxID, DefaultTimeout); err != nil {
-		return fmt.Errorf("stopping sandbox %s: %w", sandboxID, err)
+	if err := pc.runtime.CleanupPod(ctx, podNamespace(p.Namespace), p.Name); err != nil {
+		return err
 	}
-	minilog.Step("docker-runtime", "remove sandbox=%s pod=%s/%s", sandboxID, p.Namespace, p.Name)
-	if err := pc.runtime.RemoveSandbox(ctx, sandboxID); err != nil {
-		return fmt.Errorf("removing sandbox %s: %w", sandboxID, err)
-	}
-
 	return nil
 }
 
@@ -432,7 +414,10 @@ func (pc *PodController) sandboxNetNSPath(ctx context.Context, sandboxID string)
 	return provider.GetSandboxNetNSPath(ctx, sandboxID)
 }
 
-func (pc *PodController) sandboxNetworkMode() string {
+func (pc *PodController) sandboxNetworkMode(p *pod.Pod) string {
+	if p != nil && p.Annotations["minik8s.internal"] == "true" {
+		return "bridge"
+	}
 	if pc.network != nil {
 		return "none"
 	}
@@ -457,6 +442,9 @@ func (pc *PodController) DeletePod(ctx context.Context, name, namespace string) 
 	minilog.Info("pod-delete", "start pod=%s/%s", namespace, name)
 	p, err := pc.store.Get(name, namespace)
 	if err != nil {
+		if err == store.ErrPodNotFound {
+			return pc.runtime.CleanupPod(ctx, podNamespace(namespace), name)
+		}
 		return err
 	}
 	if err := pc.handleTerminalPod(ctx, p); err != nil {
@@ -547,6 +535,9 @@ func containerLabels(p *pod.Pod, sandboxID, containerName string) map[string]str
 		"minik8s.pod.name":       p.Name,
 		"minik8s.pod.namespace":  p.Namespace,
 		"minik8s.container.name": containerName,
+	}
+	if p.Spec.NodeName != "" {
+		labels["minik8s.node.name"] = p.Spec.NodeName
 	}
 	for k, v := range p.Labels {
 		labels[k] = v

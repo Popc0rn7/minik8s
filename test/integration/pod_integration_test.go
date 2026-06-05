@@ -202,8 +202,7 @@ func TestPodTerminationWithYAML(t *testing.T) {
 	ctrl.Sync(ctx)
 
 	// Verify containers were cleaned up
-	assert.NotEmpty(t, mockRuntime.StopContainerCalls)
-	assert.NotEmpty(t, mockRuntime.RemoveContainerCalls)
+	assert.Contains(t, mockRuntime.CleanupPodCalls, "default/nginx-pod")
 }
 
 func TestPodFailureRecovery(t *testing.T) {
