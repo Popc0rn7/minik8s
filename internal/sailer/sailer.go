@@ -24,19 +24,21 @@ type Config struct {
 	Client       PodClient
 	ServiceProxy kubeproxy.Proxy
 	Interval     time.Duration
+	ClusterDNS   string
 }
 
 type Sailer struct {
-	nodeName string
-	node     *node.Node
-	runtime  runtime.ContainerRuntime
-	network  PodNetworkManager
-	client   PodClient
-	proxy    kubeproxy.Proxy
-	interval time.Duration
-	local    store.PodStore
-	known    map[string]*pod.Pod
-	stats    map[string]runtime.ContainerStats
+	nodeName   string
+	node       *node.Node
+	runtime    runtime.ContainerRuntime
+	network    PodNetworkManager
+	client     PodClient
+	proxy      kubeproxy.Proxy
+	clusterDNS string
+	interval   time.Duration
+	local      store.PodStore
+	known      map[string]*pod.Pod
+	stats      map[string]runtime.ContainerStats
 }
 
 func New(config Config) *Sailer {
@@ -45,16 +47,17 @@ func New(config Config) *Sailer {
 		interval = 5 * time.Second
 	}
 	return &Sailer{
-		nodeName: nodeNameFromConfig(config),
-		node:     nodeFromConfig(config),
-		runtime:  config.Runtime,
-		network:  config.Network,
-		client:   config.Client,
-		proxy:    config.ServiceProxy,
-		interval: interval,
-		local:    store.NewInMemoryPodStore(),
-		known:    make(map[string]*pod.Pod),
-		stats:    make(map[string]runtime.ContainerStats),
+		nodeName:   nodeNameFromConfig(config),
+		node:       nodeFromConfig(config),
+		runtime:    config.Runtime,
+		network:    config.Network,
+		client:     config.Client,
+		proxy:      config.ServiceProxy,
+		clusterDNS: config.ClusterDNS,
+		interval:   interval,
+		local:      store.NewInMemoryPodStore(),
+		known:      make(map[string]*pod.Pod),
+		stats:      make(map[string]runtime.ContainerStats),
 	}
 }
 
@@ -140,7 +143,7 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 		syncPods = append(syncPods, localPod)
 	}
 
-	ctrl := NewPodControllerWithNetwork(k.runtime, k.local, k.network)
+	ctrl := NewPodControllerWithNetworkAndDNS(k.runtime, k.local, k.network, k.clusterDNS)
 	ctrl.SyncPods(ctx, syncPods)
 
 	for _, p := range syncPods {

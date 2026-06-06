@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"minik8s/internal/cliui"
+	"minik8s/internal/dns"
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
 	"minik8s/internal/hpa"
@@ -62,6 +63,7 @@ func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 	root.AddCommand(newCNICommand(app, out))
 	root.AddCommand(newNetRegistryCommand(app, out))
 	root.AddCommand(newNetDCommand(app, out))
+	root.AddCommand(newRouteProxyCommand(app, out))
 	root.AddCommand(newBridgeCommand(app, out))
 	root.AddCommand(newSailerCommand(app, out))
 	return root
@@ -119,7 +121,7 @@ func newApplyCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
-		Use:     "get pods|services|replicasets|hpa|nodes [name]",
+		Use:     "get pods|services|dns|replicasets|hpa|nodes [name]",
 		Aliases: []string{"list"},
 		Short:   "Get resources",
 		Args:    cobra.RangeArgs(1, 2),
@@ -138,8 +140,8 @@ func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete pod|service|replicaset|hpa <name>",
-		Short: "Delete a Pod, Service, ReplicaSet, or HPA",
+		Use:   "delete pod|service|dns|replicaset|hpa <name>",
+		Short: "Delete a Pod, Service, DNS, ReplicaSet, or HPA",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bind()
@@ -154,6 +156,10 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 				}
 			case resourceServices:
 				if err := app.delete(cmd.Context(), []string{"service", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
+			case resourceDNS:
+				if err := app.delete(cmd.Context(), []string{"dns", ref.name, "-n", app.namespace}, out); err != nil {
 					return err
 				}
 			case resourceReplicaSets:
@@ -177,7 +183,7 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 					return err
 				}
 			default:
-				return fmt.Errorf("delete supports pods, services, replicasets, hpas, functions, eventtriggers, and workflows")
+				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, functions, eventtriggers, and workflows")
 			}
 			return nil
 		},
@@ -187,7 +193,7 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDescribeCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "describe pod|service|replicaset|hpa|node <name>",
+		Use:   "describe pod|service|dns|replicaset|hpa|node <name>",
 		Short: "Show resource details",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -362,9 +368,26 @@ func newNetDCommand(app *App, out io.Writer) *cobra.Command {
 	return cmd
 }
 
+func newRouteProxyCommand(app *App, out io.Writer) *cobra.Command {
+	var listen string
+	var routes string
+	cmd := &cobra.Command{
+		Use:   "route-proxy",
+		Short: "Run the Minik8s DNS HTTP route proxy",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.routeProxy(cmd.Context(), listen, routes, out)
+		},
+	}
+	cmd.Flags().StringVar(&listen, "listen", "127.0.0.1:18081", "Route proxy listen address")
+	cmd.Flags().StringVar(&routes, "routes", DefaultDNSRoutesPath(), "DNS route snapshot path")
+	return cmd
+}
+
 func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
-	var listen, serviceSyncInterval, replicaSetSyncInterval, hpaSyncInterval, clusterCIDR string
+	var listen, serviceSyncInterval, dnsSyncInterval, replicaSetSyncInterval, hpaSyncInterval, clusterCIDR, gatewayIP, dnsListen, ingressListen string
 	var nodeCIDRMaskSize int
+	var dnsDisabled bool
 	cmd := &cobra.Command{
 		Use:   "bridge",
 		Short: "Run the control plane",
@@ -375,6 +398,21 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 			}
 			if serviceSyncInterval != "" {
 				legacy = append(legacy, "--service-sync-interval", serviceSyncInterval)
+			}
+			if dnsSyncInterval != "" {
+				legacy = append(legacy, "--dns-sync-interval", dnsSyncInterval)
+			}
+			if dnsDisabled {
+				legacy = append(legacy, "--dns-disabled")
+			}
+			if gatewayIP != "" {
+				legacy = append(legacy, "--gateway-ip", gatewayIP)
+			}
+			if dnsListen != "" {
+				legacy = append(legacy, "--dns-listen", dnsListen)
+			}
+			if ingressListen != "" {
+				legacy = append(legacy, "--ingress-listen", ingressListen)
 			}
 			if replicaSetSyncInterval != "" {
 				legacy = append(legacy, "--replicaset-sync-interval", replicaSetSyncInterval)
@@ -393,6 +431,11 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&listen, "listen", "", "Listen address")
 	cmd.Flags().StringVar(&serviceSyncInterval, "service-sync-interval", "", "Service sync interval")
+	cmd.Flags().StringVar(&dnsSyncInterval, "dns-sync-interval", "", "DNS sync interval")
+	cmd.Flags().BoolVar(&dnsDisabled, "dns-disabled", false, "Disable DNS gateway sync")
+	cmd.Flags().StringVar(&gatewayIP, "gateway-ip", "", "DNS answer gateway IP")
+	cmd.Flags().StringVar(&dnsListen, "dns-listen", "", "DNS host listen port/address")
+	cmd.Flags().StringVar(&ingressListen, "ingress-listen", "", "HTTP ingress host listen port/address")
 	cmd.Flags().StringVar(&replicaSetSyncInterval, "replicaset-sync-interval", "", "ReplicaSet sync interval")
 	cmd.Flags().StringVar(&hpaSyncInterval, "hpa-sync-interval", "", "HPA sync interval")
 	cmd.Flags().StringVar(&clusterCIDR, "cluster-cidr", "", "Cluster CIDR for Node PodCIDR allocation")
@@ -401,7 +444,7 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 }
 
 func newSailerCommand(app *App, out io.Writer) *cobra.Command {
-	var harbor, interval string
+	var harbor, interval, clusterDNS string
 	var vxlanID, vxlanPort int
 	var vxlanName string
 	var once, proxyDisabled bool
@@ -423,6 +466,7 @@ func newSailerCommand(app *App, out io.Writer) *cobra.Command {
 			}
 			appendFlag("--harbor", harbor)
 			appendFlag("--interval", interval)
+			appendFlag("--cluster-dns", clusterDNS)
 			appendIntFlag("--vxlan-id", vxlanID)
 			appendIntFlag("--vxlan-port", vxlanPort)
 			appendFlag("--vxlan-name", vxlanName)
@@ -437,6 +481,7 @@ func newSailerCommand(app *App, out io.Writer) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&harbor, "harbor", "", "Harbor URL")
 	cmd.Flags().StringVar(&interval, "interval", "", "Sync interval")
+	cmd.Flags().StringVar(&clusterDNS, "cluster-dns", "", "Cluster DNS nameserver IP")
 	cmd.Flags().IntVar(&vxlanID, "vxlan-id", 0, "VXLAN network identifier")
 	cmd.Flags().IntVar(&vxlanPort, "vxlan-port", 0, "VXLAN UDP port")
 	cmd.Flags().StringVar(&vxlanName, "vxlan-name", "", "VXLAN device name")
@@ -450,6 +495,7 @@ type resourceName string
 const (
 	resourcePods          resourceName = "pods"
 	resourceServices      resourceName = "services"
+	resourceDNS           resourceName = "dns"
 	resourceReplicaSets   resourceName = "replicasets"
 	resourceHPAs          resourceName = "horizontalpodautoscalers"
 	resourceNodes         resourceName = "nodes"
@@ -492,6 +538,8 @@ func normalizeResource(resource string) (resourceName, error) {
 		return resourcePods, nil
 	case "service", "services", "svc":
 		return resourceServices, nil
+	case "dns":
+		return resourceDNS, nil
 	case "replicaset", "replicasets", "rs":
 		return resourceReplicaSets, nil
 	case "hpa", "hpas", "horizontalpodautoscaler", "horizontalpodautoscalers":
@@ -555,6 +603,26 @@ func (a *App) getResource(ctx context.Context, ref resourceRef, output string, o
 			return writeObject(out, output, map[string]any{"kind": "ServiceList", "apiVersion": "v1", "items": services})
 		}
 		return writeServiceTable(out, services)
+	case resourceDNS:
+		if ref.name != "" {
+			d, err := client.GetDNS(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, d)
+			}
+			return writeDNSTable(out, []*dns.DNS{d})
+		}
+		items, err := client.ListDNS(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortDNSList(items)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "DNSList", "apiVersion": "v1", "items": items})
+		}
+		return writeDNSTable(out, items)
 	case resourceReplicaSets:
 		if ref.name != "" {
 			rs, err := client.GetReplicaSet(ctx, ref.name, a.namespace)
@@ -698,6 +766,12 @@ func (a *App) describeResource(ctx context.Context, ref resourceRef, out io.Writ
 			return err
 		}
 		return describeService(out, svc)
+	case resourceDNS:
+		d, err := client.GetDNS(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeDNS(out, d)
 	case resourceReplicaSets:
 		rs, err := client.GetReplicaSet(ctx, ref.name, a.namespace)
 		if err != nil {
@@ -777,6 +851,15 @@ func sortServiceList(services []*service.Service) {
 			return services[i].Name < services[j].Name
 		}
 		return services[i].Namespace < services[j].Namespace
+	})
+}
+
+func sortDNSList(items []*dns.DNS) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Namespace == items[j].Namespace {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].Namespace < items[j].Namespace
 	})
 }
 
@@ -883,6 +966,31 @@ func writeServiceTable(out io.Writer, services []*service.Service) error {
 			cliui.PadRight(formatServiceSelector(svc.Spec.Selector), 22),
 			cliui.PadRight(svc.Namespace, 14),
 			formatLabels(svc.Labels),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeDNSTable(out io.Writer, items []*dns.DNS) error {
+	if err := writef(out, "%s %s %s %s %s\n",
+		cliui.PadRight("DNS", 31),
+		cliui.PadRight("HOST", 26),
+		cliui.PadRight("PATHS", 38),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
+		return err
+	}
+	for _, d := range items {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[dns]"), d.Name)
+		if err := writef(out, "%s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(d.Spec.Host, 26),
+			cliui.PadRight(formatDNSPaths(d.Spec.Paths), 38),
+			cliui.PadRight(d.Namespace, 14),
+			formatLabels(d.Labels),
 		); err != nil {
 			return err
 		}
@@ -1082,6 +1190,34 @@ func describeService(out io.Writer, svc *service.Service) error {
 		}
 	}
 	return nil
+}
+
+func describeDNS(out io.Writer, d *dns.DNS) error {
+	lines := []string{
+		fmt.Sprintf("Name: %s", d.Name),
+		fmt.Sprintf("Namespace: %s", d.Namespace),
+		fmt.Sprintf("Host: %s", d.Spec.Host),
+		fmt.Sprintf("Paths: %s", formatDNSPaths(d.Spec.Paths)),
+		fmt.Sprintf("Labels: %s", formatLabels(d.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func formatDNSPaths(paths []dns.DNSPath) string {
+	if len(paths) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(paths))
+	for _, p := range paths {
+		parts = append(parts, fmt.Sprintf("%s(%s)->%s:%d", p.Path, p.PathType, p.ServiceName, p.ServicePort))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }
 
 func describeReplicaSet(out io.Writer, rs *replicaset.ReplicaSet) error {

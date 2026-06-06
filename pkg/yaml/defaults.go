@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"minik8s/internal/dns"
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
 	"minik8s/internal/pod"
@@ -72,6 +73,57 @@ func DefaultAndValidatePod(p *pod.Pod) error {
 		}
 	}
 
+	return nil
+}
+
+func DefaultAndValidateDNS(d *dns.DNS) error {
+	if d == nil {
+		return fmt.Errorf("dns is nil")
+	}
+	if d.Kind != "" && d.Kind != dns.Kind {
+		return fmt.Errorf("kind must be DNS, got %q", d.Kind)
+	}
+	if d.Kind == "" {
+		d.Kind = dns.Kind
+	}
+	if d.APIVersion == "" {
+		d.APIVersion = "v1"
+	}
+	if d.Namespace == "" {
+		d.Namespace = "default"
+	}
+	if strings.TrimSpace(d.Name) == "" {
+		return fmt.Errorf("metadata.name is required")
+	}
+	if strings.TrimSpace(d.Spec.Host) == "" {
+		return fmt.Errorf("spec.host is required")
+	}
+	if len(d.Spec.Paths) == 0 {
+		return fmt.Errorf("spec.paths must contain at least one path")
+	}
+	for i := range d.Spec.Paths {
+		p := &d.Spec.Paths[i]
+		if strings.TrimSpace(p.Path) == "" {
+			return fmt.Errorf("spec.paths[%d].path is required", i)
+		}
+		if !strings.HasPrefix(p.Path, "/") {
+			return fmt.Errorf("spec.paths[%d].path must start with /", i)
+		}
+		if p.PathType == "" {
+			p.PathType = dns.PathTypePrefix
+		}
+		switch p.PathType {
+		case dns.PathTypePrefix, dns.PathTypeExact:
+		default:
+			return fmt.Errorf("spec.paths[%d].pathType must be Prefix or Exact", i)
+		}
+		if strings.TrimSpace(p.ServiceName) == "" {
+			return fmt.Errorf("spec.paths[%d].serviceName is required", i)
+		}
+		if p.ServicePort <= 0 || p.ServicePort > 65535 {
+			return fmt.Errorf("spec.paths[%d].servicePort must be between 1 and 65535", i)
+		}
+	}
 	return nil
 }
 

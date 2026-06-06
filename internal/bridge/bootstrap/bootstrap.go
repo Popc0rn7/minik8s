@@ -193,6 +193,78 @@ func DependencyPod(etcdDataDir string) *pod.Pod {
 	}
 }
 
+func DNSPod(configDir string, dnsHostPort, ingressHostPort int32) *pod.Pod {
+	return &pod.Pod{
+		TypeMeta: pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{
+			Name:      "bridge-dns",
+			Namespace: "minik8s-system",
+			Labels: map[string]string{
+				"app":          "bridge-dns",
+				"minik8s.kind": "bridge-dns",
+			},
+			Annotations: map[string]string{
+				AnnotationInternal: "true",
+			},
+		},
+		Spec: pod.PodSpec{
+			NodeName:      DefaultNodeName,
+			RestartPolicy: pod.RestartPolicyAlways,
+			Volumes: []pod.VolumeSpec{{
+				Name:     "dns-config",
+				HostPath: &pod.HostPathVolume{Path: configDir},
+			}},
+			Containers: []pod.ContainerSpec{
+				{
+					Name:     "coredns",
+					Image:    "coredns/coredns",
+					ImageTag: "1.11.1",
+					Args:     []string{"-conf", "/minik8s-dns/Corefile"},
+					Ports: []pod.ContainerPort{{
+						ContainerPort: 53,
+						HostPort:      dnsHostPort,
+						Protocol:      "UDP",
+					}, {
+						ContainerPort: 53,
+						HostPort:      dnsHostPort,
+						Protocol:      "TCP",
+					}},
+					VolumeMounts: []pod.VolumeMount{{
+						Name:      "dns-config",
+						MountPath: "/minik8s-dns",
+					}},
+				},
+				{
+					Name:     "nginx",
+					Image:    "nginx",
+					ImageTag: "1.27-alpine",
+					Args:     []string{"-c", "/minik8s-dns/nginx.conf", "-g", "daemon off;"},
+					Ports: []pod.ContainerPort{{
+						ContainerPort: 80,
+						HostPort:      ingressHostPort,
+						Protocol:      "TCP",
+					}},
+					VolumeMounts: []pod.VolumeMount{{
+						Name:      "dns-config",
+						MountPath: "/minik8s-dns",
+					}},
+				},
+				{
+					Name:    "route-proxy",
+					Image:   "minik8s",
+					Command: []string{"/usr/local/bin/minik8s"},
+					Args:    []string{"route-proxy", "--listen", "127.0.0.1:18081", "--routes", "/minik8s-dns/routes.json"},
+					VolumeMounts: []pod.VolumeMount{{
+						Name:      "dns-config",
+						MountPath: "/minik8s-dns",
+					}},
+				},
+			},
+		},
+		Status: pod.PodStatus{Phase: pod.PodPending},
+	}
+}
+
 func podKey(namespace, name string) string {
 	if namespace == "" {
 		namespace = "default"

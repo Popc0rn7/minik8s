@@ -11,6 +11,7 @@ import (
 	"path"
 	"strings"
 
+	"minik8s/internal/dns"
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
 	"minik8s/internal/hpa"
@@ -127,6 +128,48 @@ func (c *controlPlaneClient) GetService(ctx context.Context, name, namespace str
 
 func (c *controlPlaneClient) DeleteService(ctx context.Context, name, namespace string) error {
 	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "services", name))
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
+}
+
+func (c *controlPlaneClient) ApplyDNS(ctx context.Context, d *dns.DNS) (*dns.DNS, error) {
+	created, err := c.createDNS(ctx, d)
+	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {
+		return c.updateDNS(ctx, d)
+	}
+	return created, err
+}
+
+func (c *controlPlaneClient) ListDNS(ctx context.Context, namespace string) ([]*dns.DNS, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "dns"))
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []*dns.DNS `json:"items"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (c *controlPlaneClient) GetDNS(ctx context.Context, name, namespace string) (*dns.DNS, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "dns", name))
+	if err != nil {
+		return nil, err
+	}
+	var d dns.DNS
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &d); err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+func (c *controlPlaneClient) DeleteDNS(ctx context.Context, name, namespace string) error {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "dns", name))
 	if err != nil {
 		return err
 	}
@@ -480,6 +523,30 @@ func (c *controlPlaneClient) updateService(ctx context.Context, svc *service.Ser
 	}
 	var updated service.Service
 	if err := c.doJSON(ctx, http.MethodPut, endpoint, svc, http.StatusOK, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (c *controlPlaneClient) createDNS(ctx context.Context, d *dns.DNS) (*dns.DNS, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(d.Namespace), "dns"))
+	if err != nil {
+		return nil, err
+	}
+	var created dns.DNS
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, d, http.StatusCreated, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (c *controlPlaneClient) updateDNS(ctx context.Context, d *dns.DNS) (*dns.DNS, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(d.Namespace), "dns", d.Name))
+	if err != nil {
+		return nil, err
+	}
+	var updated dns.DNS
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, d, http.StatusOK, &updated); err != nil {
 		return nil, err
 	}
 	return &updated, nil

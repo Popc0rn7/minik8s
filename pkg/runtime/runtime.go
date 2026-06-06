@@ -28,6 +28,7 @@ type SandboxConfig struct {
 	Labels      map[string]string
 	Ports       []ContainerPort
 	NetworkMode string
+	DNS         []string
 }
 
 // ContainerPort describes a port exposed by a container.

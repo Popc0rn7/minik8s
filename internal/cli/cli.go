@@ -22,6 +22,8 @@ import (
 	bridgeServerless "minik8s/internal/bridge/serverless"
 	"minik8s/internal/cliui"
 	"minik8s/internal/cni"
+	"minik8s/internal/dns"
+	"minik8s/internal/dnssync"
 	"minik8s/internal/hpa"
 	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
@@ -30,6 +32,7 @@ import (
 	"minik8s/internal/netregistry"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
+	"minik8s/internal/routeproxy"
 	dockerruntime "minik8s/internal/runtime/docker"
 	nodeSailer "minik8s/internal/sailer"
 	"minik8s/internal/service"
@@ -42,6 +45,7 @@ type Config struct {
 	Runtime           runtime.ContainerRuntime
 	Store             store.PodStore
 	ServiceStore      store.ServiceStore
+	DNSStore          store.DNSStore
 	ReplicaSetStore   store.ReplicaSetStore
 	HPAStore          store.HPAStore
 	MetricsStore      store.MetricsStore
@@ -61,6 +65,7 @@ type App struct {
 	runtime           runtime.ContainerRuntime
 	store             store.PodStore
 	serviceStore      store.ServiceStore
+	dnsStore          store.DNSStore
 	replicaSetStore   store.ReplicaSetStore
 	hpaStore          store.HPAStore
 	metricsStore      store.MetricsStore
@@ -86,6 +91,10 @@ func New(config Config) *App {
 	serviceStore := config.ServiceStore
 	if serviceStore == nil {
 		serviceStore = store.NewInMemoryServiceStore()
+	}
+	dnsStore := config.DNSStore
+	if dnsStore == nil {
+		dnsStore = store.NewInMemoryDNSStore()
 	}
 	replicaSetStore := config.ReplicaSetStore
 	if replicaSetStore == nil {
@@ -121,6 +130,7 @@ func New(config Config) *App {
 		controlBridge = bridge.New(bridge.Config{
 			PodStore:          config.Store,
 			ServiceStore:      serviceStore,
+			DNSStore:          dnsStore,
 			ReplicaSetStore:   replicaSetStore,
 			HPAStore:          hpaStore,
 			MetricsStore:      metricsStore,
@@ -134,6 +144,7 @@ func New(config Config) *App {
 		runtime:           config.Runtime,
 		store:             config.Store,
 		serviceStore:      serviceStore,
+		dnsStore:          dnsStore,
 		replicaSetStore:   replicaSetStore,
 		hpaStore:          hpaStore,
 		metricsStore:      metricsStore,
@@ -182,6 +193,17 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 			return err
 		}
 		return writes(out, cliui.SuccessLine("service/%s created (%s)", updated.Name, updated.Spec.Type))
+	}
+	if kind == dns.Kind {
+		d, err := podyaml.LoadDNSFromFile(path)
+		if err != nil {
+			return err
+		}
+		updated, err := client.ApplyDNS(ctx, d)
+		if err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("dns/%s created (%s)", updated.Name, updated.Spec.Host))
 	}
 	if kind == "Node" {
 		n, err := podyaml.LoadNodeFromFile(path)
@@ -281,7 +303,7 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	if len(args) < 2 {
-		return fmt.Errorf("usage: minik8s delete pod|service|replicaset|hpa|function|eventtrigger|workflow <name> [-n namespace]")
+		return fmt.Errorf("usage: minik8s delete pod|service|dns|replicaset|hpa|function|eventtrigger|workflow <name> [-n namespace]")
 	}
 	if args[0] == "service" || args[0] == "svc" {
 		name := args[1]
@@ -290,6 +312,14 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 			return err
 		}
 		return writes(out, cliui.SuccessLine("service/%s deleted", name))
+	}
+	if args[0] == "dns" {
+		name := args[1]
+		namespace := namespaceFlag(args[2:])
+		if err := client.DeleteDNS(ctx, name, namespace); err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("dns/%s deleted", name))
 	}
 	if args[0] == "replicaset" || args[0] == "replicasets" || args[0] == "rs" {
 		name := args[1]
@@ -332,7 +362,7 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("workflow/%s deleted", name))
 	}
 	if args[0] != "pod" {
-		return fmt.Errorf("usage: minik8s delete pod|service|replicaset|hpa|function|eventtrigger|workflow <name> [-n namespace]")
+		return fmt.Errorf("usage: minik8s delete pod|service|dns|replicaset|hpa|function|eventtrigger|workflow <name> [-n namespace]")
 	}
 	name := args[1]
 	namespace := namespaceFlag(args[2:])
@@ -789,6 +819,34 @@ func (a *App) netRegistry(ctx context.Context, args []string, out io.Writer) err
 	}
 }
 
+func (a *App) routeProxy(ctx context.Context, listen, routes string, out io.Writer) error {
+	server := &http.Server{
+		Addr:    listen,
+		Handler: routeproxy.NewFileHandler(routes),
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe()
+	}()
+	if err := writes(out, cliui.InfoLine("route-proxy listening on %s routes=%s", listen, routes)); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		return ctx.Err()
+	case err := <-errCh:
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
+	}
+}
+
 func parseNetRegistryOptions(args []string) (netRegistryOptions, error) {
 	options := netRegistryOptions{
 		listen:   ":8088",
@@ -961,10 +1019,15 @@ type bridgeOptions struct {
 	listen                 string
 	deps                   string
 	serviceSyncInterval    time.Duration
+	dnsSyncInterval        time.Duration
 	replicaSetSyncInterval time.Duration
 	hpaSyncInterval        time.Duration
 	clusterCIDR            string
 	nodeCIDRMaskSize       int
+	dnsDisabled            bool
+	gatewayIP              string
+	dnsListenPort          int32
+	ingressListenPort      int32
 }
 
 const (
@@ -988,6 +1051,12 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	}()
 	if options.serviceSyncInterval > 0 {
 		go a.runServiceSyncLoop(ctx, options.serviceSyncInterval)
+	}
+	if !options.dnsDisabled && options.dnsSyncInterval > 0 {
+		if err := writeDNSGatewayConfigs(DefaultCoreDNSCorefilePath(), DefaultNginxDNSConfigPath()); err != nil {
+			return err
+		}
+		go a.runDNSSyncLoop(ctx, options.dnsSyncInterval, options.gatewayIP)
 	}
 	if options.replicaSetSyncInterval > 0 {
 		go a.runReplicaSetSyncLoop(ctx, options.replicaSetSyncInterval)
@@ -1029,7 +1098,15 @@ func BridgeDependencyMode(args []string) (string, error) {
 	return options.deps, nil
 }
 
-func StartBridgeDependencies(ctx context.Context, out io.Writer) (func(), error) {
+func StartBridgeDependencies(ctx context.Context, args []string, out io.Writer) (func(), error) {
+	options := bridgeOptions{dnsListenPort: 53, ingressListenPort: 80}
+	if len(args) > 0 && args[0] == "bridge" {
+		parsed, err := parseBridgeOptions(args[1:])
+		if err != nil {
+			return func() {}, err
+		}
+		options = parsed
+	}
 	runtime, err := dockerruntime.NewDockerRuntime()
 	if err != nil {
 		return func() {}, fmt.Errorf("creating docker runtime for bridge dependencies: %w", err)
@@ -1038,7 +1115,7 @@ func StartBridgeDependencies(ctx context.Context, out io.Writer) (func(), error)
 		_ = runtime.Close()
 		return func() {}, fmt.Errorf("cleaning stale bridge dependencies: %w", err)
 	}
-	if err := ensureBridgeDependencyPortsFree(); err != nil {
+	if err := ensureBridgeDependencyPortsFree(options); err != nil {
 		_ = runtime.Close()
 		return func() {}, err
 	}
@@ -1051,9 +1128,30 @@ func StartBridgeDependencies(ctx context.Context, out io.Writer) (func(), error)
 		_ = runtime.Close()
 		return func() {}, fmt.Errorf("creating bridge dependency state dir: %w", err)
 	}
+	dnsDir, err := filepath.Abs(DefaultDNSDir())
+	if err != nil {
+		_ = runtime.Close()
+		return func() {}, fmt.Errorf("resolving dns config dir: %w", err)
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	privateNode := bootstrap.DefaultNode()
-	privateClient := bootstrap.NewPrivatePodClient(privateNode, bootstrap.DependencyPod(etcdDir))
+	privatePods := []*pod.Pod{bootstrap.DependencyPod(etcdDir)}
+	if !options.dnsDisabled {
+		if err := writeDNSGatewayConfigs(DefaultCoreDNSCorefilePath(), DefaultNginxDNSConfigPath()); err != nil {
+			_ = runtime.Close()
+			return func() {}, fmt.Errorf("writing dns gateway config: %w", err)
+		}
+		if err := writeTextFile(DefaultDNSHostsPath(), "# generated by minik8s dns-sync\n"); err != nil {
+			_ = runtime.Close()
+			return func() {}, fmt.Errorf("initializing dns hosts: %w", err)
+		}
+		if err := writeTextFile(DefaultDNSRoutesPath(), "{\"hosts\":[]}\n"); err != nil {
+			_ = runtime.Close()
+			return func() {}, fmt.Errorf("initializing dns routes: %w", err)
+		}
+		privatePods = append(privatePods, bootstrap.DNSPod(dnsDir, options.dnsListenPort, options.ingressListenPort))
+	}
+	privateClient := bootstrap.NewPrivatePodClient(privateNode, privatePods...)
 	k := nodeSailer.New(nodeSailer.Config{
 		Node:     privateNode,
 		Runtime:  runtime,
@@ -1080,11 +1178,15 @@ func StartBridgeDependencies(ctx context.Context, out io.Writer) (func(), error)
 		cleanup()
 		return func() {}, err
 	}
-	if err := waitForBridgeDependencyPorts(runCtx, errCh, 45*time.Second); err != nil {
+	if err := waitForBridgeDependencyPorts(runCtx, errCh, options, 45*time.Second); err != nil {
 		cleanup()
 		return func() {}, err
 	}
-	if err := writes(out, cliui.SuccessLine("bridge dependencies ready etcd=http://127.0.0.1:2379 nats=nats://127.0.0.1:4222")); err != nil {
+	status := "bridge dependencies ready etcd=http://127.0.0.1:2379 nats=nats://127.0.0.1:4222"
+	if !options.dnsDisabled {
+		status += fmt.Sprintf(" dns=127.0.0.1:%d ingress=127.0.0.1:%d", options.dnsListenPort, options.ingressListenPort)
+	}
+	if err := writes(out, cliui.SuccessLine("%s", status)); err != nil {
 		cleanup()
 		return func() {}, err
 	}
@@ -1100,8 +1202,12 @@ func bridgeDependencyEtcdDir() (string, error) {
 	return absolute, nil
 }
 
-func ensureBridgeDependencyPortsFree() error {
-	for _, port := range []string{"2379", "4222"} {
+func ensureBridgeDependencyPortsFree(options bridgeOptions) error {
+	ports := []string{"2379", "4222"}
+	if !options.dnsDisabled {
+		ports = append(ports, fmt.Sprintf("%d", options.dnsListenPort), fmt.Sprintf("%d", options.ingressListenPort))
+	}
+	for _, port := range ports {
 		ln, err := net.Listen("tcp", "127.0.0.1:"+port)
 		if err != nil {
 			return fmt.Errorf("bridge dependency port %s is already in use", port)
@@ -1110,16 +1216,29 @@ func ensureBridgeDependencyPortsFree() error {
 			return fmt.Errorf("closing bridge dependency port probe %s: %w", port, err)
 		}
 	}
+	if !options.dnsDisabled {
+		ln, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", options.dnsListenPort))
+		if err != nil {
+			return fmt.Errorf("bridge dependency udp port %d is already in use", options.dnsListenPort)
+		}
+		if err := ln.Close(); err != nil {
+			return fmt.Errorf("closing bridge dependency udp port probe %d: %w", options.dnsListenPort, err)
+		}
+	}
 	return nil
 }
 
-func waitForBridgeDependencyPorts(ctx context.Context, errCh <-chan error, timeout time.Duration) error {
+func waitForBridgeDependencyPorts(ctx context.Context, errCh <-chan error, options bridgeOptions, timeout time.Duration) error {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if tcpPortReady("127.0.0.1:2379") && tcpPortReady("127.0.0.1:4222") {
+		ready := tcpPortReady("127.0.0.1:2379") && tcpPortReady("127.0.0.1:4222")
+		if !options.dnsDisabled {
+			ready = ready && tcpPortReady(fmt.Sprintf("127.0.0.1:%d", options.ingressListenPort))
+		}
+		if ready {
 			return nil
 		}
 		select {
@@ -1131,7 +1250,10 @@ func waitForBridgeDependencyPorts(ctx context.Context, errCh <-chan error, timeo
 			}
 			return fmt.Errorf("private bridge dependency sailer stopped")
 		case <-deadline.C:
-			return fmt.Errorf("timed out waiting for bridge dependency ports 2379 and 4222")
+			if options.dnsDisabled {
+				return fmt.Errorf("timed out waiting for bridge dependency ports 2379 and 4222")
+			}
+			return fmt.Errorf("timed out waiting for bridge dependency ports 2379, 4222, and %d", options.ingressListenPort)
 		case <-ticker.C:
 		}
 	}
@@ -1147,7 +1269,7 @@ func tcpPortReady(address string) bool {
 }
 
 func parseBridgeOptions(args []string) (bridgeOptions, error) {
-	options := bridgeOptions{listen: ":8080", deps: bridgeDepsInternal, serviceSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24}
+	options := bridgeOptions{listen: ":8080", deps: bridgeDepsInternal, serviceSyncInterval: 5 * time.Second, dnsSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24, gatewayIP: "127.0.0.1", dnsListenPort: 53, ingressListenPort: 80}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -1177,6 +1299,47 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 				return options, fmt.Errorf("invalid --service-sync-interval %q: %w", args[i], err)
 			}
 			options.serviceSyncInterval = interval
+		case "--dns-sync-interval":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --dns-sync-interval")
+			}
+			interval, err := time.ParseDuration(args[i])
+			if err != nil {
+				return options, fmt.Errorf("invalid --dns-sync-interval %q: %w", args[i], err)
+			}
+			options.dnsSyncInterval = interval
+		case "--dns-disabled":
+			options.dnsDisabled = true
+		case "--gateway-ip":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --gateway-ip")
+			}
+			if net.ParseIP(args[i]) == nil {
+				return options, fmt.Errorf("invalid --gateway-ip %q", args[i])
+			}
+			options.gatewayIP = args[i]
+		case "--dns-listen":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --dns-listen")
+			}
+			port, err := listenPort(args[i])
+			if err != nil {
+				return options, fmt.Errorf("invalid --dns-listen %q: %w", args[i], err)
+			}
+			options.dnsListenPort = port
+		case "--ingress-listen":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --ingress-listen")
+			}
+			port, err := listenPort(args[i])
+			if err != nil {
+				return options, fmt.Errorf("invalid --ingress-listen %q: %w", args[i], err)
+			}
+			options.ingressListenPort = port
 		case "--replicaset-sync-interval":
 			i++
 			if i >= len(args) {
@@ -1234,6 +1397,21 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 	return options, nil
 }
 
+func listenPort(value string) (int32, error) {
+	if strings.HasPrefix(value, ":") {
+		value = strings.TrimPrefix(value, ":")
+	}
+	_, portText, err := net.SplitHostPort(value)
+	if err == nil {
+		value = portText
+	}
+	port, err := strconv.Atoi(value)
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, fmt.Errorf("port must be between 1 and 65535")
+	}
+	return int32(port), nil
+}
+
 func (a *App) runServiceSyncLoop(ctx context.Context, interval time.Duration) {
 	syncOnce := func() {
 		ctrl := bridgeCaptain.NewServiceController(a.controlBridge.PodStore(), a.controlBridge.ServiceStore())
@@ -1252,6 +1430,72 @@ func (a *App) runServiceSyncLoop(ctx context.Context, interval time.Duration) {
 			syncOnce()
 		}
 	}
+}
+
+func (a *App) runDNSSyncLoop(ctx context.Context, interval time.Duration, gatewayIP string) {
+	syncOnce := func() {
+		if err := dnssync.Sync(ctx, dnssync.Config{
+			DNSStore:     a.controlBridge.DNSStore(),
+			ServiceStore: a.controlBridge.ServiceStore(),
+			GatewayIP:    gatewayIP,
+			HostsPath:    DefaultDNSHostsPath(),
+			RoutesPath:   DefaultDNSRoutesPath(),
+		}); err != nil {
+			minilog.Warn("dns-periodic-sync", "error=%v", err)
+		}
+	}
+	syncOnce()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncOnce()
+		}
+	}
+}
+
+func writeDNSGatewayConfigs(corefilePath, nginxPath string) error {
+	corefile := fmt.Sprintf(`.:53 {
+    hosts %s {
+        fallthrough
+    }
+    forward . /etc/resolv.conf
+    log
+}
+`, "/minik8s-dns/hosts")
+	if err := writeTextFile(corefilePath, corefile); err != nil {
+		return err
+	}
+	nginx := `events {}
+http {
+    server {
+        listen 80;
+        server_name _;
+        location / {
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_pass http://127.0.0.1:18081;
+        }
+    }
+}
+`
+	return writeTextFile(nginxPath, nginx)
+}
+
+func writeTextFile(path, value string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(value), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func (a *App) runReplicaSetSyncLoop(ctx context.Context, interval time.Duration) {
@@ -1333,6 +1577,7 @@ type sailerOptions struct {
 	vxlanName     string
 	proxyDisabled bool
 	once          bool
+	clusterDNS    string
 }
 
 func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
@@ -1369,6 +1614,7 @@ func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
 		Client:       podClient,
 		ServiceProxy: a.sailerServiceProxy(options),
 		Interval:     options.interval,
+		ClusterDNS:   options.clusterDNS,
 	})
 	networkAgent, err := a.sailerNetworkAgent(options)
 	if err != nil {
@@ -1484,6 +1730,15 @@ func parseSailerOptions(args []string) (sailerOptions, error) {
 				return options, fmt.Errorf("invalid --interval %q: %w", args[i], err)
 			}
 			options.interval = interval
+		case "--cluster-dns":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --cluster-dns")
+			}
+			if net.ParseIP(args[i]) == nil {
+				return options, fmt.Errorf("invalid --cluster-dns %q", args[i])
+			}
+			options.clusterDNS = args[i]
 		case "--vxlan-id":
 			i++
 			if i >= len(args) {
@@ -1688,6 +1943,36 @@ func DefaultServiceStatePath() string {
 		return filepath.Join(dir, "services.json")
 	}
 	return filepath.Join(".minik8s", "state", "services.json")
+}
+
+func DefaultDNSStatePath() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "dns.json")
+	}
+	return filepath.Join(".minik8s", "state", "dns.json")
+}
+
+func DefaultDNSDir() string {
+	if dir := os.Getenv("MINIK8S_DNS_DIR"); dir != "" {
+		return dir
+	}
+	return filepath.Join(".minik8s", "dns")
+}
+
+func DefaultDNSHostsPath() string {
+	return filepath.Join(DefaultDNSDir(), "hosts")
+}
+
+func DefaultDNSRoutesPath() string {
+	return filepath.Join(DefaultDNSDir(), "routes.json")
+}
+
+func DefaultCoreDNSCorefilePath() string {
+	return filepath.Join(DefaultDNSDir(), "Corefile")
+}
+
+func DefaultNginxDNSConfigPath() string {
+	return filepath.Join(DefaultDNSDir(), "nginx.conf")
 }
 
 func DefaultReplicaSetStatePath() string {

@@ -22,12 +22,13 @@ const (
 
 // PodController manages Pod lifecycle using a container runtime
 type PodController struct {
-	runtime runtime.ContainerRuntime
-	store   store.PodStore
-	network PodNetworkManager
-	stopCh  chan struct{}
-	mu      sync.Mutex
-	running bool
+	runtime    runtime.ContainerRuntime
+	store      store.PodStore
+	network    PodNetworkManager
+	clusterDNS string
+	stopCh     chan struct{}
+	mu         sync.Mutex
+	running    bool
 }
 
 // PodNetworkRequest contains the data needed to configure a sandbox network.
@@ -56,11 +57,16 @@ func NewPodController(r runtime.ContainerRuntime, s store.PodStore) *PodControll
 
 // NewPodControllerWithNetwork creates a Pod controller with optional CNI support.
 func NewPodControllerWithNetwork(r runtime.ContainerRuntime, s store.PodStore, network PodNetworkManager) *PodController {
+	return NewPodControllerWithNetworkAndDNS(r, s, network, "")
+}
+
+func NewPodControllerWithNetworkAndDNS(r runtime.ContainerRuntime, s store.PodStore, network PodNetworkManager, clusterDNS string) *PodController {
 	return &PodController{
-		runtime: r,
-		store:   s,
-		network: network,
-		stopCh:  make(chan struct{}),
+		runtime:    r,
+		store:      s,
+		network:    network,
+		clusterDNS: clusterDNS,
+		stopCh:     make(chan struct{}),
 	}
 }
 
@@ -200,6 +206,7 @@ func (pc *PodController) handlePendingPod(ctx context.Context, p *pod.Pod) error
 		Labels:      p.Labels,
 		Ports:       podPorts(p),
 		NetworkMode: pc.sandboxNetworkMode(p),
+		DNS:         pc.sandboxDNS(),
 	})
 	if err != nil {
 		minilog.Error("pod-failed", "pod=%s/%s reason=%v", p.Namespace, p.Name, err)
@@ -289,6 +296,13 @@ func (pc *PodController) handlePendingPod(ctx context.Context, p *pod.Pod) error
 	p.Status.StartTime = time.Now().Unix()
 	minilog.Success("pod-running", "pod=%s/%s", p.Namespace, p.Name)
 	return pc.store.Update(p)
+}
+
+func (pc *PodController) sandboxDNS() []string {
+	if strings.TrimSpace(pc.clusterDNS) == "" {
+		return nil
+	}
+	return []string{pc.clusterDNS}
 }
 
 // handleRunningPod checks and enforces restart policy
