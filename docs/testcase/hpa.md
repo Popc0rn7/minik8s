@@ -25,10 +25,10 @@ controller 创建或删除 Pod。
 
 ```bash
 export MINIK8S_HARBOR=http://127.0.0.1:18080
-./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
-./minik8s apply -f manifest/hpa/hpa_nginx.yaml
-./minik8s get hpa
-./minik8s describe hpa nginx-hpa
+./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
+./kubectl apply -f manifest/hpa/hpa_nginx.yaml
+./kubectl get hpa
+./kubectl describe hpa nginx-hpa
 ```
 
 预期：
@@ -49,7 +49,7 @@ docker exec "$CID" sh -c 'while true; do :; done' &
 等待两到三轮 HPA 同步：
 
 ```bash
-watch -n 5 './minik8s get hpa && ./minik8s get rs && ./minik8s get pods'
+watch -n 5 './kubectl get hpa && ./kubectl get rs && ./kubectl get pods'
 ```
 
 预期：
@@ -63,8 +63,8 @@ watch -n 5 './minik8s get hpa && ./minik8s get rs && ./minik8s get pods'
 
 ```bash
 pkill -f 'while true; do :; done' || true
-./minik8s get hpa
-./minik8s get rs
+./kubectl get hpa
+./kubectl get rs
 ```
 
 预期：
@@ -73,8 +73,8 @@ pkill -f 'while true; do :; done' || true
 - 删除 HPA 不会删除 ReplicaSet，也不会回滚当前 replicas：
 
 ```bash
-./minik8s delete hpa nginx-hpa
-./minik8s get rs
+./kubectl delete hpa nginx-hpa
+./kubectl get rs
 ```
 
 ## 排查

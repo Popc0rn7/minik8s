@@ -10,13 +10,13 @@ CLI resource commands read the server URL from `MINIK8S_HARBOR`:
 
 ```bash
 export MINIK8S_HARBOR=http://127.0.0.1:18080
-./minik8s get pods
+./kubectl get pods
 ```
 
 The Cobra CLI also accepts `--server`, which overrides the environment variable for one invocation:
 
 ```bash
-./minik8s --server http://127.0.0.1:18080 get pods
+./kubectl --server http://127.0.0.1:18080 get pods
 ```
 
 ## Discovery

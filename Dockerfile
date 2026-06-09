@@ -25,6 +25,10 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
 	CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+	go build -trimpath -ldflags="-s -w" -o /out/kubectl ./cmd/kubectl
+
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+	CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 	go build -trimpath -ldflags="-s -w" -o /out/minik8s-bridge ./cmd/minik8s-bridge
 
 FROM debian:bookworm-slim AS runtime
@@ -36,6 +40,7 @@ LABEL org.opencontainers.image.title="Minik8s" \
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /out/minik8s /usr/local/bin/minik8s
+COPY --from=builder /out/kubectl /usr/local/bin/kubectl
 COPY --from=builder /out/minik8s-bridge /opt/cni/bin/minik8s-bridge
 
 ENTRYPOINT ["minik8s"]

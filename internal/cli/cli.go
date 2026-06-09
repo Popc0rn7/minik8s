@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
 	bridge "minik8s/internal/bridge"
 	"minik8s/internal/bridge/bootstrap"
 	bridgeCaptain "minik8s/internal/bridge/captain"
@@ -161,9 +162,9 @@ func New(config Config) *App {
 	}
 }
 
-// Run executes a minik8s command.
+// Run executes the compatibility command tree used by tests and in-process callers.
 func (a *App) Run(ctx context.Context, args []string, out io.Writer) error {
-	cmd := NewRootCommand(a, out)
+	cmd := newCompatCommand(a, out)
 	cmd.SetArgs(args)
 	return cmd.ExecuteContext(ctx)
 }
@@ -405,7 +406,20 @@ func (a *App) publishNATS(ctx context.Context, subject, data string, out io.Writ
 
 func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minik8s doctor docker|network|logbook|serverless")
+		return fmt.Errorf("usage: minik8s doctor docker|network|logbook|serverless|addons|addon <name>")
+	}
+	if args[0] == "addons" {
+		return a.doctorAddons(out, knownAddons...)
+	}
+	if args[0] == "addon" {
+		if len(args) < 2 {
+			return fmt.Errorf("usage: minik8s doctor addon <name>")
+		}
+		name := AddonName(strings.ToLower(strings.TrimSpace(args[1])))
+		if !isKnownAddon(name) {
+			return fmt.Errorf("unknown addon %q", name)
+		}
+		return a.doctorAddons(out, name)
 	}
 	if args[0] == "network" {
 		return a.doctorNetwork(out)
@@ -417,7 +431,7 @@ func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 		return a.doctorServerless(ctx, out)
 	}
 	if args[0] != "docker" {
-		return fmt.Errorf("usage: minik8s doctor docker|network|logbook|serverless")
+		return fmt.Errorf("usage: minik8s doctor docker|network|logbook|serverless|addons|addon <name>")
 	}
 	minilog.Info("doctor-docker", "start args=%v", args)
 	endpoint := dockerruntime.ResolveDockerEndpoint()
@@ -454,6 +468,69 @@ func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("pull: ok image=%s", imageName))
 	}
 	return nil
+}
+
+func (a *App) doctorAddons(out io.Writer, names ...AddonName) error {
+	for _, name := range names {
+		state, detail := addonReadiness(name)
+		line := fmt.Sprintf("addon/%s: %s", name, state)
+		if detail != "" {
+			line += " " + detail
+		}
+		switch state {
+		case "ready":
+			if err := writes(out, cliui.SuccessLine("%s", line)); err != nil {
+				return err
+			}
+		case "disabled", "starting":
+			if err := writes(out, cliui.InfoLine("%s", line)); err != nil {
+				return err
+			}
+		default:
+			if err := writes(out, cliui.WarnLine("%s", line)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func addonReadiness(name AddonName) (string, string) {
+	path := addonManifestPath(name)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return "disabled", fmt.Sprintf("manifest missing; run minik8s init --addons %s", name)
+		}
+		return "degraded", err.Error()
+	}
+	ports := addonProbePorts(name)
+	if len(ports) == 0 {
+		return "ready", fmt.Sprintf("manifest=%s", path)
+	}
+	missing := make([]string, 0, len(ports))
+	for _, port := range ports {
+		if !tcpPortReady("127.0.0.1:" + port) {
+			missing = append(missing, port)
+		}
+	}
+	if len(missing) == 0 {
+		return "ready", fmt.Sprintf("ports=%s", strings.Join(ports, ","))
+	}
+	if len(missing) == len(ports) {
+		return "starting", fmt.Sprintf("manifest=%s waiting ports=%s", path, strings.Join(missing, ","))
+	}
+	return "degraded", fmt.Sprintf("missing ports=%s", strings.Join(missing, ","))
+}
+
+func addonProbePorts(name AddonName) []string {
+	switch name {
+	case AddonDNS:
+		return []string{"80"}
+	case AddonServerless:
+		return []string{"4222"}
+	default:
+		return nil
+	}
 }
 
 func (a *App) doctorServerless(ctx context.Context, out io.Writer) error {
@@ -632,6 +709,191 @@ func routeInstalled(dst, gw string) bool {
 	}
 	text := string(out)
 	return strings.Contains(text, dst) && strings.Contains(text, gw)
+}
+
+type initOptions struct {
+	force             bool
+	addons            addonSet
+	dnsListenPort     int32
+	ingressListenPort int32
+}
+
+func (a *App) initialize(ctx context.Context, args []string, out io.Writer) error {
+	options, err := parseInitOptions(args)
+	if err != nil {
+		return err
+	}
+	etcdDir, err := bridgeDependencyEtcdDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(etcdDir, 0o755); err != nil {
+		return fmt.Errorf("creating bridge dependency state dir: %w", err)
+	}
+	dnsDir, err := filepath.Abs(DefaultDNSDir())
+	if err != nil {
+		return fmt.Errorf("resolving dns config dir: %w", err)
+	}
+	if err := os.MkdirAll(dnsDir, 0o755); err != nil {
+		return fmt.Errorf("creating dns config dir: %w", err)
+	}
+	if options.addons.Enabled(AddonDNS) {
+		if err := writeDNSGatewayConfigs(DefaultCoreDNSCorefilePath(), DefaultNginxDNSConfigPath()); err != nil {
+			return fmt.Errorf("writing dns gateway config: %w", err)
+		}
+		if err := writeTextFile(DefaultDNSHostsPath(), "# generated by minik8s dns-sync\n"); err != nil {
+			return fmt.Errorf("initializing dns hosts: %w", err)
+		}
+		if err := writeTextFile(DefaultDNSRoutesPath(), "{\"hosts\":[]}\n"); err != nil {
+			return fmt.Errorf("initializing dns routes: %w", err)
+		}
+	}
+	if err := writeBridgeStaticPodManifests(initManifestOptions{
+		Force:             options.force,
+		Addons:            options.addons,
+		EtcdDir:           etcdDir,
+		DNSDir:            dnsDir,
+		DNSListenPort:     options.dnsListenPort,
+		IngressListenPort: options.ingressListenPort,
+	}); err != nil {
+		return err
+	}
+	_ = ctx
+	if err := writes(out, cliui.SuccessLine("static pod manifests initialized at %s", DefaultStaticPodDir())); err != nil {
+		return err
+	}
+	return writes(out, cliui.InfoLine("next: ./minik8s bridge --listen :18080 --addons %s", options.addons.String()))
+}
+
+func parseInitOptions(args []string) (initOptions, error) {
+	options := initOptions{addons: defaultAddonSet(), dnsListenPort: 53, ingressListenPort: 80}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--force":
+			options.force = true
+		case "--addons":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --addons")
+			}
+			addons, err := parseAddonSet(args[i])
+			if err != nil {
+				return options, err
+			}
+			options.addons = addons
+		case "--dns-listen":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --dns-listen")
+			}
+			port, err := listenPort(args[i])
+			if err != nil {
+				return options, fmt.Errorf("invalid --dns-listen %q: %w", args[i], err)
+			}
+			options.dnsListenPort = port
+		case "--ingress-listen":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --ingress-listen")
+			}
+			port, err := listenPort(args[i])
+			if err != nil {
+				return options, fmt.Errorf("invalid --ingress-listen %q: %w", args[i], err)
+			}
+			options.ingressListenPort = port
+		default:
+			return options, fmt.Errorf("unknown init flag %q", args[i])
+		}
+	}
+	return options, nil
+}
+
+type initManifestOptions struct {
+	Force             bool
+	Addons            addonSet
+	EtcdDir           string
+	DNSDir            string
+	DNSListenPort     int32
+	IngressListenPort int32
+}
+
+func writeBridgeStaticPodManifests(options initManifestOptions) error {
+	if err := os.MkdirAll(DefaultStaticPodDir(), 0o755); err != nil {
+		return fmt.Errorf("creating static pod manifest dir: %w", err)
+	}
+	paths := []string{DefaultStorageManifestPath()}
+	for _, addon := range options.Addons.Names() {
+		paths = append(paths, addonManifestPath(addon))
+	}
+	if !options.Force {
+		for _, path := range paths {
+			if _, err := os.Stat(path); err == nil {
+				return fmt.Errorf("static pod manifest %s already exists; pass --force to overwrite", path)
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("checking static pod manifest %s: %w", path, err)
+			}
+		}
+	}
+	if err := writePodManifestFile(DefaultStorageManifestPath(), bootstrap.StoragePod(options.EtcdDir)); err != nil {
+		return err
+	}
+	for _, addon := range options.Addons.Names() {
+		if err := writePodManifestFile(addonManifestPath(addon), addonPodTemplate(addon, options)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addonPodTemplate(addon AddonName, options initManifestOptions) *pod.Pod {
+	switch addon {
+	case AddonDNS:
+		return bootstrap.DNSPod(options.DNSDir, options.DNSListenPort, options.IngressListenPort)
+	case AddonServerless:
+		return bootstrap.ServerlessNATSPod()
+	case AddonMetrics:
+		return bootstrap.MetricsServerPod()
+	default:
+		return nil
+	}
+}
+
+func addonManifestPath(addon AddonName) string {
+	switch addon {
+	case AddonDNS:
+		return DefaultDNSGatewayManifestPath()
+	case AddonServerless:
+		return DefaultServerlessNATSManifestPath()
+	case AddonMetrics:
+		return DefaultMetricsServerManifestPath()
+	default:
+		return filepath.Join(DefaultStaticPodDir(), string(addon)+".yaml")
+	}
+}
+
+func addonPodName(addon AddonName) string {
+	switch addon {
+	case AddonDNS:
+		return "dns-gateway"
+	case AddonServerless:
+		return "serverless-nats"
+	case AddonMetrics:
+		return "metrics-server"
+	default:
+		return string(addon)
+	}
+}
+
+func writePodManifestFile(path string, p *pod.Pod) error {
+	data, err := yaml.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("encoding static pod manifest %s: %w", path, err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("writing static pod manifest %s: %w", path, err)
+	}
+	return nil
 }
 
 func (a *App) cni(ctx context.Context, args []string, out io.Writer) error {
@@ -1024,7 +1286,7 @@ type bridgeOptions struct {
 	hpaSyncInterval        time.Duration
 	clusterCIDR            string
 	nodeCIDRMaskSize       int
-	dnsDisabled            bool
+	addons                 addonSet
 	gatewayIP              string
 	dnsListenPort          int32
 	ingressListenPort      int32
@@ -1052,7 +1314,7 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	if options.serviceSyncInterval > 0 {
 		go a.runServiceSyncLoop(ctx, options.serviceSyncInterval)
 	}
-	if !options.dnsDisabled && options.dnsSyncInterval > 0 {
+	if options.addons.Enabled(AddonDNS) && options.dnsSyncInterval > 0 {
 		if err := writeDNSGatewayConfigs(DefaultCoreDNSCorefilePath(), DefaultNginxDNSConfigPath()); err != nil {
 			return err
 		}
@@ -1098,8 +1360,22 @@ func BridgeDependencyMode(args []string) (string, error) {
 	return options.deps, nil
 }
 
+func BridgeAddons(args []string) (addonSet, error) {
+	if len(args) == 0 || args[0] != "bridge" {
+		return newAddonSet(), nil
+	}
+	options, err := parseBridgeOptions(args[1:])
+	if err != nil {
+		return nil, err
+	}
+	return options.addons, nil
+}
+
 func StartBridgeDependencies(ctx context.Context, args []string, out io.Writer) (func(), error) {
-	options := bridgeOptions{dnsListenPort: 53, ingressListenPort: 80}
+	options, err := parseBridgeOptions(nil)
+	if err != nil {
+		return func() {}, err
+	}
 	if len(args) > 0 && args[0] == "bridge" {
 		parsed, err := parseBridgeOptions(args[1:])
 		if err != nil {
@@ -1111,9 +1387,15 @@ func StartBridgeDependencies(ctx context.Context, args []string, out io.Writer) 
 	if err != nil {
 		return func() {}, fmt.Errorf("creating docker runtime for bridge dependencies: %w", err)
 	}
-	if err := runtime.CleanupPod(ctx, "minik8s-system", "bridge-deps"); err != nil {
+	if err := runtime.CleanupPod(ctx, "minik8s-system", "storage-etcd"); err != nil {
 		_ = runtime.Close()
 		return func() {}, fmt.Errorf("cleaning stale bridge dependencies: %w", err)
+	}
+	for _, name := range []string{"dns-gateway", "serverless-nats", "metrics-server"} {
+		if err := runtime.CleanupPod(ctx, "minik8s-system", name); err != nil {
+			_ = runtime.Close()
+			return func() {}, fmt.Errorf("cleaning stale bridge addon %s: %w", name, err)
+		}
 	}
 	if err := ensureBridgeDependencyPortsFree(options); err != nil {
 		_ = runtime.Close()
@@ -1133,10 +1415,7 @@ func StartBridgeDependencies(ctx context.Context, args []string, out io.Writer) 
 		_ = runtime.Close()
 		return func() {}, fmt.Errorf("resolving dns config dir: %w", err)
 	}
-	runCtx, cancel := context.WithCancel(ctx)
-	privateNode := bootstrap.DefaultNode()
-	privatePods := []*pod.Pod{bootstrap.DependencyPod(etcdDir)}
-	if !options.dnsDisabled {
+	if options.addons.Enabled(AddonDNS) {
 		if err := writeDNSGatewayConfigs(DefaultCoreDNSCorefilePath(), DefaultNginxDNSConfigPath()); err != nil {
 			_ = runtime.Close()
 			return func() {}, fmt.Errorf("writing dns gateway config: %w", err)
@@ -1149,8 +1428,14 @@ func StartBridgeDependencies(ctx context.Context, args []string, out io.Writer) 
 			_ = runtime.Close()
 			return func() {}, fmt.Errorf("initializing dns routes: %w", err)
 		}
-		privatePods = append(privatePods, bootstrap.DNSPod(dnsDir, options.dnsListenPort, options.ingressListenPort))
 	}
+	privatePods, err := bridgeDependencyPods(options, etcdDir, dnsDir)
+	if err != nil {
+		_ = runtime.Close()
+		return func() {}, err
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	privateNode := bootstrap.DefaultNode()
 	privateClient := bootstrap.NewPrivatePodClient(privateNode, privatePods...)
 	k := nodeSailer.New(nodeSailer.Config{
 		Node:     privateNode,
@@ -1182,8 +1467,11 @@ func StartBridgeDependencies(ctx context.Context, args []string, out io.Writer) 
 		cleanup()
 		return func() {}, err
 	}
-	status := "bridge dependencies ready etcd=http://127.0.0.1:2379 nats=nats://127.0.0.1:4222"
-	if !options.dnsDisabled {
+	status := "bridge dependencies ready etcd=http://127.0.0.1:2379"
+	if options.addons.Enabled(AddonServerless) {
+		status += " nats=nats://127.0.0.1:4222"
+	}
+	if options.addons.Enabled(AddonDNS) {
 		status += fmt.Sprintf(" dns=127.0.0.1:%d ingress=127.0.0.1:%d", options.dnsListenPort, options.ingressListenPort)
 	}
 	if err := writes(out, cliui.SuccessLine("%s", status)); err != nil {
@@ -1191,6 +1479,96 @@ func StartBridgeDependencies(ctx context.Context, args []string, out io.Writer) 
 		return func() {}, err
 	}
 	return cleanup, nil
+}
+
+func bridgeDependencyPods(options bridgeOptions, etcdDir, dnsDir string) ([]*pod.Pod, error) {
+	deps, err := staticPodOrDefault(DefaultStorageManifestPath(), bootstrap.StoragePod(etcdDir))
+	if err != nil {
+		return nil, err
+	}
+	pods := []*pod.Pod{deps}
+	for _, addon := range options.addons.Names() {
+		addonPod, err := readRequiredAddonManifest(addon)
+		if err != nil {
+			return nil, err
+		}
+		pods = append(pods, addonPod)
+	}
+	return pods, nil
+}
+
+func readRequiredAddonManifest(addon AddonName) (*pod.Pod, error) {
+	path := addonManifestPath(addon)
+	p, err := readStaticPodManifest(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("addon %s manifest %s is missing; run minik8s init --addons %s", addon, path, addon)
+		}
+		return nil, err
+	}
+	return normalizeStaticDependencyPod(p), nil
+}
+
+func staticPodOrDefault(path string, fallback *pod.Pod) (*pod.Pod, error) {
+	p, err := readStaticPodManifest(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return normalizeStaticDependencyPod(fallback), nil
+		}
+		return nil, err
+	}
+	return normalizeStaticDependencyPod(p), nil
+}
+
+func readStaticPodManifest(path string) (*pod.Pod, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("reading static pod manifest %s: %w", path, err)
+	}
+	var p pod.Pod
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		return nil, fmt.Errorf("reading static pod manifest %s: %w", path, err)
+	}
+	if strings.TrimSpace(p.Name) == "" {
+		return nil, fmt.Errorf("reading static pod manifest %s: metadata.name is required", path)
+	}
+	if len(p.Spec.Containers) == 0 {
+		return nil, fmt.Errorf("reading static pod manifest %s: spec.containers must contain at least one container", path)
+	}
+	return &p, nil
+}
+
+func normalizeStaticDependencyPod(p *pod.Pod) *pod.Pod {
+	if p == nil {
+		return nil
+	}
+	copy := p.DeepCopy()
+	if copy.Kind == "" {
+		copy.Kind = "Pod"
+	}
+	if copy.APIVersion == "" {
+		copy.APIVersion = "v1"
+	}
+	if copy.Namespace == "" {
+		copy.Namespace = "minik8s-system"
+	}
+	if copy.Annotations == nil {
+		copy.Annotations = make(map[string]string)
+	}
+	copy.Annotations[bootstrap.AnnotationInternal] = "true"
+	if copy.Spec.NodeName == "" {
+		copy.Spec.NodeName = bootstrap.DefaultNodeName
+	}
+	if copy.Spec.RestartPolicy == "" {
+		copy.Spec.RestartPolicy = pod.RestartPolicyAlways
+	}
+	if copy.Status.Phase == "" {
+		copy.Status.Phase = pod.PodPending
+	}
+	return copy
 }
 
 func bridgeDependencyEtcdDir() (string, error) {
@@ -1203,8 +1581,11 @@ func bridgeDependencyEtcdDir() (string, error) {
 }
 
 func ensureBridgeDependencyPortsFree(options bridgeOptions) error {
-	ports := []string{"2379", "4222"}
-	if !options.dnsDisabled {
+	ports := []string{"2379"}
+	if options.addons.Enabled(AddonServerless) {
+		ports = append(ports, "4222")
+	}
+	if options.addons.Enabled(AddonDNS) {
 		ports = append(ports, fmt.Sprintf("%d", options.dnsListenPort), fmt.Sprintf("%d", options.ingressListenPort))
 	}
 	for _, port := range ports {
@@ -1216,7 +1597,7 @@ func ensureBridgeDependencyPortsFree(options bridgeOptions) error {
 			return fmt.Errorf("closing bridge dependency port probe %s: %w", port, err)
 		}
 	}
-	if !options.dnsDisabled {
+	if options.addons.Enabled(AddonDNS) {
 		ln, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", options.dnsListenPort))
 		if err != nil {
 			return fmt.Errorf("bridge dependency udp port %d is already in use", options.dnsListenPort)
@@ -1234,8 +1615,11 @@ func waitForBridgeDependencyPorts(ctx context.Context, errCh <-chan error, optio
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		ready := tcpPortReady("127.0.0.1:2379") && tcpPortReady("127.0.0.1:4222")
-		if !options.dnsDisabled {
+		ready := tcpPortReady("127.0.0.1:2379")
+		if options.addons.Enabled(AddonServerless) {
+			ready = ready && tcpPortReady("127.0.0.1:4222")
+		}
+		if options.addons.Enabled(AddonDNS) {
 			ready = ready && tcpPortReady(fmt.Sprintf("127.0.0.1:%d", options.ingressListenPort))
 		}
 		if ready {
@@ -1250,10 +1634,7 @@ func waitForBridgeDependencyPorts(ctx context.Context, errCh <-chan error, optio
 			}
 			return fmt.Errorf("private bridge dependency sailer stopped")
 		case <-deadline.C:
-			if options.dnsDisabled {
-				return fmt.Errorf("timed out waiting for bridge dependency ports 2379 and 4222")
-			}
-			return fmt.Errorf("timed out waiting for bridge dependency ports 2379, 4222, and %d", options.ingressListenPort)
+			return fmt.Errorf("timed out waiting for bridge dependency ports for addons %s", options.addons.String())
 		case <-ticker.C:
 		}
 	}
@@ -1269,7 +1650,7 @@ func tcpPortReady(address string) bool {
 }
 
 func parseBridgeOptions(args []string) (bridgeOptions, error) {
-	options := bridgeOptions{listen: ":8080", deps: bridgeDepsInternal, serviceSyncInterval: 5 * time.Second, dnsSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24, gatewayIP: "127.0.0.1", dnsListenPort: 53, ingressListenPort: 80}
+	options := bridgeOptions{listen: ":8080", deps: bridgeDepsInternal, addons: defaultAddonSet(), serviceSyncInterval: 5 * time.Second, dnsSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24, gatewayIP: "127.0.0.1", dnsListenPort: 53, ingressListenPort: 80}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -1289,6 +1670,16 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 			default:
 				return options, fmt.Errorf("invalid --deps %q: must be internal or none", args[i])
 			}
+		case "--addons":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --addons")
+			}
+			addons, err := parseAddonSet(args[i])
+			if err != nil {
+				return options, err
+			}
+			options.addons = addons
 		case "--service-sync-interval":
 			i++
 			if i >= len(args) {
@@ -1309,8 +1700,6 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 				return options, fmt.Errorf("invalid --dns-sync-interval %q: %w", args[i], err)
 			}
 			options.dnsSyncInterval = interval
-		case "--dns-disabled":
-			options.dnsDisabled = true
 		case "--gateway-ip":
 			i++
 			if i >= len(args) {
@@ -1973,6 +2362,37 @@ func DefaultCoreDNSCorefilePath() string {
 
 func DefaultNginxDNSConfigPath() string {
 	return filepath.Join(DefaultDNSDir(), "nginx.conf")
+}
+
+func DefaultStaticPodDir() string {
+	if dir := os.Getenv("MINIK8S_STATIC_POD_DIR"); dir != "" {
+		return dir
+	}
+	return filepath.Join(".minik8s", "manifests")
+}
+
+func DefaultStorageManifestPath() string {
+	return filepath.Join(DefaultStaticPodDir(), "storage-etcd.yaml")
+}
+
+func DefaultBridgeDepsManifestPath() string {
+	return DefaultStorageManifestPath()
+}
+
+func DefaultDNSGatewayManifestPath() string {
+	return filepath.Join(DefaultStaticPodDir(), "dns-gateway.yaml")
+}
+
+func DefaultServerlessNATSManifestPath() string {
+	return filepath.Join(DefaultStaticPodDir(), "serverless-nats.yaml")
+}
+
+func DefaultMetricsServerManifestPath() string {
+	return filepath.Join(DefaultStaticPodDir(), "metrics-server.yaml")
+}
+
+func DefaultBridgeDNSManifestPath() string {
+	return DefaultDNSGatewayManifestPath()
 }
 
 func DefaultReplicaSetStatePath() string {

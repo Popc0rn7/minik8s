@@ -23,7 +23,7 @@ CI 包含以下检查：
 | `format` | 检查 Go 代码格式和 import 排序 | `golangci-lint fmt --diff` |
 | `lint` | 执行静态检查 | `golangci-lint run` |
 | `test` | 执行 Go 官方检查和测试 | `go vet ./...`、`go test -race -covermode=atomic -coverprofile=coverage.out ./...` |
-| `build` | 验证全部包和 CLI 二进制可构建 | `go build ./...`、`go build -trimpath -ldflags="-s -w" -o dist/minik8s ./cmd/minik8s` |
+| `build` | 验证全部包和 CLI 二进制可构建 | `go build ./...`、`go build -trimpath -ldflags="-s -w" -o dist/minik8s ./cmd/minik8s`、`go build -trimpath -ldflags="-s -w" -o dist/kubectl ./cmd/kubectl` |
 
 开发流程中，Pull Request 应等待这些检查通过后再合入 `main`。本地提交前可运行同样的命令，提前发现格式、lint、测试和构建问题。
 
@@ -51,12 +51,13 @@ CI 包含以下检查：
 每个压缩包包含：
 
 - `minik8s` 可执行文件。
+- `kubectl` 可执行文件。
 - `README.md`。
 - `LICENSE`。
 
 发布流程：
 
-1. 按平台矩阵交叉编译 `./cmd/minik8s`。
+1. 按平台矩阵交叉编译 `./cmd/minik8s` 和 `./cmd/kubectl`。
 2. 为每个平台生成 `.tar.gz` 压缩包。
 3. 上传构建产物供后续发布 job 使用。
 4. 汇总所有压缩包并生成 `SHA256SUMS`。
@@ -120,6 +121,7 @@ go vet ./...
 go test -race -covermode=atomic -coverprofile=coverage.out ./...
 go build ./...
 go build -trimpath -ldflags="-s -w" -o dist/minik8s ./cmd/minik8s
+go build -trimpath -ldflags="-s -w" -o dist/kubectl ./cmd/kubectl
 ```
 
 配置 AI 摘要：
@@ -164,8 +166,8 @@ tag 规则：
 发布流程：
 
 1. 使用 Docker Buildx 构建 `linux/amd64` 镜像。
-2. 在 builder 阶段编译 `./cmd/minik8s` 和 `./cmd/minik8s-bridge`。
-3. 将 `minik8s` 放入 `/usr/local/bin/minik8s`，将 CNI 插件放入 `/opt/cni/bin/minik8s-bridge`。
+2. 在 builder 阶段编译 `./cmd/minik8s`、`./cmd/kubectl` 和 `./cmd/minik8s-bridge`。
+3. 将 `minik8s`、`kubectl` 放入 `/usr/local/bin/`，将 CNI 插件放入 `/opt/cni/bin/minik8s-bridge`。
 4. 使用 GitHub Actions 内置 `GITHUB_TOKEN` 登录 GHCR 并推送镜像。
 
 本地验证：
@@ -183,4 +185,4 @@ docker run --rm ghcr.io/popc0rn7/minik8s:latest --help
 docker login ghcr.io
 ```
 
-该镜像是 Minik8s CLI、bridge 和 sailer 入口镜像。运行 `sailer` 时仍需要宿主机提供 Docker daemon、Linux 网络工具、CNI 目录、iptables 权限以及必要的 bind mount；镜像发布只表示可分发运行入口，不表示已经实现完整托管式集群部署。
+该镜像包含用户侧 `kubectl` 和运行侧 `minik8s` 入口。运行 `sailer` 时仍需要宿主机提供 Docker daemon、Linux 网络工具、CNI 目录、iptables 权限以及必要的 bind mount；镜像发布只表示可分发运行入口，不表示已经实现完整托管式集群部署。

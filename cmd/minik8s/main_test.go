@@ -95,9 +95,23 @@ func TestPrepareBridgeDependenciesSetsDefaultEnvForBridge(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, called)
 	assert.Equal(t, "http://127.0.0.1:2379", os.Getenv("MINIK8S_LOGBOOK_ENDPOINTS"))
-	assert.Equal(t, "nats://127.0.0.1:4222", os.Getenv("MINIK8S_NATS_URL"))
+	assert.Empty(t, os.Getenv("MINIK8S_NATS_URL"))
 	cleanup()
 	assert.True(t, cleaned)
+}
+
+func TestPrepareBridgeDependenciesSetsNATSEnvForServerlessAddon(t *testing.T) {
+	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", "")
+	t.Setenv("MINIK8S_NATS_URL", "")
+
+	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"bridge", "--addons", "serverless"}, io.Discard, func(context.Context, []string, io.Writer) (func(), error) {
+		return func() {}, nil
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:2379", os.Getenv("MINIK8S_LOGBOOK_ENDPOINTS"))
+	assert.Equal(t, "nats://127.0.0.1:4222", os.Getenv("MINIK8S_NATS_URL"))
+	cleanup()
 }
 
 func TestPrepareBridgeDependenciesNoneDoesNotSetEnv(t *testing.T) {

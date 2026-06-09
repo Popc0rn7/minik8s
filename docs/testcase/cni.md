@@ -69,7 +69,7 @@ curl -fsS ${HARBOR}/nodes
 在 node-a 的测试终端确认节点和 VXLAN/路由：
 
 ```bash
-./minik8s get nodes
+./kubectl get nodes
 curl -fsS ${HARBOR}/nodes
 ip route | grep 10.244
 ip link show mk8s-vxlan
@@ -96,11 +96,11 @@ bridge fdb show dev mk8s-vxlan
 每个 case 都可以单独运行。运行前后建议在 node-a 执行一次清理，避免残留 Pod 影响判断：
 
 ```bash
-./minik8s delete pod busybox-node-b || true
-./minik8s delete pod busybox-client || true
-./minik8s delete pod nginx-node-a || true
-./minik8s delete pod nginx-node-b || true
-./minik8s delete pod nginx-pod || true
+./kubectl delete pod busybox-node-b || true
+./kubectl delete pod busybox-client || true
+./kubectl delete pod nginx-node-a || true
+./kubectl delete pod nginx-node-b || true
+./kubectl delete pod nginx-pod || true
 sleep 8
 ```
 
@@ -121,12 +121,12 @@ sleep 8
 在 node-a：
 
 ```bash
-./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/pod/pod_nginx_node_b.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_a.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_b.yaml
 sleep 8
-./minik8s get pods
-./minik8s get pod nginx-node-a -o yaml
-./minik8s get pod nginx-node-b -o yaml
+./kubectl get pods
+./kubectl get pod nginx-node-a -o yaml
+./kubectl get pod nginx-node-b -o yaml
 ```
 
 在 node-a：
@@ -151,7 +151,7 @@ cat .minik8s/state/cni-ipam.json
 失败排查：
 
 - PodIP 为空：检查对应节点 `./minik8s doctor network`，确认 `MINIK8S_CNI_DISABLED` 未设置为 `1`。
-- 两个 Pod 拿到同一网段：检查 `./minik8s get nodes` 中两个节点的 PodCIDR 是否不同，并确认两个 sailer 使用了不同 Node YAML。
+- 两个 Pod 拿到同一网段：检查 `./kubectl get nodes` 中两个节点的 PodCIDR 是否不同，并确认两个 sailer 使用了不同 Node YAML。
 
 ## CNI-02：同节点 PodIP 通信
 
@@ -160,10 +160,10 @@ cat .minik8s/state/cni-ipam.json
 在 node-a：
 
 ```bash
-./minik8s apply -f manifest/pod/pod_nginx.yaml
-./minik8s apply -f manifest/pod/pod_busybox_client.yaml
+./kubectl apply -f manifest/pod/pod_nginx.yaml
+./kubectl apply -f manifest/pod/pod_busybox_client.yaml
 sleep 8
-SERVER_IP=$(./minik8s get pod nginx-pod -o yaml | awk '/podIP:/ {print $2; exit}')
+SERVER_IP=$(./kubectl get pod nginx-pod -o yaml | awk '/podIP:/ {print $2; exit}')
 CLIENT_CID=$(docker ps -q --filter label=minik8s.pod.name=busybox-client --filter label=minik8s.container.name=client)
 docker exec "${CLIENT_CID}" wget -qO- "http://${SERVER_IP}:80" >/tmp/minik8s-cni-same-node.html
 head -n 1 /tmp/minik8s-cni-same-node.html
@@ -186,14 +186,14 @@ head -n 1 /tmp/minik8s-cni-same-node.html
 在 node-a 创建测试 Pod 并记录 IP：
 
 ```bash
-./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/pod/pod_nginx_node_b.yaml
-./minik8s apply -f manifest/pod/pod_busybox_node_b.yaml
-./minik8s apply -f manifest/pod/pod_busybox_client.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_a.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_b.yaml
+./kubectl apply -f manifest/pod/pod_busybox_node_b.yaml
+./kubectl apply -f manifest/pod/pod_busybox_client.yaml
 sleep 10
-./minik8s get pods
-NGINX_A_IP=$(./minik8s get pod nginx-node-a -o yaml | awk '/podIP:/ {print $2; exit}')
-NGINX_B_IP=$(./minik8s get pod nginx-node-b -o yaml | awk '/podIP:/ {print $2; exit}')
+./kubectl get pods
+NGINX_A_IP=$(./kubectl get pod nginx-node-a -o yaml | awk '/podIP:/ {print $2; exit}')
+NGINX_B_IP=$(./kubectl get pod nginx-node-b -o yaml | awk '/podIP:/ {print $2; exit}')
 echo "${NGINX_A_IP} ${NGINX_B_IP}"
 ```
 
@@ -224,7 +224,7 @@ head -n 1 /tmp/minik8s-cni-cross-b.html
 失败排查：
 
 - node-b shell 没有 `NGINX_A_IP`：从 node-a 输出复制该变量，或在 node-b 手动 `export NGINX_A_IP=<value>`。
-- 跨节点不通但同节点通：检查 `./minik8s get nodes` 是否已有 PodCIDR，`curl -fsS ${HARBOR}/nodes` 是否有 `nodeIP + podCIDR`，再检查 `ip link show mk8s-vxlan`、`bridge fdb show dev mk8s-vxlan`、`ip route`、宿主机防火墙、Linux `ip_forward`。
+- 跨节点不通但同节点通：检查 `./kubectl get nodes` 是否已有 PodCIDR，`curl -fsS ${HARBOR}/nodes` 是否有 `nodeIP + podCIDR`，再检查 `ip link show mk8s-vxlan`、`bridge fdb show dev mk8s-vxlan`、`ip route`、宿主机防火墙、Linux `ip_forward`。
 - 云主机跨节点不通：确认安全组双向放通 UDP `4789`，并用 `tcpdump -ni ens3 udp port 4789` 确认 VXLAN 包是否到达对端。
 - node-b Pod 没启动：看 node-b 的 sailer 日志和 Docker 状态。
 
@@ -235,11 +235,11 @@ head -n 1 /tmp/minik8s-cni-cross-b.html
 在 node-a：
 
 ```bash
-./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/pod/pod_nginx_node_b.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_a.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_b.yaml
 sleep 8
-./minik8s delete pod nginx-node-a
-./minik8s delete pod nginx-node-b
+./kubectl delete pod nginx-node-a
+./kubectl delete pod nginx-node-b
 sleep 8
 ```
 
@@ -315,11 +315,11 @@ node-b 使用 `manifest/node/node_b.yaml`。
 在 node-a 清理 API 对象：
 
 ```bash
-./minik8s delete pod busybox-node-b || true
-./minik8s delete pod busybox-client || true
-./minik8s delete pod nginx-node-a || true
-./minik8s delete pod nginx-node-b || true
-./minik8s delete pod nginx-pod || true
+./kubectl delete pod busybox-node-b || true
+./kubectl delete pod busybox-client || true
+./kubectl delete pod nginx-node-a || true
+./kubectl delete pod nginx-node-b || true
+./kubectl delete pod nginx-pod || true
 sleep 8
 ```
 

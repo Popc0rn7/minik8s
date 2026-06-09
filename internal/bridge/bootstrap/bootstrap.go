@@ -131,14 +131,18 @@ func DefaultNode() *node.Node {
 }
 
 func DependencyPod(etcdDataDir string) *pod.Pod {
+	return StoragePod(etcdDataDir)
+}
+
+func StoragePod(etcdDataDir string) *pod.Pod {
 	return &pod.Pod{
 		TypeMeta: pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
 		ObjectMeta: pod.ObjectMeta{
-			Name:      "bridge-deps",
+			Name:      "storage-etcd",
 			Namespace: "minik8s-system",
 			Labels: map[string]string{
-				"app":          "bridge-deps",
-				"minik8s.kind": "bridge-dependency",
+				"app":          "storage-etcd",
+				"minik8s.kind": "bridge-storage",
 			},
 			Annotations: map[string]string{
 				AnnotationInternal: "true",
@@ -177,16 +181,6 @@ func DependencyPod(etcdDataDir string) *pod.Pod {
 						MountPath: "/etcd-data",
 					}},
 				},
-				{
-					Name:     "nats",
-					Image:    "nats",
-					ImageTag: "2",
-					Ports: []pod.ContainerPort{{
-						ContainerPort: 4222,
-						HostPort:      4222,
-						Protocol:      "TCP",
-					}},
-				},
 			},
 		},
 		Status: pod.PodStatus{Phase: pod.PodPending},
@@ -197,10 +191,10 @@ func DNSPod(configDir string, dnsHostPort, ingressHostPort int32) *pod.Pod {
 	return &pod.Pod{
 		TypeMeta: pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
 		ObjectMeta: pod.ObjectMeta{
-			Name:      "bridge-dns",
+			Name:      "dns-gateway",
 			Namespace: "minik8s-system",
 			Labels: map[string]string{
-				"app":          "bridge-dns",
+				"app":          "dns-gateway",
 				"minik8s.kind": "bridge-dns",
 			},
 			Annotations: map[string]string{
@@ -260,6 +254,67 @@ func DNSPod(configDir string, dnsHostPort, ingressHostPort int32) *pod.Pod {
 					}},
 				},
 			},
+		},
+		Status: pod.PodStatus{Phase: pod.PodPending},
+	}
+}
+
+func ServerlessNATSPod() *pod.Pod {
+	return &pod.Pod{
+		TypeMeta: pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{
+			Name:      "serverless-nats",
+			Namespace: "minik8s-system",
+			Labels: map[string]string{
+				"app":          "serverless-nats",
+				"minik8s.kind": "serverless-event-bus",
+			},
+			Annotations: map[string]string{
+				AnnotationInternal: "true",
+			},
+		},
+		Spec: pod.PodSpec{
+			NodeName:      DefaultNodeName,
+			RestartPolicy: pod.RestartPolicyAlways,
+			Containers: []pod.ContainerSpec{{
+				Name:     "nats",
+				Image:    "nats",
+				ImageTag: "2",
+				Ports: []pod.ContainerPort{{
+					ContainerPort: 4222,
+					HostPort:      4222,
+					Protocol:      "TCP",
+				}},
+			}},
+		},
+		Status: pod.PodStatus{Phase: pod.PodPending},
+	}
+}
+
+func MetricsServerPod() *pod.Pod {
+	return &pod.Pod{
+		TypeMeta: pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{
+			Name:      "metrics-server",
+			Namespace: "minik8s-system",
+			Labels: map[string]string{
+				"app":          "metrics-server",
+				"minik8s.kind": "metrics-adapter",
+			},
+			Annotations: map[string]string{
+				AnnotationInternal: "true",
+			},
+		},
+		Spec: pod.PodSpec{
+			NodeName:      DefaultNodeName,
+			RestartPolicy: pod.RestartPolicyAlways,
+			Containers: []pod.ContainerSpec{{
+				Name:     "metrics-server",
+				Image:    "busybox",
+				ImageTag: "1.36",
+				Command:  []string{"sh", "-c"},
+				Args:     []string{"sleep 365d"},
+			}},
 		},
 		Status: pod.PodStatus{Phase: pod.PodPending},
 	}

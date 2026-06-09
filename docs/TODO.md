@@ -21,6 +21,16 @@
 
 ## P1：基础功能补齐
 
+### 启动与控制面依赖
+
+- [x] 增加 `minik8s init` 初始化入口：生成本地状态目录、DNS 配置和
+  `.minik8s/manifests/` 下的控制面依赖 Pod manifest。
+- [x] 将 `bridge --deps internal` 的私有依赖 Pod 整理成更接近 Kubernetes
+  static pod 的机制：`storage-etcd` 是核心依赖，`dns`、`metrics`、`serverless`
+  是可选 addon；启用 addon 但 manifest 缺失时提示重新运行 `minik8s init --addons ...`。
+- [ ] 后续继续简化启动路径：提供 `minik8s up` 或清晰的一键演示命令，同时用
+  `doctor startup` 检查 Docker、CNI、iptables、Harbor、etcd/NATS 等依赖。
+
 ### Pod
 
 - [x] YAML 支持 `kind/name/image/imageTag/command/args/volume/port/resources/
@@ -35,6 +45,11 @@
 
 - [x] 自研 bridge CNI、host-local IPAM、同节点 Pod IP 通信。
 - [x] 控制面分配 PodCIDR，sailer 写入 CNI 配置并同步 VXLAN/host-gw route。
+- [ ] 增加外部 CNI 模式：允许 `sailer` 只使用用户指定的 CNI conf/bin 目录调用
+  标准 CNI 插件，而不覆盖为自研 `minik8s-bridge` 配置。
+- [ ] 提供常见 CNI 的安装/配置辅助，例如 `minik8s cni install flannel` 或
+  `minik8s addon enable flannel`。第一阶段目标是兼容 flannel CNI 配置和二进制；
+  完整支持原生 flannel DaemonSet/RBAC/ConfigMap YAML 需等 Minik8s 具备对应对象能力。
 - [ ] 跨节点网络仍依赖真实网络、防火墙和 VXLAN 环境；需要继续补 smoke test 和
   自动清理脚本。
 - [ ] IPAM 并发、异常恢复、CNI 状态可视化仍较弱。
@@ -63,9 +78,19 @@
 - [x] HPA controller 可按 CPU/Memory utilization 调整 ReplicaSet replicas，并
   支持每轮最多扩缩 1 个副本、缩容冷却。
 - [ ] 当前是简化实现：只支持 target `ReplicaSet`、Resource utilization；
-  metrics 不持久化，缺少 cAdvisor/metrics-server、custom/external metrics 和
-  Kubernetes 完整 stabilization policy。
+  metrics 不持久化，`metrics.k8s.io/v1beta1` 只是复用 sailer 样本的最小 adapter，
+  缺少 cAdvisor、custom/external metrics 和 Kubernetes 完整 stabilization policy。
 - [ ] 真实压力扩缩容需要补 Linux + Docker 人工验收记录。
+
+### Runtime
+
+- [x] Docker runtime 已接入 `sailer` 主路径，支持 sandbox、业务容器、hostPath
+  mount、资源限制、stats 和基于 Docker netns 的 CNI 调用。
+- [ ] containerd 目前仍是独立雏形，尚未完整实现 `pkg/runtime.ContainerRuntime`
+  接口，也没有 CLI/环境变量切换入口。
+- [ ] 增加运行时选择入口，例如 `sailer --runtime docker|containerd` 或
+  `MINIK8S_RUNTIME=docker|containerd`，并补齐 containerd 的 sandbox、container、
+  image、stats、netns path 和 cleanup 语义。
 
 ### DNS 与转发
 
@@ -98,7 +123,7 @@
 - [x] HTTP invoke 已有最小实现：`invoke function <name> --data ...` 调用内联
   Python handler。
 - [x] EventTrigger 对象、NATS 订阅触发、publish/doctor 辅助命令已有最小实现；
-  外部 NATS 由 `MINIK8S_NATS_URL` 指定。
+  NATS 可由 `serverless` addon 启动，也可通过 `MINIK8S_NATS_URL` 指定外部实例。
 - [x] Workflow 对象、YAML/API/CLI、file/etcd store 已有最小实现。
 - [ ] EventTrigger ack/retry、dead-letter、订阅状态可视化尚未实现。
 - [ ] Workflow DAG 自动执行、顺序调用、分支控制尚未实现。

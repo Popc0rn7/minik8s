@@ -1,13 +1,15 @@
 MINIK8S ?= ./minik8s
+KUBECTL ?= ./kubectl
 CNI_PLUGIN ?= .minik8s/cni/bin/minik8s-bridge
 HARBOR ?= http://127.0.0.1:18080
-CTL ?= env MINIK8S_HARBOR=$(HARBOR) $(MINIK8S)
+CTL ?= env MINIK8S_HARBOR=$(HARBOR) $(KUBECTL)
 RUN ?= $(MINIK8S)
 
 .PHONY: build test bridge sailer-once sailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
 
 build:
 	go build -o $(MINIK8S) ./cmd/minik8s
+	go build -o $(KUBECTL) ./cmd/kubectl
 	go build -o $(CNI_PLUGIN) ./cmd/minik8s-bridge
 
 test:

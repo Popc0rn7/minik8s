@@ -110,7 +110,7 @@ curl -fsS ${HARBOR}/nodes
 在 node-a 的测试终端确认节点状态和 etcd key：
 
 ```bash
-./minik8s get nodes
+./kubectl get nodes
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry/nodes
 ```
 
@@ -124,13 +124,13 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 每个 case 都可以单独运行。运行前后建议在 node-a 执行一次清理，避免残留对象影响判断：
 
 ```bash
-./minik8s delete service nginx-service || true
-./minik8s delete rs nginx-rs || true
-./minik8s delete pod nginx-node-a || true
-./minik8s delete pod nginx-node-b || true
-./minik8s delete pod nginx-rs-1 || true
-./minik8s delete pod nginx-rs-2 || true
-./minik8s delete pod nginx-pod || true
+./kubectl delete service nginx-service || true
+./kubectl delete rs nginx-rs || true
+./kubectl delete pod nginx-node-a || true
+./kubectl delete pod nginx-node-b || true
+./kubectl delete pod nginx-rs-1 || true
+./kubectl delete pod nginx-rs-2 || true
+./kubectl delete pod nginx-pod || true
 sleep 8
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
 ```
@@ -226,15 +226,15 @@ curl -fsS ${HARBOR}/version
 在 node-a 和 node-b 启动 sailer 后，在 node-a：
 
 ```bash
-./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/pod/pod_nginx_node_b.yaml
-./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
-./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_a.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_b.yaml
+./kubectl apply -f manifest/service/service_clusterip_nginx.yaml
+./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 10
-./minik8s get nodes
-./minik8s get pods
-./minik8s get services
-./minik8s get rs
+./kubectl get nodes
+./kubectl get pods
+./kubectl get services
+./kubectl get rs
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
 ```
 
@@ -263,14 +263,14 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 在 node-a：
 
 ```bash
-./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
-./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_a.yaml
+./kubectl apply -f manifest/service/service_clusterip_nginx.yaml
+./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 8
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
-./minik8s delete service nginx-service
-./minik8s delete rs nginx-rs
-./minik8s delete pod nginx-node-a
+./kubectl delete service nginx-service
+./kubectl delete rs nginx-rs
+./kubectl delete pod nginx-node-a
 sleep 8
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry/pods/default/nginx-node-a
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry/services/default/nginx-service
@@ -298,15 +298,15 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 在 node-a 创建对象：
 
 ```bash
-./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/pod/pod_nginx_node_b.yaml
-./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
-./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_a.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_b.yaml
+./kubectl apply -f manifest/service/service_clusterip_nginx.yaml
+./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 10
-./minik8s get nodes
-./minik8s get pods
-./minik8s get services
-./minik8s get rs
+./kubectl get nodes
+./kubectl get pods
+./kubectl get services
+./kubectl get rs
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
 ```
 
@@ -328,10 +328,10 @@ export MINIK8S_HARBOR=${HARBOR}
 重新检查：
 
 ```bash
-./minik8s get nodes
-./minik8s get pods
-./minik8s get services
-./minik8s get rs
+./kubectl get nodes
+./kubectl get pods
+./kubectl get services
+./kubectl get rs
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
 ```
 
@@ -368,12 +368,12 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} watch --prefix /r
 在 node-a 终端 2 执行：
 
 ```bash
-./minik8s apply -f manifest/pod/pod_nginx_node_a.yaml
-./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
-./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
-./minik8s delete rs nginx-rs
-./minik8s delete service nginx-service
-./minik8s delete pod nginx-node-a
+./kubectl apply -f manifest/pod/pod_nginx_node_a.yaml
+./kubectl apply -f manifest/service/service_clusterip_nginx.yaml
+./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
+./kubectl delete rs nginx-rs
+./kubectl delete service nginx-service
+./kubectl delete pod nginx-node-a
 ```
 
 期望：
