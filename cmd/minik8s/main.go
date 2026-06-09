@@ -102,7 +102,12 @@ func prepareBridgeDependencies(ctx context.Context, args []string, out io.Writer
 			return func() {}, err
 		}
 	}
-	if os.Getenv("MINIK8S_NATS_URL") == "" {
+	addons, err := cli.BridgeAddons(args)
+	if err != nil {
+		cleanup()
+		return func() {}, err
+	}
+	if addons.Enabled(cli.AddonServerless) && os.Getenv("MINIK8S_NATS_URL") == "" {
 		if err := os.Setenv("MINIK8S_NATS_URL", "nats://127.0.0.1:4222"); err != nil {
 			cleanup()
 			return func() {}, err

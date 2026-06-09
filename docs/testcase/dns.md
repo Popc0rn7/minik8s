@@ -12,11 +12,11 @@ make build
 ```
 
 - Start the bridge with internal dependencies. Ports 53 and 80 require root or
-  the corresponding capabilities; use `--dns-disabled` if you only want to test
-  DNS CRUD.
+  the corresponding capabilities; use `--addons metrics` if you only want to
+  test DNS CRUD without the DNS gateway.
 
 ```bash
-./minik8s bridge --listen :18080
+./minik8s bridge --listen :18080 --addons dns,metrics
 ```
 
 - Start a sailer node in another shell:

@@ -94,19 +94,21 @@ cp .env.example .env
 ```
 
 初始化本地启动文件。该命令只写入 `.minik8s/` 下的状态目录、DNS 配置和
-static deps pod manifests，不启动进程：
+static pod manifests，不启动进程。默认生成核心 `storage-etcd` 以及 `dns`、
+`metrics` addon manifests：
 
 ```bash
 ./minik8s init
 ```
 
-启动控制面。默认 `bridge` 会先读取 `.minik8s/manifests/` 下的
-`bridge-deps.yaml` 和 `bridge-dns.yaml`，通过私有本地 `sailer` 启动 etcd/NATS
-等依赖 Pod，然后再启动 Harbor API：
+启动控制面。默认 `bridge` 会先读取 `.minik8s/manifests/` 下的 `storage-etcd.yaml`
+以及启用 addon 的 manifests，通过私有本地 `sailer` 启动依赖 Pod，然后再启动
+Harbor API：
 
 ```bash
 ./minik8s bridge \
   --listen :18080 \
+  --addons dns,metrics \
   --cluster-cidr 10.244.0.0/16 \
   --node-cidr-mask-size 24
 ```

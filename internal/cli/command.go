@@ -17,6 +17,7 @@ import (
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
 	"minik8s/internal/hpa"
+	"minik8s/internal/metrics"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
@@ -117,6 +118,7 @@ func newCompatCommand(app *App, out io.Writer) *cobra.Command {
 func addKubectlCommands(root *cobra.Command, app *App, out io.Writer, bind func()) {
 	root.AddCommand(newApplyCommand(app, out, bind))
 	root.AddCommand(newGetCommand(app, out, bind))
+	root.AddCommand(newTopCommand(app, out, bind))
 	root.AddCommand(newDeleteCommand(app, out, bind))
 	root.AddCommand(newDescribeCommand(app, out, bind))
 	root.AddCommand(newAPIResourcesCommand(app, out, bind))
@@ -137,8 +139,8 @@ func addRuntimeCommands(root *cobra.Command, app *App, out io.Writer, bind func(
 }
 
 func newInitCommand(app *App, out io.Writer) *cobra.Command {
-	var force, dnsDisabled bool
-	var dnsListen, ingressListen string
+	var force bool
+	var addons, dnsListen, ingressListen string
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize local Minik8s startup files",
@@ -148,8 +150,8 @@ func newInitCommand(app *App, out io.Writer) *cobra.Command {
 			if force {
 				legacy = append(legacy, "--force")
 			}
-			if dnsDisabled {
-				legacy = append(legacy, "--dns-disabled")
+			if addons != "" {
+				legacy = append(legacy, "--addons", addons)
 			}
 			if dnsListen != "" {
 				legacy = append(legacy, "--dns-listen", dnsListen)
@@ -161,7 +163,7 @@ func newInitCommand(app *App, out io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite generated startup files")
-	cmd.Flags().BoolVar(&dnsDisabled, "dns-disabled", false, "Do not generate DNS dependency Pod manifest")
+	cmd.Flags().StringVar(&addons, "addons", "", "Comma-separated addons to initialize: dns, metrics, serverless, or none")
 	cmd.Flags().StringVar(&dnsListen, "dns-listen", "", "DNS host listen port/address")
 	cmd.Flags().StringVar(&ingressListen, "ingress-listen", "", "HTTP ingress host listen port/address")
 	return cmd
@@ -340,6 +342,26 @@ func newAPIResourcesCommand(app *App, out io.Writer, bind func()) *cobra.Command
 	}
 }
 
+func newTopCommand(app *App, out io.Writer, bind func()) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "top nodes|pods",
+		Short: "Display resource usage",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			bind()
+			switch strings.ToLower(args[0]) {
+			case "pods", "pod", "po":
+				return app.topPods(cmd.Context(), out)
+			case "nodes", "node", "no":
+				return app.topNodes(cmd.Context(), out)
+			default:
+				return fmt.Errorf("top supports pods or nodes")
+			}
+		},
+	}
+	return cmd
+}
+
 func newVersionCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
@@ -362,7 +384,7 @@ func newVersionCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDoctorCommand(app *App, out io.Writer) *cobra.Command {
 	return &cobra.Command{
-		Use:   "doctor docker|network|logbook",
+		Use:   "doctor docker|network|logbook|serverless|addons|addon <name>",
 		Short: "Run diagnostics",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -483,9 +505,8 @@ func newRouteProxyCommand(app *App, out io.Writer) *cobra.Command {
 }
 
 func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
-	var listen, serviceSyncInterval, dnsSyncInterval, replicaSetSyncInterval, hpaSyncInterval, clusterCIDR, gatewayIP, dnsListen, ingressListen string
+	var listen, addons, serviceSyncInterval, dnsSyncInterval, replicaSetSyncInterval, hpaSyncInterval, clusterCIDR, gatewayIP, dnsListen, ingressListen string
 	var nodeCIDRMaskSize int
-	var dnsDisabled bool
 	cmd := &cobra.Command{
 		Use:   "bridge",
 		Short: "Run the control plane",
@@ -494,14 +515,14 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 			if listen != "" {
 				legacy = append(legacy, "--listen", listen)
 			}
+			if addons != "" {
+				legacy = append(legacy, "--addons", addons)
+			}
 			if serviceSyncInterval != "" {
 				legacy = append(legacy, "--service-sync-interval", serviceSyncInterval)
 			}
 			if dnsSyncInterval != "" {
 				legacy = append(legacy, "--dns-sync-interval", dnsSyncInterval)
-			}
-			if dnsDisabled {
-				legacy = append(legacy, "--dns-disabled")
 			}
 			if gatewayIP != "" {
 				legacy = append(legacy, "--gateway-ip", gatewayIP)
@@ -528,9 +549,9 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", "", "Listen address")
+	cmd.Flags().StringVar(&addons, "addons", "", "Comma-separated addons to run: dns, metrics, serverless, or none")
 	cmd.Flags().StringVar(&serviceSyncInterval, "service-sync-interval", "", "Service sync interval")
 	cmd.Flags().StringVar(&dnsSyncInterval, "dns-sync-interval", "", "DNS sync interval")
-	cmd.Flags().BoolVar(&dnsDisabled, "dns-disabled", false, "Disable DNS gateway sync")
 	cmd.Flags().StringVar(&gatewayIP, "gateway-ip", "", "DNS answer gateway IP")
 	cmd.Flags().StringVar(&dnsListen, "dns-listen", "", "DNS host listen port/address")
 	cmd.Flags().StringVar(&ingressListen, "ingress-listen", "", "HTTP ingress host listen port/address")
@@ -844,6 +865,65 @@ func (a *App) getResource(ctx context.Context, ref resourceRef, output string, o
 	default:
 		return fmt.Errorf("unsupported resource %q", ref.resource)
 	}
+}
+
+func (a *App) topPods(ctx context.Context, out io.Writer) error {
+	client, err := a.controlPlaneClient()
+	if err != nil {
+		return err
+	}
+	list, err := client.ListPodMetrics(ctx)
+	if err != nil {
+		return err
+	}
+	if err := writef(out, "%s %s %s\n", cliui.PadRight("NAME", 28), cliui.PadRight("CPU", 10), "MEMORY"); err != nil {
+		return err
+	}
+	for _, item := range list.Items {
+		if item.Metadata.Namespace != "" && item.Metadata.Namespace != a.namespace {
+			continue
+		}
+		usage := metrics.SumPodUsage(item)
+		if err := writef(out, "%s %s %s\n",
+			cliui.PadRight(item.Metadata.Name, 28),
+			cliui.PadRight(metricOrDash(usage[metrics.ResourceCPU]), 10),
+			metricOrDash(usage[metrics.ResourceMemory]),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *App) topNodes(ctx context.Context, out io.Writer) error {
+	client, err := a.controlPlaneClient()
+	if err != nil {
+		return err
+	}
+	list, err := client.ListNodeMetrics(ctx)
+	if err != nil {
+		return err
+	}
+	if err := writef(out, "%s %s %s\n", cliui.PadRight("NAME", 28), cliui.PadRight("CPU", 10), "MEMORY"); err != nil {
+		return err
+	}
+	for _, item := range list.Items {
+		if err := writef(out, "%s %s %s\n",
+			cliui.PadRight(item.Metadata.Name, 28),
+			cliui.PadRight(metricOrDash(item.Usage[metrics.ResourceCPU]), 10),
+			metricOrDash(item.Usage[metrics.ResourceMemory]),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func metricOrDash(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 func (a *App) describeResource(ctx context.Context, ref resourceRef, out io.Writer) error {

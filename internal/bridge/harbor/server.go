@@ -160,6 +160,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	case r.URL.Path == "/api":
 		writeJSON(w, http.StatusOK, map[string]any{"kind": "APIVersions", "versions": []string{"v1"}})
+	case r.URL.Path == "/apis/metrics.k8s.io/v1beta1":
+		writeJSON(w, http.StatusOK, map[string]any{
+			"kind":         "APIResourceList",
+			"apiVersion":   "v1",
+			"groupVersion": metrics.MetricsAPIVersion,
+			"resources": []map[string]any{{
+				"name":       "nodes",
+				"namespaced": false,
+				"kind":       "NodeMetrics",
+				"verbs":      []string{"get", "list"},
+			}, {
+				"name":       "pods",
+				"namespaced": true,
+				"kind":       "PodMetrics",
+				"verbs":      []string{"get", "list"},
+			}},
+		})
 	case r.URL.Path == "/api/v1":
 		writeJSON(w, http.StatusOK, map[string]any{
 			"kind":         "APIResourceList",
@@ -210,8 +227,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"namespaced": true,
 				"kind":       "Workflow",
 				"verbs":      []string{"get", "list", "create", "update", "delete"},
+			}, {
+				"name":       "pods.metrics.k8s.io",
+				"namespaced": true,
+				"kind":       "PodMetrics",
+				"verbs":      []string{"get", "list"},
+			}, {
+				"name":       "nodes.metrics.k8s.io",
+				"namespaced": false,
+				"kind":       "NodeMetrics",
+				"verbs":      []string{"get", "list"},
 			}},
 		})
+	case len(parts) == 3 && parts[0] == "apis" && parts[1] == "metrics.k8s.io" && parts[2] == "v1beta1":
+		writeJSON(w, http.StatusOK, map[string]any{"kind": "APIGroup", "apiVersion": "v1", "name": "metrics.k8s.io", "versions": []map[string]string{{"groupVersion": metrics.MetricsAPIVersion, "version": "v1beta1"}}, "preferredVersion": map[string]string{"groupVersion": metrics.MetricsAPIVersion, "version": "v1beta1"}})
+	case len(parts) == 4 && parts[0] == "apis" && parts[1] == "metrics.k8s.io" && parts[2] == "v1beta1" && parts[3] == "pods":
+		s.handleMetricsPods(w, r)
+	case len(parts) == 4 && parts[0] == "apis" && parts[1] == "metrics.k8s.io" && parts[2] == "v1beta1" && parts[3] == "nodes":
+		s.handleMetricsNodes(w, r)
 	case r.URL.Path == "/nodes":
 		s.handleNetRegistryNodes(w, r)
 	case len(parts) == 3 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes":
@@ -1248,6 +1281,22 @@ func (s *Server) handleNodeMetrics(w http.ResponseWriter, r *http.Request, nodeN
 	}
 	minilog.Info("node-metrics", "node=%s pods=%d", nodeName, len(list.Items))
 	writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("metrics for node %q updated", nodeName))
+}
+
+func (s *Server) handleMetricsPods(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, metrics.NewPodMetricsList(s.metrics.ListPodMetrics("")))
+}
+
+func (s *Server) handleMetricsNodes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, metrics.NewNodeMetricsList(s.metrics.ListPodMetrics("")))
 }
 
 func readPod(r io.Reader, namespace, name string) (*pod.Pod, error) {

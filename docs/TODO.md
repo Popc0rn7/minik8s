@@ -26,8 +26,8 @@
 - [x] 增加 `minik8s init` 初始化入口：生成本地状态目录、DNS 配置和
   `.minik8s/manifests/` 下的控制面依赖 Pod manifest。
 - [x] 将 `bridge --deps internal` 的私有依赖 Pod 整理成更接近 Kubernetes
-  static pod 的机制：`bridge` 优先从固定 manifest 目录加载 deps Pod，再由本地
-  私有 `sailer` reconcile；manifest 缺失时回退内置默认模板。
+  static pod 的机制：`storage-etcd` 是核心依赖，`dns`、`metrics`、`serverless`
+  是可选 addon；启用 addon 但 manifest 缺失时提示重新运行 `minik8s init --addons ...`。
 - [ ] 后续继续简化启动路径：提供 `minik8s up` 或清晰的一键演示命令，同时用
   `doctor startup` 检查 Docker、CNI、iptables、Harbor、etcd/NATS 等依赖。
 
@@ -78,8 +78,8 @@
 - [x] HPA controller 可按 CPU/Memory utilization 调整 ReplicaSet replicas，并
   支持每轮最多扩缩 1 个副本、缩容冷却。
 - [ ] 当前是简化实现：只支持 target `ReplicaSet`、Resource utilization；
-  metrics 不持久化，缺少 cAdvisor/metrics-server、custom/external metrics 和
-  Kubernetes 完整 stabilization policy。
+  metrics 不持久化，`metrics.k8s.io/v1beta1` 只是复用 sailer 样本的最小 adapter，
+  缺少 cAdvisor、custom/external metrics 和 Kubernetes 完整 stabilization policy。
 - [ ] 真实压力扩缩容需要补 Linux + Docker 人工验收记录。
 
 ### Runtime
@@ -123,7 +123,7 @@
 - [x] HTTP invoke 已有最小实现：`invoke function <name> --data ...` 调用内联
   Python handler。
 - [x] EventTrigger 对象、NATS 订阅触发、publish/doctor 辅助命令已有最小实现；
-  外部 NATS 由 `MINIK8S_NATS_URL` 指定。
+  NATS 可由 `serverless` addon 启动，也可通过 `MINIK8S_NATS_URL` 指定外部实例。
 - [x] Workflow 对象、YAML/API/CLI、file/etcd store 已有最小实现。
 - [ ] EventTrigger ack/retry、dead-letter、订阅状态可视化尚未实现。
 - [ ] Workflow DAG 自动执行、顺序调用、分支控制尚未实现。

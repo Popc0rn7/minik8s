@@ -19,6 +19,7 @@ import (
 
 	"minik8s/internal/bridge/harbor"
 	store "minik8s/internal/bridge/logbook"
+	"minik8s/internal/metrics"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
@@ -243,23 +244,26 @@ func TestCLIInitWritesStaticDependencyManifests(t *testing.T) {
 
 	require.NoError(t, app.Run(context.Background(), []string{"init"}, &out))
 
-	deps := readPodManifest(t, filepath.Join(root, "manifests", "bridge-deps.yaml"))
-	assert.Equal(t, "bridge-deps", deps.Name)
+	deps := readPodManifest(t, filepath.Join(root, "manifests", "storage-etcd.yaml"))
+	assert.Equal(t, "storage-etcd", deps.Name)
 	assert.Equal(t, "minik8s-system", deps.Namespace)
 	assert.Equal(t, "true", deps.Annotations["minik8s.internal"])
-	require.Len(t, deps.Spec.Containers, 2)
+	require.Len(t, deps.Spec.Containers, 1)
 	assert.Equal(t, "etcd", deps.Spec.Containers[0].Name)
-	assert.Equal(t, "nats", deps.Spec.Containers[1].Name)
 	require.Len(t, deps.Spec.Volumes, 1)
 	assert.Equal(t, filepath.Join(root, "state", "bridge-deps", "etcd"), deps.Spec.Volumes[0].HostPath.Path)
 
-	dns := readPodManifest(t, filepath.Join(root, "manifests", "bridge-dns.yaml"))
-	assert.Equal(t, "bridge-dns", dns.Name)
+	dns := readPodManifest(t, filepath.Join(root, "manifests", "dns-gateway.yaml"))
+	assert.Equal(t, "dns-gateway", dns.Name)
+	metricsPod := readPodManifest(t, filepath.Join(root, "manifests", "metrics-server.yaml"))
+	assert.Equal(t, "metrics-server", metricsPod.Name)
+	_, err := os.Stat(filepath.Join(root, "manifests", "serverless-nats.yaml"))
+	assert.True(t, os.IsNotExist(err))
 	assert.Contains(t, out.String(), "static pod manifests initialized")
-	assert.Contains(t, out.String(), "next: ./minik8s bridge --listen :18080")
+	assert.Contains(t, out.String(), "next: ./minik8s bridge --listen :18080 --addons dns,metrics")
 }
 
-func TestCLIInitDNSDisabledSkipsDNSManifest(t *testing.T) {
+func TestCLIInitAddonsOnlyWritesSelectedAddonManifests(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MINIK8S_STATE_DIR", filepath.Join(root, "state"))
 	t.Setenv("MINIK8S_DNS_DIR", filepath.Join(root, "dns"))
@@ -267,10 +271,13 @@ func TestCLIInitDNSDisabledSkipsDNSManifest(t *testing.T) {
 	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), []string{"init", "--dns-disabled"}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"init", "--addons", "serverless"}, &out))
 
-	_ = readPodManifest(t, filepath.Join(root, "manifests", "bridge-deps.yaml"))
-	_, err := os.Stat(filepath.Join(root, "manifests", "bridge-dns.yaml"))
+	_ = readPodManifest(t, filepath.Join(root, "manifests", "storage-etcd.yaml"))
+	_ = readPodManifest(t, filepath.Join(root, "manifests", "serverless-nats.yaml"))
+	_, err := os.Stat(filepath.Join(root, "manifests", "dns-gateway.yaml"))
+	assert.True(t, os.IsNotExist(err))
+	_, err = os.Stat(filepath.Join(root, "manifests", "metrics-server.yaml"))
 	assert.True(t, os.IsNotExist(err))
 }
 
@@ -281,7 +288,7 @@ func TestCLIInitRefusesToOverwriteManifestWithoutForce(t *testing.T) {
 	t.Setenv("MINIK8S_DNS_DIR", filepath.Join(root, "dns"))
 	t.Setenv("MINIK8S_STATIC_POD_DIR", manifestDir)
 	require.NoError(t, os.MkdirAll(manifestDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(manifestDir, "bridge-deps.yaml"), []byte("user edit\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(manifestDir, "storage-etcd.yaml"), []byte("user edit\n"), 0o644))
 	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
 	var out bytes.Buffer
 
@@ -298,14 +305,14 @@ func TestCLIInitForceOverwritesManifest(t *testing.T) {
 	t.Setenv("MINIK8S_DNS_DIR", filepath.Join(root, "dns"))
 	t.Setenv("MINIK8S_STATIC_POD_DIR", manifestDir)
 	require.NoError(t, os.MkdirAll(manifestDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(manifestDir, "bridge-deps.yaml"), []byte("user edit\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(manifestDir, "storage-etcd.yaml"), []byte("user edit\n"), 0o644))
 	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"init", "--force"}, &out))
 
-	deps := readPodManifest(t, filepath.Join(root, "manifests", "bridge-deps.yaml"))
-	assert.Equal(t, "bridge-deps", deps.Name)
+	deps := readPodManifest(t, filepath.Join(root, "manifests", "storage-etcd.yaml"))
+	assert.Equal(t, "storage-etcd", deps.Name)
 }
 
 func TestBridgeDependencyPodsLoadStaticManifestsWhenPresent(t *testing.T) {
@@ -315,43 +322,93 @@ func TestBridgeDependencyPodsLoadStaticManifestsWhenPresent(t *testing.T) {
 	custom := &pod.Pod{
 		TypeMeta: pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
 		ObjectMeta: pod.ObjectMeta{
-			Name:        "bridge-deps-custom",
+			Name:        "storage-etcd-custom",
 			Namespace:   "minik8s-system",
 			Annotations: map[string]string{"minik8s.internal": "true"},
 		},
 		Spec: pod.PodSpec{NodeName: "minik8s-bridge-local", Containers: []pod.ContainerSpec{{Name: "etcd", Image: "etcd"}}},
 	}
-	writePodManifest(t, filepath.Join(root, "manifests", "bridge-deps.yaml"), custom)
+	writePodManifest(t, filepath.Join(root, "manifests", "storage-etcd.yaml"), custom)
 
-	pods, err := bridgeDependencyPods(bridgeOptions{dnsDisabled: true}, "/unused/etcd", "/unused/dns")
+	pods, err := bridgeDependencyPods(bridgeOptions{addons: newAddonSet()}, "/unused/etcd", "/unused/dns")
 
 	require.NoError(t, err)
 	require.Len(t, pods, 1)
-	assert.Equal(t, "bridge-deps-custom", pods[0].Name)
+	assert.Equal(t, "storage-etcd-custom", pods[0].Name)
 }
 
-func TestBridgeDependencyPodsFallbackToBuiltInTemplates(t *testing.T) {
+func TestBridgeDependencyPodsRequireEnabledAddonManifest(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "missing"))
 
-	pods, err := bridgeDependencyPods(bridgeOptions{dnsDisabled: true}, "/var/lib/minik8s/etcd", "/unused/dns")
+	_, err := bridgeDependencyPods(bridgeOptions{addons: newAddonSet(AddonDNS)}, "/var/lib/minik8s/etcd", "/unused/dns")
 
-	require.NoError(t, err)
-	require.Len(t, pods, 1)
-	assert.Equal(t, "bridge-deps", pods[0].Name)
-	assert.Equal(t, "/var/lib/minik8s/etcd", pods[0].Spec.Volumes[0].HostPath.Path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "addon dns manifest")
+	assert.Contains(t, err.Error(), "minik8s init --addons")
 }
 
 func TestBridgeDependencyPodsRejectInvalidStaticManifest(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
 	require.NoError(t, os.MkdirAll(DefaultStaticPodDir(), 0o755))
-	require.NoError(t, os.WriteFile(DefaultBridgeDepsManifestPath(), []byte("kind: [\n"), 0o644))
+	require.NoError(t, os.WriteFile(DefaultStorageManifestPath(), []byte("kind: [\n"), 0o644))
 
-	_, err := bridgeDependencyPods(bridgeOptions{dnsDisabled: true}, "/unused/etcd", "/unused/dns")
+	_, err := bridgeDependencyPods(bridgeOptions{addons: newAddonSet()}, "/unused/etcd", "/unused/dns")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading static pod manifest")
+}
+
+func TestBridgeOptionsParseAddons(t *testing.T) {
+	options, err := parseBridgeOptions([]string{"--addons", "dns,metrics"})
+
+	require.NoError(t, err)
+	assert.True(t, options.addons.Enabled(AddonDNS))
+	assert.True(t, options.addons.Enabled(AddonMetrics))
+	assert.False(t, options.addons.Enabled(AddonServerless))
+}
+
+func TestBridgeOptionsRejectUnknownAddon(t *testing.T) {
+	_, err := parseBridgeOptions([]string{"--addons", "dns,unknown"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown addon")
+}
+
+func TestKubectlTopPodsConsumesMetricsAPI(t *testing.T) {
+	metricsStore := store.NewInMemoryMetricsStore()
+	require.NoError(t, metricsStore.UpsertNodeMetrics("node-a", []*metrics.PodMetrics{{
+		Namespace: "default",
+		Name:      "nginx",
+		NodeName:  "node-a",
+		Timestamp: time.Now().UTC(),
+		Containers: []metrics.ContainerMetrics{{
+			Name: "nginx",
+			Usage: metrics.ResourceUsage{
+				CPUNanoCores:    125_000_000,
+				CPUAvailable:    true,
+				MemoryBytes:     64 * 1024 * 1024,
+				MemoryAvailable: true,
+			},
+		}},
+	}}))
+	srv := harbor.New(harbor.Config{
+		PodStore:     store.NewInMemoryPodStore(),
+		NodeStore:    store.NewInMemoryNodeStore(),
+		MetricsStore: metricsStore,
+	})
+	app := newHTTPTestApp(t, srv, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"top", "pods"}, &out))
+
+	assert.Contains(t, out.String(), "NAME")
+	assert.Contains(t, out.String(), "CPU")
+	assert.Contains(t, out.String(), "MEMORY")
+	assert.Contains(t, out.String(), "nginx")
+	assert.Contains(t, out.String(), "125m")
+	assert.Contains(t, out.String(), "64Mi")
 }
 
 func readPodManifest(t *testing.T, path string) *pod.Pod {

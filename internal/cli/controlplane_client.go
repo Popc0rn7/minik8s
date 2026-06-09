@@ -15,6 +15,7 @@ import (
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
 	"minik8s/internal/hpa"
+	"minik8s/internal/metrics"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
@@ -466,6 +467,30 @@ func (c *controlPlaneClient) APIResources(ctx context.Context) (map[string]any, 
 		return nil, err
 	}
 	return resources, nil
+}
+
+func (c *controlPlaneClient) ListPodMetrics(ctx context.Context) (*metrics.PodMetricsList, error) {
+	endpoint, err := c.resourceURL("/apis/metrics.k8s.io/v1beta1/pods")
+	if err != nil {
+		return nil, err
+	}
+	var list metrics.PodMetricsList
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &list); err != nil {
+		return nil, err
+	}
+	return &list, nil
+}
+
+func (c *controlPlaneClient) ListNodeMetrics(ctx context.Context) (*metrics.NodeMetricsList, error) {
+	endpoint, err := c.resourceURL("/apis/metrics.k8s.io/v1beta1/nodes")
+	if err != nil {
+		return nil, err
+	}
+	var list metrics.NodeMetricsList
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &list); err != nil {
+		return nil, err
+	}
+	return &list, nil
 }
 
 func (c *controlPlaneClient) Version(ctx context.Context) (map[string]any, error) {
