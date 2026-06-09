@@ -17,6 +17,7 @@ import (
 	"minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/bridge/navigator"
+	"minik8s/internal/dns"
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
 	"minik8s/internal/functionrunner"
@@ -35,6 +36,7 @@ import (
 type Config struct {
 	PodStore          store.PodStore
 	ServiceStore      store.ServiceStore
+	DNSStore          store.DNSStore
 	ReplicaSetStore   store.ReplicaSetStore
 	HPAStore          store.HPAStore
 	MetricsStore      store.MetricsStore
@@ -52,6 +54,7 @@ type Config struct {
 type Server struct {
 	pods          store.PodStore
 	services      store.ServiceStore
+	dns           store.DNSStore
 	replicaSets   store.ReplicaSetStore
 	hpas          store.HPAStore
 	metrics       store.MetricsStore
@@ -73,6 +76,10 @@ func New(config Config) *Server {
 	serviceStore := config.ServiceStore
 	if serviceStore == nil {
 		serviceStore = store.NewInMemoryServiceStore()
+	}
+	dnsStore := config.DNSStore
+	if dnsStore == nil {
+		dnsStore = store.NewInMemoryDNSStore()
 	}
 	replicaSetStore := config.ReplicaSetStore
 	if replicaSetStore == nil {
@@ -121,6 +128,7 @@ func New(config Config) *Server {
 	return &Server{
 		pods:          podStore,
 		services:      serviceStore,
+		dns:           dnsStore,
 		replicaSets:   replicaSetStore,
 		hpas:          hpaStore,
 		metrics:       metricsStore,
@@ -166,6 +174,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"name":       "services",
 				"namespaced": true,
 				"kind":       "Service",
+				"verbs":      []string{"get", "list", "create", "update", "delete"},
+			}, {
+				"name":       "dns",
+				"namespaced": true,
+				"kind":       "DNS",
 				"verbs":      []string{"get", "list", "create", "update", "delete"},
 			}, {
 				"name":       "replicasets",
@@ -216,6 +229,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.handlePods(w, r, namespace, parts[5:])
 		case "services":
 			s.handleServices(w, r, namespace, parts[5:])
+		case "dns":
+			s.handleDNS(w, r, namespace, parts[5:])
 		case "replicasets":
 			s.handleReplicaSets(w, r, namespace, parts[5:])
 		case "horizontalpodautoscalers":
@@ -679,6 +694,89 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request, namespac
 		}
 		minilog.Info("service-delete", "service=%s/%s", namespace, name)
 		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("service %q deleted", name))
+	default:
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+	}
+}
+
+func (s *Server) handleDNS(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
+	name := ""
+	if len(parts) > 0 {
+		name = parts[0]
+	}
+	if len(parts) > 1 {
+		writeStatus(w, http.StatusNotFound, "NotFound", "dns path not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		if name != "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "create must target dns collection")
+			return
+		}
+		d, err := s.readDNS(r.Body, namespace, "")
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.ensureDNSHostAvailable(d); err != nil {
+			writeStatus(w, http.StatusConflict, "AlreadyExists", err.Error())
+			return
+		}
+		if err := s.dns.Create(d); err != nil {
+			writeStoreError(w, err, "dns", d.Name)
+			return
+		}
+		minilog.Info("dns-create", "dns=%s/%s host=%s", d.Namespace, d.Name, d.Spec.Host)
+		writeJSON(w, http.StatusCreated, d)
+	case http.MethodGet:
+		if name == "" {
+			items, err := s.dns.List(namespace, nil)
+			if err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+				return
+			}
+			sortDNS(items)
+			writeJSON(w, http.StatusOK, map[string]any{"kind": "DNSList", "apiVersion": "v1", "items": items})
+			return
+		}
+		d, err := s.dns.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "dns", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, d)
+	case http.MethodPut:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "update must target dns")
+			return
+		}
+		d, err := s.readDNS(r.Body, namespace, name)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.ensureDNSHostAvailable(d); err != nil {
+			writeStatus(w, http.StatusConflict, "AlreadyExists", err.Error())
+			return
+		}
+		if err := s.dns.Update(d); err != nil {
+			writeStoreError(w, err, "dns", name)
+			return
+		}
+		minilog.Info("dns-update", "dns=%s/%s host=%s", d.Namespace, d.Name, d.Spec.Host)
+		writeJSON(w, http.StatusOK, d)
+	case http.MethodDelete:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target dns")
+			return
+		}
+		if err := s.dns.Delete(name, namespace); err != nil {
+			writeStoreError(w, err, "dns", name)
+			return
+		}
+		minilog.Info("dns-delete", "dns=%s/%s", namespace, name)
+		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("dns %q deleted", name))
 	default:
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 	}
@@ -1227,6 +1325,40 @@ func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (
 	return &svc, nil
 }
 
+func (s *Server) readDNS(r io.Reader, namespace, name string) (*dns.DNS, error) {
+	var d dns.DNS
+	if err := decodeObject(r, &d); err != nil {
+		return nil, err
+	}
+	if namespace != "" {
+		d.Namespace = namespace
+	}
+	if name != "" {
+		d.Name = name
+	}
+	if err := podyaml.DefaultAndValidateDNS(&d); err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+func (s *Server) ensureDNSHostAvailable(candidate *dns.DNS) error {
+	items, err := s.dns.List("", nil)
+	if err != nil {
+		return err
+	}
+	host := strings.ToLower(strings.TrimSpace(candidate.Spec.Host))
+	for _, existing := range items {
+		if existing.Namespace == candidate.Namespace && existing.Name == candidate.Name {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(existing.Spec.Host)) == host {
+			return fmt.Errorf("dns host %q already claimed by %s/%s", candidate.Spec.Host, existing.Namespace, existing.Name)
+		}
+	}
+	return nil
+}
+
 func readFunction(r io.Reader, namespace, name string) (*function.Function, error) {
 	var fn function.Function
 	if err := decodeObject(r, &fn); err != nil {
@@ -1432,6 +1564,15 @@ func sortServices(services []*service.Service) {
 	})
 }
 
+func sortDNS(items []*dns.DNS) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Namespace == items[j].Namespace {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].Namespace < items[j].Namespace
+	})
+}
+
 func sortReplicaSets(replicaSets []*replicaset.ReplicaSet) {
 	sort.Slice(replicaSets, func(i, j int) bool {
 		if replicaSets[i].Namespace == replicaSets[j].Namespace {
@@ -1516,6 +1657,10 @@ func writeStoreError(w http.ResponseWriter, err error, resource, name string) {
 	case errors.Is(err, store.ErrServiceNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
 	case errors.Is(err, store.ErrServiceAlreadyExists):
+		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
+	case errors.Is(err, store.ErrDNSNotFound):
+		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
+	case errors.Is(err, store.ErrDNSAlreadyExists):
 		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
 	case errors.Is(err, store.ErrReplicaSetNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))

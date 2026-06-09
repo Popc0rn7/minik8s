@@ -42,6 +42,7 @@ func TestNewBridgeConfigDoesNotInjectServiceProxy(t *testing.T) {
 	config := newBridgeConfig(
 		store.NewInMemoryPodStore(),
 		store.NewInMemoryServiceStore(),
+		store.NewInMemoryDNSStore(),
 		store.NewInMemoryReplicaSetStore(),
 		store.NewInMemoryHPAStore(),
 		store.NewInMemoryMetricsStore(),
@@ -64,12 +65,13 @@ func TestOpenStoresUsesEtcdBackendForPodServiceReplicaSetAndNodeStores(t *testin
 	endpoint := newEmbeddedEtcdEndpoint(t)
 	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", endpoint)
 
-	podStore, serviceStore, replicaSetStore, hpaStore, metricsStore, nodeStore, functionStore, eventTriggerStore, workflowStore, closeStores, err := openStores()
+	podStore, serviceStore, dnsStore, replicaSetStore, hpaStore, metricsStore, nodeStore, functionStore, eventTriggerStore, workflowStore, closeStores, err := openStores()
 	require.NoError(t, err)
 	defer closeStores()
 
 	assert.IsType(t, &store.EtcdPodStore{}, podStore)
 	assert.IsType(t, &store.EtcdServiceStore{}, serviceStore)
+	assert.IsType(t, &store.EtcdDNSStore{}, dnsStore)
 	assert.IsType(t, &store.EtcdReplicaSetStore{}, replicaSetStore)
 	assert.IsType(t, &store.EtcdHPAStore{}, hpaStore)
 	assert.IsType(t, &store.InMemoryMetricsStore{}, metricsStore)
@@ -85,7 +87,7 @@ func TestPrepareBridgeDependenciesSetsDefaultEnvForBridge(t *testing.T) {
 	called := false
 	cleaned := false
 
-	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"bridge", "--listen", ":18080"}, io.Discard, func(context.Context, io.Writer) (func(), error) {
+	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"bridge", "--listen", ":18080"}, io.Discard, func(context.Context, []string, io.Writer) (func(), error) {
 		called = true
 		return func() { cleaned = true }, nil
 	})
@@ -103,7 +105,7 @@ func TestPrepareBridgeDependenciesNoneDoesNotSetEnv(t *testing.T) {
 	t.Setenv("MINIK8S_NATS_URL", "")
 	called := false
 
-	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"bridge", "--deps", "none"}, io.Discard, func(context.Context, io.Writer) (func(), error) {
+	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"bridge", "--deps", "none"}, io.Discard, func(context.Context, []string, io.Writer) (func(), error) {
 		called = true
 		return func() {}, nil
 	})
@@ -119,7 +121,7 @@ func TestPrepareBridgeDependenciesPreservesExplicitEnv(t *testing.T) {
 	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", "http://10.0.0.1:2379")
 	t.Setenv("MINIK8S_NATS_URL", "nats://10.0.0.1:4222")
 
-	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"bridge"}, io.Discard, func(context.Context, io.Writer) (func(), error) {
+	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"bridge"}, io.Discard, func(context.Context, []string, io.Writer) (func(), error) {
 		return func() {}, nil
 	})
 

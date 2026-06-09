@@ -1,0 +1,18 @@
+kind: DNS
+apiVersion: v1
+metadata:
+  name: example-routes
+  namespace: default
+  labels:
+    app: example
+spec:
+  host: example.com
+  paths:
+    - path: /path1
+      pathType: Prefix
+      serviceName: nginx-service
+      servicePort: 80
+    - path: /path2
+      pathType: Prefix
+      serviceName: nginx-nodeport
+      servicePort: 80

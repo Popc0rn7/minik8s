@@ -31,17 +31,18 @@ func main() {
 	}
 	defer dependencyCleanup()
 
-	podStore, serviceStore, replicaSetStore, hpaStore, metricsStore, nodeStore, functionStore, eventTriggerStore, workflowStore, closeStores, err := openStores()
+	podStore, serviceStore, dnsStore, replicaSetStore, hpaStore, metricsStore, nodeStore, functionStore, eventTriggerStore, workflowStore, closeStores, err := openStores()
 	if err != nil {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening stores: %v", err))
 		os.Exit(1)
 	}
 	defer closeStores()
-	controlBridge := bridge.New(newBridgeConfig(podStore, serviceStore, replicaSetStore, hpaStore, metricsStore, nodeStore, functionStore, eventTriggerStore, workflowStore))
+	controlBridge := bridge.New(newBridgeConfig(podStore, serviceStore, dnsStore, replicaSetStore, hpaStore, metricsStore, nodeStore, functionStore, eventTriggerStore, workflowStore))
 
 	config := cli.Config{
 		Store:             podStore,
 		ServiceStore:      serviceStore,
+		DNSStore:          dnsStore,
 		ReplicaSetStore:   replicaSetStore,
 		HPAStore:          hpaStore,
 		MetricsStore:      metricsStore,
@@ -81,7 +82,7 @@ func loadRuntimeConfig(path string) error {
 	return config.LoadDotEnv(path)
 }
 
-type bridgeDependencyStarter func(context.Context, io.Writer) (func(), error)
+type bridgeDependencyStarter func(context.Context, []string, io.Writer) (func(), error)
 
 func prepareBridgeDependencies(ctx context.Context, args []string, out io.Writer, starter bridgeDependencyStarter) (func(), error) {
 	mode, err := cli.BridgeDependencyMode(args)
@@ -91,7 +92,7 @@ func prepareBridgeDependencies(ctx context.Context, args []string, out io.Writer
 	if mode != "internal" {
 		return func() {}, nil
 	}
-	cleanup, err := starter(ctx, out)
+	cleanup, err := starter(ctx, args, out)
 	if err != nil {
 		return func() {}, err
 	}
@@ -123,55 +124,60 @@ func needsDockerRuntime(args []string) bool {
 	return false
 }
 
-func openStores() (store.PodStore, store.ServiceStore, store.ReplicaSetStore, store.HPAStore, store.MetricsStore, store.NodeStore, store.FunctionStore, store.EventTriggerStore, store.WorkflowStore, func(), error) {
+func openStores() (store.PodStore, store.ServiceStore, store.DNSStore, store.ReplicaSetStore, store.HPAStore, store.MetricsStore, store.NodeStore, store.FunctionStore, store.EventTriggerStore, store.WorkflowStore, func(), error) {
 	endpoints := store.ParseEndpoints(os.Getenv("MINIK8S_LOGBOOK_ENDPOINTS"))
 	if len(endpoints) > 0 {
 		client, err := store.NewClient(endpoints)
 		if err != nil {
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, err
 		}
-		return store.NewEtcdPodStore(client), store.NewEtcdServiceStore(client), store.NewEtcdReplicaSetStore(client), store.NewEtcdHPAStore(client), store.NewInMemoryMetricsStore(), store.NewEtcdNodeStore(client), store.NewEtcdFunctionStore(client), store.NewEtcdEventTriggerStore(client), store.NewEtcdWorkflowStore(client), func() { _ = client.Close() }, nil
+		return store.NewEtcdPodStore(client), store.NewEtcdServiceStore(client), store.NewEtcdDNSStore(client), store.NewEtcdReplicaSetStore(client), store.NewEtcdHPAStore(client), store.NewInMemoryMetricsStore(), store.NewEtcdNodeStore(client), store.NewEtcdFunctionStore(client), store.NewEtcdEventTriggerStore(client), store.NewEtcdWorkflowStore(client), func() { _ = client.Close() }, nil
 	}
 
 	podStore, err := store.NewFilePodStore(cli.DefaultStatePath())
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening pod store: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening pod store: %w", err)
 	}
 	serviceStore, err := store.NewFileServiceStore(cli.DefaultServiceStatePath())
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening service store: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening service store: %w", err)
+	}
+	dnsStore, err := store.NewFileDNSStore(cli.DefaultDNSStatePath())
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening dns store: %w", err)
 	}
 	replicaSetStore, err := store.NewFileReplicaSetStore(cli.DefaultReplicaSetStatePath())
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening replicaset store: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening replicaset store: %w", err)
 	}
 	hpaStore, err := store.NewFileHPAStore(cli.DefaultHPAStatePath())
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening hpa store: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening hpa store: %w", err)
 	}
 	nodeStore, err := store.NewFileNodeStore(cli.DefaultNodeStatePath())
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening node store: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening node store: %w", err)
 	}
 	functionStore, err := store.NewFileFunctionStore(cli.DefaultFunctionStatePath())
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening function store: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening function store: %w", err)
 	}
 	eventTriggerStore, err := store.NewFileEventTriggerStore(cli.DefaultEventTriggerStatePath())
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening eventtrigger store: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening eventtrigger store: %w", err)
 	}
 	workflowStore, err := store.NewFileWorkflowStore(cli.DefaultWorkflowStatePath())
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening workflow store: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening workflow store: %w", err)
 	}
-	return podStore, serviceStore, replicaSetStore, hpaStore, store.NewInMemoryMetricsStore(), nodeStore, functionStore, eventTriggerStore, workflowStore, func() {}, nil
+	return podStore, serviceStore, dnsStore, replicaSetStore, hpaStore, store.NewInMemoryMetricsStore(), nodeStore, functionStore, eventTriggerStore, workflowStore, func() {}, nil
 }
 
-func newBridgeConfig(podStore store.PodStore, serviceStore store.ServiceStore, replicaSetStore store.ReplicaSetStore, hpaStore store.HPAStore, metricsStore store.MetricsStore, nodeStore store.NodeStore, functionStore store.FunctionStore, eventTriggerStore store.EventTriggerStore, workflowStore store.WorkflowStore) bridge.Config {
+func newBridgeConfig(podStore store.PodStore, serviceStore store.ServiceStore, dnsStore store.DNSStore, replicaSetStore store.ReplicaSetStore, hpaStore store.HPAStore, metricsStore store.MetricsStore, nodeStore store.NodeStore, functionStore store.FunctionStore, eventTriggerStore store.EventTriggerStore, workflowStore store.WorkflowStore) bridge.Config {
 	return bridge.Config{
 		PodStore:          podStore,
 		ServiceStore:      serviceStore,
+		DNSStore:          dnsStore,
 		ReplicaSetStore:   replicaSetStore,
 		HPAStore:          hpaStore,
 		MetricsStore:      metricsStore,

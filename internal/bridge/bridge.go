@@ -13,6 +13,7 @@ import (
 type Config struct {
 	PodStore          store.PodStore
 	ServiceStore      store.ServiceStore
+	DNSStore          store.DNSStore
 	ReplicaSetStore   store.ReplicaSetStore
 	HPAStore          store.HPAStore
 	MetricsStore      store.MetricsStore
@@ -29,6 +30,7 @@ type Config struct {
 type Bridge struct {
 	podStore          store.PodStore
 	serviceStore      store.ServiceStore
+	dnsStore          store.DNSStore
 	replicaSetStore   store.ReplicaSetStore
 	hpaStore          store.HPAStore
 	metricsStore      store.MetricsStore
@@ -50,6 +52,10 @@ func New(config Config) *Bridge {
 	serviceStore := config.ServiceStore
 	if serviceStore == nil {
 		serviceStore = store.NewInMemoryServiceStore()
+	}
+	dnsStore := config.DNSStore
+	if dnsStore == nil {
+		dnsStore = store.NewInMemoryDNSStore()
 	}
 	replicaSetStore := config.ReplicaSetStore
 	if replicaSetStore == nil {
@@ -90,6 +96,7 @@ func New(config Config) *Bridge {
 	return &Bridge{
 		podStore:          podStore,
 		serviceStore:      serviceStore,
+		dnsStore:          dnsStore,
 		replicaSetStore:   replicaSetStore,
 		hpaStore:          hpaStore,
 		metricsStore:      metricsStore,
@@ -108,6 +115,7 @@ func (k *Bridge) Handler() http.Handler {
 	return harbor.New(harbor.Config{
 		PodStore:          k.podStore,
 		ServiceStore:      k.serviceStore,
+		DNSStore:          k.dnsStore,
 		ReplicaSetStore:   k.replicaSetStore,
 		HPAStore:          k.hpaStore,
 		MetricsStore:      k.metricsStore,
@@ -131,6 +139,7 @@ func (k *Bridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 	return harbor.New(harbor.Config{
 		PodStore:          k.podStore,
 		ServiceStore:      k.serviceStore,
+		DNSStore:          k.dnsStore,
 		ReplicaSetStore:   k.replicaSetStore,
 		HPAStore:          k.hpaStore,
 		MetricsStore:      k.metricsStore,
@@ -151,6 +160,10 @@ func (k *Bridge) PodStore() store.PodStore {
 
 func (k *Bridge) ServiceStore() store.ServiceStore {
 	return k.serviceStore
+}
+
+func (k *Bridge) DNSStore() store.DNSStore {
+	return k.dnsStore
 }
 
 func (k *Bridge) ReplicaSetStore() store.ReplicaSetStore {

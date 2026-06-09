@@ -9,6 +9,7 @@ import (
 
 	"go.etcd.io/etcd/client/v3"
 
+	"minik8s/internal/dns"
 	"minik8s/internal/hpa"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
@@ -19,6 +20,7 @@ import (
 const (
 	podPrefix          = "/registry/pods/"
 	servicePrefix      = "/registry/services/"
+	dnsPrefix          = "/registry/dns/"
 	replicaSetPrefix   = "/registry/replicasets/"
 	hpaPrefix          = "/registry/horizontalpodautoscalers/"
 	nodePrefix         = "/registry/nodes/"
@@ -293,6 +295,118 @@ func (s *EtcdServiceStore) Delete(name, namespace string) error {
 	}
 	if !resp.Succeeded {
 		return ErrServiceNotFound
+	}
+	return nil
+}
+
+// EtcdDNSStore persists DNS state in real etcd.
+type EtcdDNSStore struct {
+	client *clientv3.Client
+}
+
+func NewEtcdDNSStore(client *clientv3.Client) *EtcdDNSStore {
+	return &EtcdDNSStore{client: client}
+}
+
+func (s *EtcdDNSStore) Create(d *dns.DNS) error {
+	copy := normalizeDNS(d)
+	data, err := json.Marshal(copy)
+	if err != nil {
+		return fmt.Errorf("encoding dns: %w", err)
+	}
+	key := etcdDNSKey(copy.Namespace, copy.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(key), "=", 0)).
+		Then(clientv3.OpPut(key, string(data))).
+		Commit()
+	if err != nil {
+		return fmt.Errorf("creating dns in etcd: %w", err)
+	}
+	if !resp.Succeeded {
+		return ErrDNSAlreadyExists
+	}
+	return nil
+}
+
+func (s *EtcdDNSStore) Get(name, namespace string) (*dns.DNS, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Get(ctx, etcdDNSKey(namespace, name))
+	if err != nil {
+		return nil, fmt.Errorf("getting dns from etcd: %w", err)
+	}
+	if len(resp.Kvs) == 0 {
+		return nil, ErrDNSNotFound
+	}
+	var d dns.DNS
+	if err := json.Unmarshal(resp.Kvs[0].Value, &d); err != nil {
+		return nil, fmt.Errorf("decoding dns: %w", err)
+	}
+	return normalizeDNS(&d), nil
+}
+
+func (s *EtcdDNSStore) List(namespace string, selector *pod.LabelSelector) ([]*dns.DNS, error) {
+	prefix := dnsPrefix
+	if namespace != "" {
+		prefix = dnsPrefix + podNamespace(namespace) + "/"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Get(ctx, prefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, fmt.Errorf("listing dns from etcd: %w", err)
+	}
+	result := make([]*dns.DNS, 0, len(resp.Kvs))
+	for _, kv := range resp.Kvs {
+		var d dns.DNS
+		if err := json.Unmarshal(kv.Value, &d); err != nil {
+			return nil, fmt.Errorf("decoding dns %q: %w", string(kv.Key), err)
+		}
+		copy := normalizeDNS(&d)
+		if selector == nil || selector.Matches(copy.Labels) {
+			result = append(result, copy)
+		}
+	}
+	return result, nil
+}
+
+func (s *EtcdDNSStore) Update(d *dns.DNS) error {
+	copy := normalizeDNS(d)
+	data, err := json.Marshal(copy)
+	if err != nil {
+		return fmt.Errorf("encoding dns: %w", err)
+	}
+	key := etcdDNSKey(copy.Namespace, copy.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(key), ">", 0)).
+		Then(clientv3.OpPut(key, string(data))).
+		Commit()
+	if err != nil {
+		return fmt.Errorf("updating dns in etcd: %w", err)
+	}
+	if !resp.Succeeded {
+		return ErrDNSNotFound
+	}
+	return nil
+}
+
+func (s *EtcdDNSStore) Delete(name, namespace string) error {
+	key := etcdDNSKey(namespace, name)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(key), ">", 0)).
+		Then(clientv3.OpDelete(key)).
+		Commit()
+	if err != nil {
+		return fmt.Errorf("deleting dns from etcd: %w", err)
+	}
+	if !resp.Succeeded {
+		return ErrDNSNotFound
 	}
 	return nil
 }
@@ -657,6 +771,10 @@ func etcdPodKey(namespace, name string) string {
 
 func etcdServiceKey(namespace, name string) string {
 	return servicePrefix + podNamespace(namespace) + "/" + name
+}
+
+func etcdDNSKey(namespace, name string) string {
+	return dnsPrefix + podNamespace(namespace) + "/" + name
 }
 
 func etcdReplicaSetKey(namespace, name string) string {
