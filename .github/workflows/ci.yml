@@ -90,3 +90,6 @@ jobs:
 
       - name: Build minik8s binary
         run: go build -trimpath -ldflags="-s -w" -o dist/minik8s ./cmd/minik8s
+
+      - name: Build kubectl binary
+        run: go build -trimpath -ldflags="-s -w" -o dist/kubectl ./cmd/kubectl

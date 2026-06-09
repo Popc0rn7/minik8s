@@ -2,7 +2,8 @@
 
 Minik8s 是一个面向云操作系统课程 Lab 的轻量容器编排系统。项目目标参考
 Kubernetes，但当前实现更适合描述为“教学版 Kubernetes 核心闭环”：一个
-`bridge` 控制面加多个节点本地 `sailer` agent，支持通过 YAML 管理 Pod、
+`bridge` 控制面加多个节点本地 `sailer` agent，用户通过单独的 `kubectl`
+二进制用 Kubernetes 风格命令管理 Pod、
 Service、ReplicaSet、HorizontalPodAutoscaler 和 Node，并在 Linux + Docker 环境中演示 Pod 网络、
 Service 转发和控制面状态恢复。
 
@@ -13,7 +14,7 @@ Service 转发和控制面状态恢复。
 
 已实现或主路径可演示：
 
-- Pod YAML 解析、默认值填充、`apply/get/describe/delete`。
+- `kubectl apply/get/describe/delete/api-resources/version` 用户资源操作。
 - Docker sandbox + workload 容器，支持 command、args、ports、hostPort、
   hostPath/emptyDir volume、CPU/memory limit。
 - Pod 状态回写，展示 name、phase、Pod IP、uptime、namespace、labels。
@@ -44,7 +45,8 @@ Service 转发和控制面状态恢复。
 
 当前组件边界如下：
 
-- `cmd/minik8s/`：主 CLI 和控制面/节点进程入口。
+- `cmd/kubectl/`：用户侧 Kubernetes 风格资源操作入口。
+- `cmd/minik8s/`：控制面、节点进程、诊断和本地初始化入口。
 - `cmd/minik8s-bridge/`：CNI bridge 插件入口。
 - `internal/bridge/`：控制面边界，组合 Harbor API、Logbook store、Navigator
   scheduler 和 Captain controllers。
@@ -79,14 +81,28 @@ sailer = kubelet 子集 + node network agent + kube-proxy
 make build
 ```
 
-可选：复制 `.env.example` 为 `.env`，把常用运行配置放在文件中。`minik8s`
-启动时会读取当前目录 `.env`，但 shell 中已设置的环境变量优先。
+构建后会得到两个主要二进制：
+
+- `./kubectl`：用户侧资源操作，命令形态对齐 Kubernetes 的 `kubectl` 子集。
+- `./minik8s`：运行和诊断 Minik8s 组件，例如 `init`、`bridge`、`sailer`、`doctor`。
+
+可选：复制 `.env.example` 为 `.env`，把常用运行配置放在文件中。`kubectl` 和
+`minik8s` 启动时都会读取当前目录 `.env`，但 shell 中已设置的环境变量优先。
 
 ```bash
 cp .env.example .env
 ```
 
-启动控制面：
+初始化本地启动文件。该命令只写入 `.minik8s/` 下的状态目录、DNS 配置和
+static deps pod manifests，不启动进程：
+
+```bash
+./minik8s init
+```
+
+启动控制面。默认 `bridge` 会先读取 `.minik8s/manifests/` 下的
+`bridge-deps.yaml` 和 `bridge-dns.yaml`，通过私有本地 `sailer` 启动 etcd/NATS
+等依赖 Pod，然后再启动 Harbor API：
 
 ```bash
 ./minik8s bridge \
@@ -104,24 +120,24 @@ cp .env.example .env
 常用 CLI：
 
 ```bash
-./minik8s version
-./minik8s api-resources
-./minik8s get nodes
+./kubectl version
+./kubectl api-resources
+./kubectl get nodes
 
-./minik8s apply -f manifest/pod/pod_nginx.yaml
-./minik8s get pods
-./minik8s describe pod nginx-pod
-./minik8s delete pod nginx-pod
+./kubectl apply -f manifest/pod/pod_nginx.yaml
+./kubectl get pods
+./kubectl describe pod nginx-pod
+./kubectl delete pod nginx-pod
 
-./minik8s apply -f manifest/service/service_clusterip_nginx.yaml
-./minik8s get services
-./minik8s describe service nginx-service
-./minik8s delete service nginx-service
+./kubectl apply -f manifest/service/service_clusterip_nginx.yaml
+./kubectl get services
+./kubectl describe service nginx-service
+./kubectl delete service nginx-service
 
-./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
-./minik8s get rs
-./minik8s describe rs nginx-rs
-./minik8s delete rs nginx-rs
+./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
+./kubectl get rs
+./kubectl describe rs nginx-rs
+./kubectl delete rs nginx-rs
 ```
 
 CNI 和 kube-proxy 需要 Linux network namespace、`ip`、`bridge`、`iptables`、
@@ -138,10 +154,12 @@ CNI 和 kube-proxy 需要 Linux network namespace、`ip`、`bridge`、`iptables`
 4. `sailer` 写入本机 CNI 配置并同步 VXLAN overlay。
 5. 通过 `get nodes`、PodIP 互通、Service endpoints 和 iptables 规则验证结果。
 
-etcd/Logbook 流程见 [docs/testcase/logbook.md](docs/testcase/logbook.md)。默认
-`bridge` 会启动一个私有本地 `sailer`，由该内部 worker 运行 etcd/NATS 依赖 Pod，
-并把控制面连接到 `http://127.0.0.1:2379` 和 `nats://127.0.0.1:4222`。如果只想使用
-本地 JSON file store，可启动：
+etcd/Logbook 流程见 [docs/testcase/logbook.md](docs/testcase/logbook.md) 和
+[docs/testcase/startup.md](docs/testcase/startup.md)。默认 `bridge` 会启动一个
+私有本地 `sailer`，由该内部 worker 运行 static deps pod manifests 中的
+etcd/NATS 依赖 Pod，并把控制面连接到 `http://127.0.0.1:2379` 和
+`nats://127.0.0.1:4222`。如果没有先运行 `init`，`bridge` 会回退到内置默认 deps
+Pod 模板。如果只想使用本地 JSON file store，可启动：
 
 ```bash
 ./minik8s bridge --listen :18080 --deps none

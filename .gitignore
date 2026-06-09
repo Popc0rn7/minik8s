@@ -8,6 +8,7 @@
 *.so
 *.dylib
 /minik8s
+/kubectl
 /.minik8s/
 
 # Test binary, built with `go test -c`

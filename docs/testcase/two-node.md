@@ -48,7 +48,7 @@ iptables-save -t nat >/tmp/minik8s-iptables-b.txt
 
 ```bash
 make build
-./minik8s version --server ${HARBOR} || true
+./kubectl version --server ${HARBOR} || true
 ```
 
 `version` 在控制面未启动前可以失败；这里只确认二进制已构建。
@@ -115,7 +115,7 @@ bridge fdb show dev mk8s-vxlan
 在 node-a 的 CLI 终端验证：
 
 ```bash
-./minik8s get nodes
+./kubectl get nodes
 ```
 
 期望：

@@ -29,9 +29,9 @@ export MINIK8S_HARBOR=http://127.0.0.1:18080
 ## SL-01：Function CRUD 与 HTTP invoke
 
 ```bash
-./minik8s apply -f manifest/function/function_echo.yaml
-./minik8s get functions
-./minik8s describe function echo
+./kubectl apply -f manifest/function/function_echo.yaml
+./kubectl get functions
+./kubectl describe function echo
 ./minik8s invoke function echo --data hello
 ```
 
@@ -43,9 +43,9 @@ export MINIK8S_HARBOR=http://127.0.0.1:18080
 ## SL-02：EventTrigger 对象
 
 ```bash
-./minik8s apply -f manifest/function/eventtrigger_echo.yaml
-./minik8s get eventtriggers
-./minik8s describe eventtrigger echo-events
+./kubectl apply -f manifest/function/eventtrigger_echo.yaml
+./kubectl get eventtriggers
+./kubectl describe eventtrigger echo-events
 ```
 
 期望：
@@ -70,9 +70,9 @@ export MINIK8S_HARBOR=http://127.0.0.1:18080
 ## SL-04：Workflow 对象
 
 ```bash
-./minik8s apply -f manifest/function/workflow_echo.yaml
-./minik8s get workflows
-./minik8s describe workflow echo-chain
+./kubectl apply -f manifest/function/workflow_echo.yaml
+./kubectl get workflows
+./kubectl describe workflow echo-chain
 ```
 
 期望：

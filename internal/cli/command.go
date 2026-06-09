@@ -24,7 +24,7 @@ import (
 	"minik8s/internal/workflow"
 )
 
-// NewRootCommand builds the Cobra command tree for minik8s.
+// NewRootCommand builds the Cobra command tree for the minik8s runtime/admin binary.
 func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 	if out == nil {
 		out = io.Discard
@@ -34,7 +34,7 @@ func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 
 	root := &cobra.Command{
 		Use:           "minik8s",
-		Short:         "A small Kubernetes-like lab control plane",
+		Short:         "Run and diagnose Minik8s components",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -51,14 +51,82 @@ func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 		app.namespace = namespace
 	}
 
+	addRuntimeCommands(root, app, out, bind)
+	return root
+}
+
+// NewKubectlCommand builds the Kubernetes-style user command tree.
+func NewKubectlCommand(app *App, out io.Writer) *cobra.Command {
+	if out == nil {
+		out = io.Discard
+	}
+	var server string
+	var namespace string
+
+	root := &cobra.Command{
+		Use:           "kubectl",
+		Short:         "Control Minik8s resources through the Harbor API",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Usage()
+		},
+	}
+	root.SetOut(out)
+	root.SetErr(out)
+	root.PersistentFlags().StringVar(&server, "server", "", "Harbor API server URL")
+	root.PersistentFlags().StringVarP(&namespace, "namespace", "n", "default", "Namespace for namespaced resources")
+
+	bind := func() {
+		app.server = server
+		app.namespace = namespace
+	}
+
+	addKubectlCommands(root, app, out, bind)
+	return root
+}
+
+func newCompatCommand(app *App, out io.Writer) *cobra.Command {
+	if out == nil {
+		out = io.Discard
+	}
+	var server string
+	var namespace string
+	root := &cobra.Command{
+		Use:           "minik8s",
+		Short:         "A small Kubernetes-like lab control plane",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Usage()
+		},
+	}
+	root.SetOut(out)
+	root.SetErr(out)
+	root.PersistentFlags().StringVar(&server, "server", "", "Harbor API server URL")
+	root.PersistentFlags().StringVarP(&namespace, "namespace", "n", "default", "Namespace for namespaced resources")
+	bind := func() {
+		app.server = server
+		app.namespace = namespace
+	}
+	addKubectlCommands(root, app, out, bind)
+	addRuntimeCommands(root, app, out, bind)
+	return root
+}
+
+func addKubectlCommands(root *cobra.Command, app *App, out io.Writer, bind func()) {
 	root.AddCommand(newApplyCommand(app, out, bind))
 	root.AddCommand(newGetCommand(app, out, bind))
 	root.AddCommand(newDeleteCommand(app, out, bind))
 	root.AddCommand(newDescribeCommand(app, out, bind))
-	root.AddCommand(newInvokeCommand(app, out, bind))
-	root.AddCommand(newPublishCommand(app, out))
 	root.AddCommand(newAPIResourcesCommand(app, out, bind))
 	root.AddCommand(newVersionCommand(app, out, bind))
+}
+
+func addRuntimeCommands(root *cobra.Command, app *App, out io.Writer, bind func()) {
+	root.AddCommand(newInvokeCommand(app, out, bind))
+	root.AddCommand(newPublishCommand(app, out))
+	root.AddCommand(newInitCommand(app, out))
 	root.AddCommand(newDoctorCommand(app, out))
 	root.AddCommand(newCNICommand(app, out))
 	root.AddCommand(newNetRegistryCommand(app, out))
@@ -66,7 +134,37 @@ func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 	root.AddCommand(newRouteProxyCommand(app, out))
 	root.AddCommand(newBridgeCommand(app, out))
 	root.AddCommand(newSailerCommand(app, out))
-	return root
+}
+
+func newInitCommand(app *App, out io.Writer) *cobra.Command {
+	var force, dnsDisabled bool
+	var dnsListen, ingressListen string
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Initialize local Minik8s startup files",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			legacy := []string{}
+			if force {
+				legacy = append(legacy, "--force")
+			}
+			if dnsDisabled {
+				legacy = append(legacy, "--dns-disabled")
+			}
+			if dnsListen != "" {
+				legacy = append(legacy, "--dns-listen", dnsListen)
+			}
+			if ingressListen != "" {
+				legacy = append(legacy, "--ingress-listen", ingressListen)
+			}
+			return app.initialize(cmd.Context(), legacy, out)
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite generated startup files")
+	cmd.Flags().BoolVar(&dnsDisabled, "dns-disabled", false, "Do not generate DNS dependency Pod manifest")
+	cmd.Flags().StringVar(&dnsListen, "dns-listen", "", "DNS host listen port/address")
+	cmd.Flags().StringVar(&ingressListen, "ingress-listen", "", "HTTP ingress host listen port/address")
+	return cmd
 }
 
 func newPublishCommand(app *App, out io.Writer) *cobra.Command {

@@ -12,8 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"minik8s/internal/bridge/harbor"
 	store "minik8s/internal/bridge/logbook"
@@ -83,6 +85,65 @@ func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
 		err := app.Run(context.Background(), args, &out)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "MINIK8S_HARBOR is required for apply/get/delete")
+	}
+}
+
+func TestKubectlCommandExposesOnlyUserResourceCommands(t *testing.T) {
+	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
+	cmd := NewKubectlCommand(app, io.Discard)
+
+	assertCommandExists(t, cmd, "apply")
+	assertCommandExists(t, cmd, "get")
+	assertCommandExists(t, cmd, "describe")
+	assertCommandExists(t, cmd, "delete")
+	assertCommandExists(t, cmd, "api-resources")
+	assertCommandExists(t, cmd, "version")
+
+	assertCommandMissing(t, cmd, "bridge")
+	assertCommandMissing(t, cmd, "sailer")
+	assertCommandMissing(t, cmd, "init")
+	assertCommandMissing(t, cmd, "doctor")
+	assertCommandMissing(t, cmd, "cni")
+	assertCommandMissing(t, cmd, "invoke")
+	assertCommandMissing(t, cmd, "publish")
+}
+
+func TestMinik8sCommandExposesOnlyRuntimeAndUtilityCommands(t *testing.T) {
+	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
+	cmd := NewRootCommand(app, io.Discard)
+
+	assertCommandExists(t, cmd, "init")
+	assertCommandExists(t, cmd, "doctor")
+	assertCommandExists(t, cmd, "cni")
+	assertCommandExists(t, cmd, "net-registry")
+	assertCommandExists(t, cmd, "netd")
+	assertCommandExists(t, cmd, "route-proxy")
+	assertCommandExists(t, cmd, "bridge")
+	assertCommandExists(t, cmd, "sailer")
+	assertCommandExists(t, cmd, "invoke")
+	assertCommandExists(t, cmd, "publish")
+
+	assertCommandMissing(t, cmd, "apply")
+	assertCommandMissing(t, cmd, "get")
+	assertCommandMissing(t, cmd, "describe")
+	assertCommandMissing(t, cmd, "delete")
+	assertCommandMissing(t, cmd, "api-resources")
+	assertCommandMissing(t, cmd, "version")
+}
+
+func assertCommandExists(t *testing.T, cmd *cobra.Command, name string) {
+	t.Helper()
+	found, _, err := cmd.Find([]string{name})
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, name, found.Name())
+}
+
+func assertCommandMissing(t *testing.T, cmd *cobra.Command, name string) {
+	t.Helper()
+	found, _, err := cmd.Find([]string{name})
+	if err == nil && found != nil && found.Name() == name {
+		t.Fatalf("command %q should not exist", name)
 	}
 }
 
@@ -170,6 +231,143 @@ func TestBridgeDependencyEtcdDirIsAbsolute(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(cwd, ".minik8s", "state", "bridge-deps", "etcd"), dir)
+}
+
+func TestCLIInitWritesStaticDependencyManifests(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("MINIK8S_DNS_DIR", filepath.Join(root, "dns"))
+	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
+	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"init"}, &out))
+
+	deps := readPodManifest(t, filepath.Join(root, "manifests", "bridge-deps.yaml"))
+	assert.Equal(t, "bridge-deps", deps.Name)
+	assert.Equal(t, "minik8s-system", deps.Namespace)
+	assert.Equal(t, "true", deps.Annotations["minik8s.internal"])
+	require.Len(t, deps.Spec.Containers, 2)
+	assert.Equal(t, "etcd", deps.Spec.Containers[0].Name)
+	assert.Equal(t, "nats", deps.Spec.Containers[1].Name)
+	require.Len(t, deps.Spec.Volumes, 1)
+	assert.Equal(t, filepath.Join(root, "state", "bridge-deps", "etcd"), deps.Spec.Volumes[0].HostPath.Path)
+
+	dns := readPodManifest(t, filepath.Join(root, "manifests", "bridge-dns.yaml"))
+	assert.Equal(t, "bridge-dns", dns.Name)
+	assert.Contains(t, out.String(), "static pod manifests initialized")
+	assert.Contains(t, out.String(), "next: ./minik8s bridge --listen :18080")
+}
+
+func TestCLIInitDNSDisabledSkipsDNSManifest(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("MINIK8S_DNS_DIR", filepath.Join(root, "dns"))
+	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
+	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"init", "--dns-disabled"}, &out))
+
+	_ = readPodManifest(t, filepath.Join(root, "manifests", "bridge-deps.yaml"))
+	_, err := os.Stat(filepath.Join(root, "manifests", "bridge-dns.yaml"))
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestCLIInitRefusesToOverwriteManifestWithoutForce(t *testing.T) {
+	root := t.TempDir()
+	manifestDir := filepath.Join(root, "manifests")
+	t.Setenv("MINIK8S_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("MINIK8S_DNS_DIR", filepath.Join(root, "dns"))
+	t.Setenv("MINIK8S_STATIC_POD_DIR", manifestDir)
+	require.NoError(t, os.MkdirAll(manifestDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(manifestDir, "bridge-deps.yaml"), []byte("user edit\n"), 0o644))
+	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
+	var out bytes.Buffer
+
+	err := app.Run(context.Background(), []string{"init"}, &out)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+}
+
+func TestCLIInitForceOverwritesManifest(t *testing.T) {
+	root := t.TempDir()
+	manifestDir := filepath.Join(root, "manifests")
+	t.Setenv("MINIK8S_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("MINIK8S_DNS_DIR", filepath.Join(root, "dns"))
+	t.Setenv("MINIK8S_STATIC_POD_DIR", manifestDir)
+	require.NoError(t, os.MkdirAll(manifestDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(manifestDir, "bridge-deps.yaml"), []byte("user edit\n"), 0o644))
+	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"init", "--force"}, &out))
+
+	deps := readPodManifest(t, filepath.Join(root, "manifests", "bridge-deps.yaml"))
+	assert.Equal(t, "bridge-deps", deps.Name)
+}
+
+func TestBridgeDependencyPodsLoadStaticManifestsWhenPresent(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
+	require.NoError(t, os.MkdirAll(DefaultStaticPodDir(), 0o755))
+	custom := &pod.Pod{
+		TypeMeta: pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{
+			Name:        "bridge-deps-custom",
+			Namespace:   "minik8s-system",
+			Annotations: map[string]string{"minik8s.internal": "true"},
+		},
+		Spec: pod.PodSpec{NodeName: "minik8s-bridge-local", Containers: []pod.ContainerSpec{{Name: "etcd", Image: "etcd"}}},
+	}
+	writePodManifest(t, filepath.Join(root, "manifests", "bridge-deps.yaml"), custom)
+
+	pods, err := bridgeDependencyPods(bridgeOptions{dnsDisabled: true}, "/unused/etcd", "/unused/dns")
+
+	require.NoError(t, err)
+	require.Len(t, pods, 1)
+	assert.Equal(t, "bridge-deps-custom", pods[0].Name)
+}
+
+func TestBridgeDependencyPodsFallbackToBuiltInTemplates(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "missing"))
+
+	pods, err := bridgeDependencyPods(bridgeOptions{dnsDisabled: true}, "/var/lib/minik8s/etcd", "/unused/dns")
+
+	require.NoError(t, err)
+	require.Len(t, pods, 1)
+	assert.Equal(t, "bridge-deps", pods[0].Name)
+	assert.Equal(t, "/var/lib/minik8s/etcd", pods[0].Spec.Volumes[0].HostPath.Path)
+}
+
+func TestBridgeDependencyPodsRejectInvalidStaticManifest(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
+	require.NoError(t, os.MkdirAll(DefaultStaticPodDir(), 0o755))
+	require.NoError(t, os.WriteFile(DefaultBridgeDepsManifestPath(), []byte("kind: [\n"), 0o644))
+
+	_, err := bridgeDependencyPods(bridgeOptions{dnsDisabled: true}, "/unused/etcd", "/unused/dns")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading static pod manifest")
+}
+
+func readPodManifest(t *testing.T, path string) *pod.Pod {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var p pod.Pod
+	require.NoError(t, yaml.Unmarshal(data, &p))
+	return &p
+}
+
+func writePodManifest(t *testing.T, path string, p *pod.Pod) {
+	t.Helper()
+	data, err := yaml.Marshal(p)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o644))
 }
 
 func TestCLICNIInitAndDoctorNetwork(t *testing.T) {

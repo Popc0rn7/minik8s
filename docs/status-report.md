@@ -20,7 +20,7 @@
 
 | 模块 | 对标 Kubernetes | 当前状态 | 稳定度 | 说明 |
 | --- | --- | --- | --- | --- |
-| CLI | `kubectl` 子集 | 部分实现 | 中 | 支持 `apply/get/describe/delete/api-resources/version/doctor/cni/bridge/sailer`，仅 Pod/Service/Node。 |
+| CLI | `kubectl` 子集 + minik8s 管理入口 | 部分实现 | 中 | `kubectl` 支持 `apply/get/describe/delete/api-resources/version`；`minik8s` 支持 `init/doctor/cni/bridge/sailer` 等运行和诊断命令。 |
 | Harbor | kube-apiserver 子集 | 部分实现 | 中 | HTTP API、默认值、状态存储、status 更新可用，但没有 auth、watch、admission、resourceVersion。 |
 | Store | Logbook/local store | 部分实现 | 中 | Pod/Service/Node 支持 file store 与 etcd-backed Logbook store；没有 revision/lease 语义。 |
 | Node | Node API / kubelet heartbeat | 部分实现 | 中低 | Sailer 通过 `/nodes/{name}/pods` 心跳注册 Ready；没有 capacity、allocatable、conditions、taints。 |
@@ -203,7 +203,8 @@
    - GPU 没有 device/plugin/runtime 参数设计。
 
 6. Kubernetes 兼容性
-   - 不能用 `kubectl` 直接操作。
+   - 只能用本仓库构建的 `kubectl` 子集操作，不能直接使用上游 Kubernetes
+     `kubectl` 对接完整 Kubernetes API。
    - YAML 只是 Kubernetes-like，不是完整 Kubernetes schema。
    - 没有 kube-apiserver 的对象语义。
 
@@ -215,7 +216,7 @@
    - `make build`
    - `./minik8s bridge --listen :18080`
    - `./minik8s sailer manifest/node/node_a.yaml --harbor http://127.0.0.1:18080`
-   - `./minik8s apply/get/delete`
+   - `./kubectl apply/get/delete`
 
 2. Service proxy 节点权限风险
    - kubeproxy 随 sailer 在 Worker Node 上同步 iptables，bridge 不再操作数据面规则。

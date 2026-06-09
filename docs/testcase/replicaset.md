@@ -13,8 +13,8 @@ export MINIK8S_HARBOR=${HARBOR}
 确认控制面已运行，且 bridge 使用默认 ReplicaSet 同步周期，或显式指定 `--replicaset-sync-interval 5s`。
 
 ```bash
-./minik8s version --server ${HARBOR}
-./minik8s api-resources | grep replicasets
+./kubectl version --server ${HARBOR}
+./kubectl api-resources | grep replicasets
 ```
 
 node-a/node-b 的 sailer 建议均保持运行。ReplicaSet 创建出的 Pod 不指定 `nodeName`；即使 template 中误写了 `nodeName`，控制面也会清空该字段，并在 worker 心跳后由 Navigator 分配。
@@ -38,12 +38,12 @@ node-a/node-b 的 sailer 建议均保持运行。ReplicaSet 创建出的 Pod 不
 流程：
 
 ```bash
-./minik8s delete rs nginx-rs || true
-./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
+./kubectl delete rs nginx-rs || true
+./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 8
-./minik8s get rs
-./minik8s describe rs nginx-rs
-./minik8s get pods
+./kubectl get rs
+./kubectl describe rs nginx-rs
+./kubectl get pods
 ```
 
 期望：
@@ -55,8 +55,8 @@ sleep 8
 
 失败排查：
 
-- current 长时间小于 desired：确认 bridge 的 ReplicaSet sync loop 正在运行，或执行一次 `./minik8s get rs` 触发请求同步。
-- Pod 长时间 Pending：确认至少一个 sailer 正在心跳，执行 `./minik8s get nodes` 查看节点是否 Ready。
+- current 长时间小于 desired：确认 bridge 的 ReplicaSet sync loop 正在运行，或执行一次 `./kubectl get rs` 触发请求同步。
+- Pod 长时间 Pending：确认至少一个 sailer 正在心跳，执行 `./kubectl get nodes` 查看节点是否 Ready。
 
 ## RS-02：副本不足自动补齐
 
@@ -67,12 +67,12 @@ sleep 8
 流程：
 
 ```bash
-./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
+./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 8
-./minik8s delete pod nginx-rs-1
+./kubectl delete pod nginx-rs-1
 sleep 8
-./minik8s get rs nginx-rs
-./minik8s get pods
+./kubectl get rs nginx-rs
+./kubectl get pods
 ```
 
 期望：
@@ -83,7 +83,7 @@ sleep 8
 
 失败排查：
 
-- 副本未恢复：等待一个 `--replicaset-sync-interval` 周期，或执行 `./minik8s get rs nginx-rs` 触发同步。
+- 副本未恢复：等待一个 `--replicaset-sync-interval` 周期，或执行 `./kubectl get rs nginx-rs` 触发同步。
 
 ## RS-03：副本过多自动删除
 
@@ -120,12 +120,12 @@ spec:
         imageTag: alpine
 EOF
 
-./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
+./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 8
-./minik8s apply -f /tmp/minik8s-rs-one.yaml
+./kubectl apply -f /tmp/minik8s-rs-one.yaml
 sleep 8
-./minik8s get rs nginx-rs
-./minik8s get pods
+./kubectl get rs nginx-rs
+./kubectl get pods
 ```
 
 期望：
@@ -147,12 +147,12 @@ sleep 8
 流程：
 
 ```bash
-./minik8s apply -f manifest/replicaset/replicaset_nginx.yaml
+./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 8
-./minik8s delete rs nginx-rs
+./kubectl delete rs nginx-rs
 sleep 8
-./minik8s get rs || true
-./minik8s get pods
+./kubectl get rs || true
+./kubectl get pods
 docker ps -a --filter label=minik8s.pod.name=nginx-rs-1 --format '{{.Names}} {{.Status}}' || true
 docker ps -a --filter label=minik8s.pod.name=nginx-rs-2 --format '{{.Names}} {{.Status}}' || true
 ```
@@ -172,9 +172,9 @@ docker ps -a --filter label=minik8s.pod.name=nginx-rs-2 --format '{{.Names}} {{.
 清理：
 
 ```bash
-./minik8s delete rs nginx-rs || true
-./minik8s delete pod nginx-rs-1 || true
-./minik8s delete pod nginx-rs-2 || true
+./kubectl delete rs nginx-rs || true
+./kubectl delete pod nginx-rs-1 || true
+./kubectl delete pod nginx-rs-2 || true
 rm -f /tmp/minik8s-rs-one.yaml
 ```
 
