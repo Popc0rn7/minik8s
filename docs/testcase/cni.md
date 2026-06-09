@@ -1,6 +1,11 @@
 # CNI 测试用例
 
-本文档从 0 开始验证 v0.1.0 的 CNI bridge、IPAM、同节点 PodIP、VXLAN 跨节点 PodIP、删除清理，以及静态 route fallback。主路径需要 node-a 的 Harbor `18080`，以及节点间 UDP `4789`。
+本文档只记录具体 CNI 人工验收步骤。CNI 架构、运行模式和成熟化目标见
+[docs/cni.md](../cni.md)。
+
+本文档从 0 开始验证 CNI bridge、IPAM、同节点 PodIP、VXLAN 跨节点 PodIP、删除清理、
+manifest 激活，以及静态 route fallback。主路径需要 node-a 的 Harbor `18080`，以及节点间
+UDP `4789`。
 
 ## 测试模型
 
@@ -9,7 +14,9 @@
 | node-a | `192.168.1.8` | `10.244.0.0/24` | `bridge`、`sailer` |
 | node-b | `192.168.1.6` | `10.244.1.0/24` | `sailer` |
 
-`minik8s-bridge` CNI 负责本机 Pod 网络；`sailer` 使用 Node YAML 注册节点，控制面自动分配 `spec.podCIDR`，随后 sailer 写入本机 CNI 配置，并向 Harbor `/nodes` 注册节点网络信息，周期性同步跨节点 VXLAN overlay。
+`mooring` CNI 负责本机 Pod 网络；`sailer` 使用 Node YAML 注册节点，控制面自动分配
+`spec.podCIDR`，随后 `sailer` 写入本机 CNI 配置，并向 Harbor `/nodes` 注册节点网络信息，
+周期性同步跨节点 VXLAN overlay。
 
 ## 从 0 启动
 
@@ -30,6 +37,8 @@ unset MINIK8S_CNI_DISABLED
 
 ```bash
 make build
+install -d -m 0755 /opt/cni/bin /etc/cni/net.d
+install -m 0755 .minik8s/cni/bin/mooring /opt/cni/bin/mooring
 ```
 
 在 node-a 终端 1 启动控制面：
@@ -108,11 +117,47 @@ sleep 8
 
 | Case | 目标 | 机器 | 必跑 |
 | --- | --- | --- | --- |
+| CNI-00 | manifest 激活自研 CNI | node-a + node-b | 可选 |
 | CNI-01 | CNI 配置与 Pod IP 分配 | node-a + node-b | 是 |
 | CNI-02 | 同节点 PodIP 通信 | node-a | 是 |
 | CNI-03 | 跨节点 PodIP 通信 | node-a + node-b | 是 |
 | CNI-04 | CNI DEL 与 IPAM 清理 | node-a + node-b | 是 |
 | CNI-05 | 静态 route fallback | node-a + node-b | 可选 |
+
+## CNI-00：manifest 激活自研 CNI
+
+目标：验证自研 `mooring` 可以通过 ConfigMap 激活，并由 `sailer` 在节点启动时完成本地引导。
+该模式仍使用 `sailer` 写本机 CNI 配置，并保留内置 `netagent` 做跨节点同步。
+
+在 node-a apply manifest：
+
+```bash
+./kubectl apply -f manifest/cni/mooring.yaml
+```
+
+然后按“从 0 启动”中的方式启动 node-a/node-b 的 `sailer`。启动后分别在两台机器检查：
+
+```bash
+cat /etc/cni/net.d/10-mooring.conf
+./minik8s doctor network
+```
+
+期望：
+
+- `kubectl apply` 输出 `namespace/kube-mooring accepted`、
+  `configmap/mooring-cni-cfg created`。
+- node-a 的 `10-mooring.conf` 中 `type` 为 `mooring`，`podCIDR` 为
+  `10.244.0.0/24`，`gateway` 为 `10.244.0.1`。
+- node-b 的 `10-mooring.conf` 中 `type` 为 `mooring`，`podCIDR` 为
+  `10.244.1.0/24`，`gateway` 为 `10.244.1.1`。
+- 两台机器仍能看到 `mk8s-vxlan` 和对端 PodCIDR route，说明内置 `netagent` 未被禁用。
+
+失败排查：
+
+- 没有生成 `10-mooring.conf`：确认 ConfigMap 名称是 `kube-mooring/mooring-cni-cfg`。
+- `type` 不是 `mooring`：检查 ConfigMap 的 `data.cni-conf.json`。
+- PodCIDR 为空或错误：确认 `kubectl get nodes` 已显示节点 PodCIDR，且 `sailer` 使用的是正确
+  Node YAML。
 
 ## CNI-01：配置与 Pod IP 分配
 
@@ -165,8 +210,8 @@ cat .minik8s/state/cni-ipam.json
 sleep 8
 SERVER_IP=$(./kubectl get pod nginx-pod -o yaml | awk '/podIP:/ {print $2; exit}')
 CLIENT_CID=$(docker ps -q --filter label=minik8s.pod.name=busybox-client --filter label=minik8s.container.name=client)
-docker exec "${CLIENT_CID}" wget -qO- "http://${SERVER_IP}:80" >/tmp/minik8s-cni-same-node.html
-head -n 1 /tmp/minik8s-cni-same-node.html
+docker exec "${CLIENT_CID}" wget -qO- "http://${SERVER_IP}:80" >/tmp/mooring-cni-same-node.html
+head -n 1 /tmp/mooring-cni-same-node.html
 ```
 
 期望：
@@ -202,16 +247,16 @@ echo "${NGINX_A_IP} ${NGINX_B_IP}"
 ```bash
 export NGINX_A_IP=<node-a 输出的 NGINX_A_IP>
 CLIENT_B_CID=$(docker ps -q --filter label=minik8s.pod.name=busybox-node-b --filter label=minik8s.container.name=client)
-docker exec "${CLIENT_B_CID}" wget -qO- "http://${NGINX_A_IP}:80" >/tmp/minik8s-cni-cross-a.html
-head -n 1 /tmp/minik8s-cni-cross-a.html
+docker exec "${CLIENT_B_CID}" wget -qO- "http://${NGINX_A_IP}:80" >/tmp/mooring-cni-cross-a.html
+head -n 1 /tmp/mooring-cni-cross-a.html
 ```
 
 在 node-a，验证访问 node-b：
 
 ```bash
 CLIENT_A_CID=$(docker ps -q --filter label=minik8s.pod.name=busybox-client --filter label=minik8s.container.name=client)
-docker exec "${CLIENT_A_CID}" wget -qO- "http://${NGINX_B_IP}:80" >/tmp/minik8s-cni-cross-b.html
-head -n 1 /tmp/minik8s-cni-cross-b.html
+docker exec "${CLIENT_A_CID}" wget -qO- "http://${NGINX_B_IP}:80" >/tmp/mooring-cni-cross-b.html
+head -n 1 /tmp/mooring-cni-cross-b.html
 ```
 
 期望：

@@ -47,7 +47,7 @@ Service 转发和控制面状态恢复。
 
 - `cmd/kubectl/`：用户侧 Kubernetes 风格资源操作入口。
 - `cmd/minik8s/`：控制面、节点进程、诊断和本地初始化入口。
-- `cmd/minik8s-bridge/`：CNI bridge 插件入口。
+- `cmd/mooring/`：CNI bridge 插件入口。
 - `internal/bridge/`：控制面边界，组合 Harbor API、Logbook store、Navigator
   scheduler 和 Captain controllers。
 - `internal/bridge/harbor/`：Kubernetes-like HTTP API，服务 Pod、Service、

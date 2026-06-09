@@ -166,8 +166,8 @@ tag 规则：
 发布流程：
 
 1. 使用 Docker Buildx 构建 `linux/amd64` 镜像。
-2. 在 builder 阶段编译 `./cmd/minik8s`、`./cmd/kubectl` 和 `./cmd/minik8s-bridge`。
-3. 将 `minik8s`、`kubectl` 放入 `/usr/local/bin/`，将 CNI 插件放入 `/opt/cni/bin/minik8s-bridge`。
+2. 在 builder 阶段编译 `./cmd/minik8s`、`./cmd/kubectl` 和 `./cmd/mooring`。
+3. 将 `minik8s`、`kubectl` 放入 `/usr/local/bin/`，将 CNI 插件放入 `/opt/cni/bin/mooring`。
 4. 使用 GitHub Actions 内置 `GITHUB_TOKEN` 登录 GHCR 并推送镜像。
 
 本地验证：

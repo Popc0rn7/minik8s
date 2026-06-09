@@ -8,11 +8,12 @@ type TypeMeta struct {
 
 // ObjectMeta contains metadata fields for all Kubernetes objects
 type ObjectMeta struct {
-	Name        string            `json:"name,omitempty" yaml:"name"`
-	Namespace   string            `json:"namespace,omitempty" yaml:"namespace"`
-	Labels      map[string]string `json:"labels,omitempty" yaml:"labels"`
-	Annotations map[string]string `json:"annotations,omitempty" yaml:"annotations"`
-	UID         string            `json:"uid,omitempty" yaml:"uid"`
+	Name            string            `json:"name,omitempty" yaml:"name"`
+	Namespace       string            `json:"namespace,omitempty" yaml:"namespace"`
+	Labels          map[string]string `json:"labels,omitempty" yaml:"labels"`
+	Annotations     map[string]string `json:"annotations,omitempty" yaml:"annotations"`
+	UID             string            `json:"uid,omitempty" yaml:"uid"`
+	ResourceVersion string            `json:"resourceVersion,omitempty" yaml:"resourceVersion,omitempty"`
 }
 
 // LabelSelector is used to select resources by labels
@@ -34,11 +35,12 @@ func (m *ObjectMeta) DeepCopy() ObjectMeta {
 		return ObjectMeta{}
 	}
 	out := ObjectMeta{
-		Name:        m.Name,
-		Namespace:   m.Namespace,
-		UID:         m.UID,
-		Labels:      make(map[string]string),
-		Annotations: make(map[string]string),
+		Name:            m.Name,
+		Namespace:       m.Namespace,
+		UID:             m.UID,
+		ResourceVersion: m.ResourceVersion,
+		Labels:          make(map[string]string),
+		Annotations:     make(map[string]string),
 	}
 	if m.Labels != nil {
 		for k, v := range m.Labels {

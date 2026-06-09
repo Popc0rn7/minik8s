@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-mooring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mooring-cni-cfg
+  namespace: kube-mooring
+data:
+  cni-conf.json: |
+    {
+      "cniVersion": "1.0.0",
+      "name": "minik8s",
+      "type": "mooring",
+      "bridge": "mk8s0",
+      "ipam": {
+        "statePath": ".minik8s/state/cni-ipam.json"
+      }
+    }

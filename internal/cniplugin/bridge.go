@@ -21,7 +21,7 @@ const (
 	defaultIfName  = "eth0"
 )
 
-// BridgeConfig is the CNI config consumed by minik8s-bridge.
+// BridgeConfig is the CNI config consumed by mooring.
 type BridgeConfig struct {
 	CNIVersion string `json:"cniVersion"`
 	Name       string `json:"name"`
@@ -58,11 +58,20 @@ func RunBridgePlugin(stdin io.Reader, stdout io.Writer, environ []string) error 
 	if err != nil {
 		return err
 	}
+	if env.Command == "VERSION" {
+		return json.NewEncoder(stdout).Encode(map[string]any{
+			"cniVersion":        "1.0.0",
+			"supportedVersions": []string{"0.3.1", "0.4.0", "1.0.0"},
+		})
+	}
 	var conf BridgeConfig
 	if err := json.Unmarshal(data, &conf); err != nil {
 		return fmt.Errorf("parse cni config: %w", err)
 	}
 	defaultBridgeConfig(&conf)
+	if err := validateConfig(conf); err != nil {
+		return err
+	}
 
 	switch env.Command {
 	case "ADD":
@@ -79,6 +88,19 @@ func RunBridgePlugin(stdin io.Reader, stdout io.Writer, environ []string) error 
 	default:
 		return fmt.Errorf("unsupported CNI_COMMAND %q", env.Command)
 	}
+}
+
+func validateConfig(conf BridgeConfig) error {
+	if conf.Name == "" {
+		return fmt.Errorf("cni config name is required")
+	}
+	if conf.CNIVersion == "" {
+		return fmt.Errorf("cniVersion is required")
+	}
+	if conf.Type != "mooring" {
+		return fmt.Errorf("cni config type must be mooring")
+	}
+	return nil
 }
 
 func add(conf BridgeConfig, env CNIEnv) (map[string]any, error) {
@@ -382,10 +404,27 @@ func run(name string, args ...string) error {
 	return nil
 }
 
+func cniErrorJSON(version string, code int, msg, details string) ([]byte, error) {
+	if version == "" {
+		version = "1.0.0"
+	}
+	return json.Marshal(map[string]any{
+		"cniVersion": version,
+		"code":       code,
+		"msg":        msg,
+		"details":    details,
+	})
+}
+
 // Main runs the bridge plugin with the process stdio and environment.
 func Main() {
 	if err := RunBridgePlugin(os.Stdin, os.Stdout, os.Environ()); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		data, jsonErr := cniErrorJSON("1.0.0", 100, "Minik8sBridgeError", err.Error())
+		if jsonErr != nil {
+			fmt.Fprintln(os.Stderr, err)
+		} else {
+			fmt.Fprintln(os.Stderr, string(data))
+		}
 		os.Exit(1)
 	}
 }

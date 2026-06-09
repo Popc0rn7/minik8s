@@ -15,6 +15,7 @@ import (
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
 	"minik8s/internal/hpa"
+	"minik8s/internal/k8scompat"
 	"minik8s/internal/metrics"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
@@ -26,6 +27,58 @@ import (
 type controlPlaneClient struct {
 	baseURL string
 	client  *http.Client
+}
+
+func (c *controlPlaneClient) ApplyConfigMap(ctx context.Context, cm *k8scompat.ConfigMap) (*k8scompat.ConfigMap, error) {
+	created, err := c.createConfigMap(ctx, cm)
+	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {
+		return c.updateConfigMap(ctx, cm)
+	}
+	return created, err
+}
+
+func (c *controlPlaneClient) GetConfigMap(ctx context.Context, name, namespace string) (*k8scompat.ConfigMap, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "configmaps", name))
+	if err != nil {
+		return nil, err
+	}
+	var cm k8scompat.ConfigMap
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &cm); err != nil {
+		return nil, err
+	}
+	return &cm, nil
+}
+
+func (c *controlPlaneClient) ApplyDaemonSet(ctx context.Context, ds *k8scompat.DaemonSet) (*k8scompat.DaemonSet, error) {
+	created, err := c.createDaemonSet(ctx, ds)
+	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {
+		return c.updateDaemonSet(ctx, ds)
+	}
+	return created, err
+}
+
+func (c *controlPlaneClient) GetDaemonSet(ctx context.Context, name, namespace string) (*k8scompat.DaemonSet, error) {
+	endpoint, err := c.resourceURL(path.Join("/apis/apps/v1/namespaces", podNamespace(namespace), "daemonsets", name))
+	if err != nil {
+		return nil, err
+	}
+	var ds k8scompat.DaemonSet
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &ds); err != nil {
+		return nil, err
+	}
+	return &ds, nil
+}
+
+func (c *controlPlaneClient) ApplyGenericCompat(ctx context.Context, obj *k8scompat.GenericObject) (*k8scompat.GenericObject, error) {
+	endpoint, err := c.genericCompatURL(obj)
+	if err != nil {
+		return nil, err
+	}
+	var created k8scompat.GenericObject
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, obj, http.StatusCreated, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
 }
 
 type controlPlaneError struct {
@@ -695,6 +748,69 @@ func (c *controlPlaneClient) updateHPA(ctx context.Context, autoscaler *hpa.Hori
 		return nil, err
 	}
 	return &updated, nil
+}
+
+func (c *controlPlaneClient) createConfigMap(ctx context.Context, cm *k8scompat.ConfigMap) (*k8scompat.ConfigMap, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(cm.Namespace), "configmaps"))
+	if err != nil {
+		return nil, err
+	}
+	var created k8scompat.ConfigMap
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, cm, http.StatusCreated, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (c *controlPlaneClient) updateConfigMap(ctx context.Context, cm *k8scompat.ConfigMap) (*k8scompat.ConfigMap, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(cm.Namespace), "configmaps", cm.Name))
+	if err != nil {
+		return nil, err
+	}
+	var updated k8scompat.ConfigMap
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, cm, http.StatusOK, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (c *controlPlaneClient) createDaemonSet(ctx context.Context, ds *k8scompat.DaemonSet) (*k8scompat.DaemonSet, error) {
+	endpoint, err := c.resourceURL(path.Join("/apis/apps/v1/namespaces", podNamespace(ds.Namespace), "daemonsets"))
+	if err != nil {
+		return nil, err
+	}
+	var created k8scompat.DaemonSet
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, ds, http.StatusCreated, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (c *controlPlaneClient) updateDaemonSet(ctx context.Context, ds *k8scompat.DaemonSet) (*k8scompat.DaemonSet, error) {
+	endpoint, err := c.resourceURL(path.Join("/apis/apps/v1/namespaces", podNamespace(ds.Namespace), "daemonsets", ds.Name))
+	if err != nil {
+		return nil, err
+	}
+	var updated k8scompat.DaemonSet
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, ds, http.StatusOK, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (c *controlPlaneClient) genericCompatURL(obj *k8scompat.GenericObject) (string, error) {
+	switch obj.Kind {
+	case k8scompat.KindNamespace:
+		return c.resourceURL("/api/v1/namespaces")
+	case k8scompat.KindServiceAccount:
+		return c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(obj.Namespace), "serviceaccounts"))
+	case k8scompat.KindClusterRole:
+		return c.resourceURL("/apis/rbac.authorization.k8s.io/v1/clusterroles")
+	case k8scompat.KindClusterRoleBinding:
+		return c.resourceURL("/apis/rbac.authorization.k8s.io/v1/clusterrolebindings")
+	default:
+		return "", fmt.Errorf("unsupported compatibility kind %q", obj.Kind)
+	}
 }
 
 func (c *controlPlaneClient) doJSON(ctx context.Context, method, endpoint string, body any, want int, out any) error {

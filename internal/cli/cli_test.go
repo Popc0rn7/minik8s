@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 
 	"minik8s/internal/bridge/harbor"
 	store "minik8s/internal/bridge/logbook"
+	"minik8s/internal/k8scompat"
 	"minik8s/internal/metrics"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
@@ -60,6 +62,85 @@ func TestCLIApplyGetDeletePod(t *testing.T) {
 	assert.Contains(t, out.String(), "󰄬")
 	assert.Contains(t, out.String(), "pod/nginx-pod deleted")
 }
+
+func TestCLIApplyOfficialFlannelManifestStoresCompatObjects(t *testing.T) {
+	k8sStore := store.NewInMemoryK8sCompatStore()
+	handler := harbor.New(harbor.Config{K8sCompatStore: k8sStore, NodeStore: store.NewInMemoryNodeStore()})
+	app := newHTTPTestApp(t, handler, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	manifest := writeTempManifest(t, `---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: kube-flannel
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: kube-flannel-cfg
+  namespace: kube-flannel
+data:
+  net-conf.json: |
+    {"Network":"10.244.0.0/16","Backend":{"Type":"vxlan"}}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-flannel-ds
+  namespace: kube-flannel
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      containers:
+      - name: kube-flannel
+        image: ghcr.io/flannel-io/flannel:v0.28.5
+        args: ["--ip-masq", "--kube-subnet-mgr"]
+`)
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
+	assert.Contains(t, out.String(), "namespace/kube-flannel accepted")
+	assert.Contains(t, out.String(), "configmap/kube-flannel-cfg created")
+	assert.Contains(t, out.String(), "daemonset/kube-flannel-ds created")
+	cm, err := k8sStore.GetConfigMap(k8scompat.FlannelConfigMap, k8scompat.FlannelNamespace)
+	require.NoError(t, err)
+	assert.Contains(t, cm.Data["net-conf.json"], "10.244.0.0/16")
+	ds, err := k8sStore.GetDaemonSet(k8scompat.FlannelDaemonSet, k8scompat.FlannelNamespace)
+	require.NoError(t, err)
+	require.Len(t, ds.Spec.Template.Spec.Containers, 1)
+	assert.Equal(t, "ghcr.io/flannel-io/flannel:v0.28.5", ds.Spec.Template.Spec.Containers[0].Image)
+}
+
+func TestCLIApplyMooringCNIManifestStoresCompatObjects(t *testing.T) {
+	k8sStore := store.NewInMemoryK8sCompatStore()
+	handler := harbor.New(harbor.Config{K8sCompatStore: k8sStore, NodeStore: store.NewInMemoryNodeStore()})
+	app := newHTTPTestApp(t, handler, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	manifest := writeTempManifest(t, mooringCNIConfigMapManifest)
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
+	assert.Contains(t, out.String(), "namespace/kube-mooring accepted")
+	assert.Contains(t, out.String(), "configmap/mooring-cni-cfg created")
+	cm, err := k8sStore.GetConfigMap(k8scompat.MooringCNIConfigMap, k8scompat.MooringCNINamespace)
+	require.NoError(t, err)
+	assert.Contains(t, cm.Data["cni-conf.json"], `"type":"mooring"`)
+}
+
+const mooringCNIConfigMapManifest = `---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: kube-mooring
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: mooring-cni-cfg
+  namespace: kube-mooring
+data:
+  cni-conf.json: |
+    {"cniVersion":"1.0.0","name":"minik8s","type":"mooring","bridge":"mk8s0","ipam":{"statePath":".minik8s/state/cni-ipam.json"}}
+`
 
 func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
 	app := New(Config{
@@ -450,7 +531,7 @@ func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
 	assert.Contains(t, out.String(), "podCIDR: 10.244.0.0/24")
 	assert.Contains(t, out.String(), "gateway: 10.244.0.1")
 	assert.Contains(t, out.String(), "ipam: .minik8s/state/cni-ipam.json")
-	assert.Contains(t, out.String(), "󱈸  minik8s-bridge: missing")
+	assert.Contains(t, out.String(), "󱈸  mooring: missing")
 }
 
 func TestCLIDoctorNetworkShowsRoutesFromConfig(t *testing.T) {
@@ -458,10 +539,10 @@ func TestCLIDoctorNetworkShowsRoutesFromConfig(t *testing.T) {
 	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
 	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "net.d"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "net.d", "10-minik8s.conf"), []byte(`{
+	require.NoError(t, os.WriteFile(filepath.Join(root, "net.d", "10-mooring.conf"), []byte(`{
   "cniVersion": "1.0.0",
   "name": "minik8s",
-  "type": "minik8s-bridge",
+  "type": "mooring",
   "bridge": "mk8s0",
   "podCIDR": "10.244.0.0/24",
   "gateway": "10.244.0.1",
@@ -487,10 +568,10 @@ func TestCLIDoctorNetworkShowsIPAMAllocations(t *testing.T) {
 	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
 	t.Setenv("MINIK8S_CNI_CONF_DIR", confDir)
 	require.NoError(t, os.MkdirAll(confDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(confDir, "10-minik8s.conf"), []byte(`{
+	require.NoError(t, os.WriteFile(filepath.Join(confDir, "10-mooring.conf"), []byte(`{
   "cniVersion": "1.0.0",
   "name": "minik8s",
-  "type": "minik8s-bridge",
+  "type": "mooring",
   "bridge": "mk8s0",
   "podCIDR": "10.244.0.0/24",
   "gateway": "10.244.0.1",
@@ -521,7 +602,7 @@ func TestCLICNIInitWritesDefaultSingleNodeConfig(t *testing.T) {
 
 	require.NoError(t, app.Run(context.Background(), []string{"cni", "init"}, &out))
 
-	data, err := os.ReadFile(filepath.Join(root, "net.d", "10-minik8s.conf"))
+	data, err := os.ReadFile(filepath.Join(root, "net.d", "10-mooring.conf"))
 	require.NoError(t, err)
 	var conf struct {
 		PodCIDR string `json:"podCIDR"`
@@ -554,7 +635,7 @@ func TestCLICNIInitWritesCrossNodeConfig(t *testing.T) {
 		"--route", "10.244.0.0/24=192.168.1.10",
 	}, &out))
 
-	data, err := os.ReadFile(filepath.Join(root, "net.d", "10-minik8s.conf"))
+	data, err := os.ReadFile(filepath.Join(root, "net.d", "10-mooring.conf"))
 	require.NoError(t, err)
 	var conf struct {
 		PodCIDR string `json:"podCIDR"`
@@ -613,7 +694,7 @@ status:
 	assigned, err := nodeStore.Get("node-a")
 	require.NoError(t, err)
 	assert.Equal(t, "10.244.0.0/24", assigned.Spec.PodCIDR)
-	data, err := os.ReadFile(filepath.Join(root, "net.d", "10-minik8s.conf"))
+	data, err := os.ReadFile(filepath.Join(root, "net.d", "10-mooring.conf"))
 	require.NoError(t, err)
 	var conf struct {
 		PodCIDR string `json:"podCIDR"`
@@ -622,6 +703,363 @@ status:
 	require.NoError(t, json.Unmarshal(data, &conf))
 	assert.Equal(t, "10.244.0.0/24", conf.PodCIDR)
 	assert.Equal(t, "10.244.0.1", conf.Gateway)
+}
+
+func TestCLISailerPreservesExistingExternalCNIConfig(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	confDir := filepath.Join(root, "net.d")
+	t.Setenv("MINIK8S_CNI_BIN_DIR", binDir)
+	t.Setenv("MINIK8S_CNI_CONF_DIR", confDir)
+	require.NoError(t, os.MkdirAll(confDir, 0o755))
+	externalConfig := `{
+  "cniVersion": "1.0.0",
+  "name": "external",
+  "type": "external-plugin"
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(confDir, "10-external.conf"), []byte(externalConfig), 0o644))
+	nodePath := filepath.Join(root, "node-a.yaml")
+	require.NoError(t, os.WriteFile(nodePath, []byte(`kind: Node
+apiVersion: v1
+metadata:
+  name: node-a
+status:
+  addresses:
+  - type: InternalIP
+    address: 192.168.1.8
+`), 0o644))
+	nodeStore := store.NewInMemoryNodeStore()
+	srv := harbor.New(harbor.Config{
+		NodeStore:        nodeStore,
+		ClusterCIDR:      "10.244.0.0/16",
+		NodeCIDRMaskSize: 24,
+	})
+	app := New(Config{
+		Runtime:      mock.NewMockRuntime(),
+		Store:        store.NewInMemoryPodStore(),
+		ServiceProxy: nil,
+		HTTPClient: &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptestResponseRecorder(req)
+			srv.ServeHTTP(rec, req)
+			return rec.Result(), nil
+		})},
+		NetRunner: func(name string, args ...string) error {
+			return nil
+		},
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"sailer", nodePath, "--harbor", "http://minik8s.test", "--once"}, &out))
+	data, err := os.ReadFile(filepath.Join(confDir, "10-external.conf"))
+	require.NoError(t, err)
+	assert.Equal(t, externalConfig, string(data))
+	_, err = os.Stat(filepath.Join(confDir, "10-mooring.conf"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestCLISailerUsesAppliedFlannelAndSkipsBuiltInNetAgent(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
+	nodePath := filepath.Join(root, "node-a.yaml")
+	require.NoError(t, os.WriteFile(nodePath, []byte(`kind: Node
+apiVersion: v1
+metadata:
+  name: node-a
+status:
+  addresses:
+  - type: InternalIP
+    address: 192.168.1.8
+`), 0o644))
+	nodeStore := store.NewInMemoryNodeStore()
+	k8sStore := store.NewInMemoryK8sCompatStore()
+	require.NoError(t, k8sStore.UpsertConfigMap(&k8scompat.ConfigMap{
+		TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindConfigMap, APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{Name: k8scompat.FlannelConfigMap, Namespace: k8scompat.FlannelNamespace},
+		Data: map[string]string{
+			"cni-conf.json": `{"name":"cbr0","cniVersion":"0.3.1","plugins":[{"type":"flannel"}]}`,
+			"net-conf.json": `{"Network":"10.244.0.0/16","Backend":{"Type":"vxlan"}}`,
+		},
+	}))
+	require.NoError(t, k8sStore.UpsertDaemonSet(&k8scompat.DaemonSet{
+		TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindDaemonSet, APIVersion: "apps/v1"},
+		ObjectMeta: pod.ObjectMeta{Name: k8scompat.FlannelDaemonSet, Namespace: k8scompat.FlannelNamespace},
+		Spec: k8scompat.DaemonSetSpec{Template: k8scompat.PodTemplateSpec{Spec: k8scompat.PodTemplatePodSpec{
+			InitContainers: []k8scompat.Container{{Name: "install-cni-plugin", Image: "ghcr.io/flannel-io/flannel-cni-plugin:v1.9.1-flannel1"}},
+			Containers:     []k8scompat.Container{{Name: "kube-flannel", Image: "ghcr.io/flannel-io/flannel:v0.28.5"}},
+		}}},
+	}))
+	srv := harbor.New(harbor.Config{
+		NodeStore:        nodeStore,
+		K8sCompatStore:   k8sStore,
+		ClusterCIDR:      "10.244.0.0/16",
+		NodeCIDRMaskSize: 24,
+	})
+	flannel := &fakeFlannelRunner{}
+	app := New(Config{
+		Runtime:      mock.NewMockRuntime(),
+		Store:        store.NewInMemoryPodStore(),
+		ServiceProxy: nil,
+		HTTPClient: &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptestResponseRecorder(req)
+			srv.ServeHTTP(rec, req)
+			return rec.Result(), nil
+		})},
+		NetRunner: func(name string, args ...string) error {
+			return fmt.Errorf("built-in netagent should not run when flannel is active")
+		},
+		FlannelRunner: flannel,
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"sailer", nodePath, "--harbor", "http://minik8s.test", "--once"}, &out))
+	require.Len(t, flannel.calls, 1)
+	assert.Equal(t, "node-a", flannel.calls[0].Node.Name())
+	assert.Equal(t, k8scompat.FlannelConfigMap, flannel.calls[0].ConfigMap.Name)
+	assert.Equal(t, k8scompat.FlannelDaemonSet, flannel.calls[0].DaemonSet.Name)
+	_, err := os.Stat(filepath.Join(root, "net.d", "10-mooring.conf"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestCLISailerCleansUpFlannelWhenAppliedObjectsAreMissing(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
+	nodePath := filepath.Join(root, "node-a.yaml")
+	require.NoError(t, os.WriteFile(nodePath, []byte(`kind: Node
+apiVersion: v1
+metadata:
+  name: node-a
+status:
+  addresses:
+  - type: InternalIP
+    address: 192.168.1.8
+`), 0o644))
+	nodeStore := store.NewInMemoryNodeStore()
+	srv := harbor.New(harbor.Config{
+		NodeStore:        nodeStore,
+		K8sCompatStore:   store.NewInMemoryK8sCompatStore(),
+		ClusterCIDR:      "10.244.0.0/16",
+		NodeCIDRMaskSize: 24,
+	})
+	flannel := &fakeFlannelRunner{}
+	app := New(Config{
+		Runtime: mock.NewMockRuntime(),
+		Store:   store.NewInMemoryPodStore(),
+		HTTPClient: &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptestResponseRecorder(req)
+			srv.ServeHTTP(rec, req)
+			return rec.Result(), nil
+		})},
+		FlannelRunner: flannel,
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"sailer", nodePath, "--harbor", "http://minik8s.test", "--once"}, &out))
+	require.Len(t, flannel.cleanupCalls, 1)
+	assert.Equal(t, "node-a", flannel.cleanupCalls[0].NodeName)
+	require.Empty(t, flannel.calls)
+	_, err := os.Stat(filepath.Join(root, "net.d", "10-mooring.conf"))
+	require.NoError(t, err)
+}
+
+func TestCLISailerUsesAppliedMooringCNIAndKeepsBuiltInNetAgent(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
+	nodePath := filepath.Join(root, "node-a.yaml")
+	require.NoError(t, os.WriteFile(nodePath, []byte(`kind: Node
+apiVersion: v1
+metadata:
+  name: node-a
+status:
+  addresses:
+  - type: InternalIP
+    address: 192.168.1.8
+`), 0o644))
+	nodeStore := store.NewInMemoryNodeStore()
+	k8sStore := store.NewInMemoryK8sCompatStore()
+	require.NoError(t, k8sStore.UpsertConfigMap(&k8scompat.ConfigMap{
+		TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindConfigMap, APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{Name: k8scompat.MooringCNIConfigMap, Namespace: k8scompat.MooringCNINamespace},
+		Data: map[string]string{
+			"cni-conf.json": `{"cniVersion":"1.0.0","name":"mooring-addon","type":"mooring","bridge":"mk8s1","ipam":{"statePath":".minik8s/state/addon-ipam.json"}}`,
+		},
+	}))
+	srv := harbor.New(harbor.Config{
+		NodeStore:        nodeStore,
+		K8sCompatStore:   k8sStore,
+		ClusterCIDR:      "10.244.0.0/16",
+		NodeCIDRMaskSize: 24,
+	})
+	var netCalls int
+	app := New(Config{
+		Runtime:      mock.NewMockRuntime(),
+		Store:        store.NewInMemoryPodStore(),
+		ServiceProxy: nil,
+		HTTPClient: &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptestResponseRecorder(req)
+			srv.ServeHTTP(rec, req)
+			return rec.Result(), nil
+		})},
+		NetRunner: func(name string, args ...string) error {
+			netCalls++
+			return nil
+		},
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"sailer", nodePath, "--harbor", "http://minik8s.test", "--once"}, &out))
+	require.Greater(t, netCalls, 0)
+	data, err := os.ReadFile(filepath.Join(root, "net.d", "10-mooring.conf"))
+	require.NoError(t, err)
+	var conf struct {
+		Name    string `json:"name"`
+		Type    string `json:"type"`
+		Bridge  string `json:"bridge"`
+		PodCIDR string `json:"podCIDR"`
+		Gateway string `json:"gateway"`
+		IPAM    struct {
+			StatePath string `json:"statePath"`
+		} `json:"ipam"`
+	}
+	require.NoError(t, json.Unmarshal(data, &conf))
+	assert.Equal(t, "mooring-addon", conf.Name)
+	assert.Equal(t, "mooring", conf.Type)
+	assert.Equal(t, "mk8s1", conf.Bridge)
+	assert.Equal(t, "10.244.0.0/24", conf.PodCIDR)
+	assert.Equal(t, "10.244.0.1", conf.Gateway)
+	assert.Equal(t, ".minik8s/state/addon-ipam.json", conf.IPAM.StatePath)
+}
+
+func TestDockerFlannelRunnerEnsureSkipsRestartWhenHashMatches(t *testing.T) {
+	root := t.TempDir()
+	oldwd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(root))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(oldwd)) })
+	cniBinDir := filepath.Join(root, "bin")
+	cniConfDir := filepath.Join(root, "net.d")
+	t.Setenv("MINIK8S_FLANNEL_RUN_DIR", filepath.Join(root, "run", "flannel"))
+	t.Setenv("MINIK8S_XTABLES_LOCK", filepath.Join(root, "run", "xtables.lock"))
+	var commands []string
+	runner := DockerFlannelRunner{Run: func(ctx context.Context, name string, args ...string) error {
+		_ = ctx
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		if name == "docker" && len(args) >= 2 && args[0] == "inspect" {
+			return nil
+		}
+		return nil
+	}}
+	options := testFlannelOptions(cniBinDir, cniConfDir)
+
+	require.NoError(t, runner.Ensure(context.Background(), options))
+	firstCommandCount := len(commands)
+	require.Greater(t, firstCommandCount, 0)
+	commands = nil
+
+	require.NoError(t, runner.Ensure(context.Background(), options))
+	assert.Equal(t, []string{"docker inspect " + flannelContainerName("node-a")}, commands)
+}
+
+func TestDockerFlannelRunnerEnsureRestartsWhenConfigHashChanges(t *testing.T) {
+	root := t.TempDir()
+	oldwd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(root))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(oldwd)) })
+	cniBinDir := filepath.Join(root, "bin")
+	cniConfDir := filepath.Join(root, "net.d")
+	t.Setenv("MINIK8S_FLANNEL_RUN_DIR", filepath.Join(root, "run", "flannel"))
+	t.Setenv("MINIK8S_XTABLES_LOCK", filepath.Join(root, "run", "xtables.lock"))
+	var commands []string
+	runner := DockerFlannelRunner{Run: func(ctx context.Context, name string, args ...string) error {
+		_ = ctx
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil
+	}}
+	options := testFlannelOptions(cniBinDir, cniConfDir)
+	require.NoError(t, runner.Ensure(context.Background(), options))
+	commands = nil
+
+	changed := testFlannelOptions(cniBinDir, cniConfDir)
+	changed.ConfigMap.Data["net-conf.json"] = `{"Network":"10.245.0.0/16","Backend":{"Type":"vxlan"}}`
+	require.NoError(t, runner.Ensure(context.Background(), changed))
+
+	assert.Contains(t, commands, "docker rm -f "+flannelContainerName("node-a"))
+	assert.Contains(t, strings.Join(commands, "\n"), "ghcr.io/flannel-io/flannel:v0.28.5 /opt/bin/flanneld")
+	hashData, err := os.ReadFile(filepath.Join(".minik8s", "flannel", "node-a", "config", "hash"))
+	require.NoError(t, err)
+	assert.Equal(t, flannelConfigHash(changed, "ghcr.io/flannel-io/flannel-cni-plugin:v1.9.1-flannel1", "ghcr.io/flannel-io/flannel:v0.28.5"), strings.TrimSpace(string(hashData)))
+}
+
+func TestDockerFlannelRunnerCleanupIsIdempotent(t *testing.T) {
+	root := t.TempDir()
+	oldwd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(root))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(oldwd)) })
+	cniBinDir := filepath.Join(root, "bin")
+	cniConfDir := filepath.Join(root, "net.d")
+	t.Setenv("MINIK8S_FLANNEL_RUN_DIR", filepath.Join(root, "run", "flannel"))
+	t.Setenv("MINIK8S_XTABLES_LOCK", filepath.Join(root, "run", "xtables.lock"))
+	require.NoError(t, os.MkdirAll(cniConfDir, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(".minik8s", "flannel", "node-a", "config"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cniConfDir, "10-flannel.conflist"), []byte("{}"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(".minik8s", "flannel", "node-a", "config", "net-conf.json"), []byte("{}"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(".minik8s", "flannel", "node-a", "config", "hash"), []byte("old"), 0o644))
+	var commands []string
+	runner := DockerFlannelRunner{Run: func(ctx context.Context, name string, args ...string) error {
+		_ = ctx
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil
+	}}
+
+	require.NoError(t, runner.Cleanup(context.Background(), FlannelCleanupOptions{
+		NodeName:   "node-a",
+		CNIBinDir:  cniBinDir,
+		CNIConfDir: cniConfDir,
+	}))
+	require.NoError(t, runner.Cleanup(context.Background(), FlannelCleanupOptions{
+		NodeName:   "node-a",
+		CNIBinDir:  cniBinDir,
+		CNIConfDir: cniConfDir,
+	}))
+	assert.Contains(t, commands, "docker rm -f "+flannelContainerName("node-a"))
+	_, err = os.Stat(filepath.Join(cniConfDir, "10-flannel.conflist"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	_, err = os.Stat(filepath.Join(".minik8s", "flannel", "node-a", "config", "net-conf.json"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	_, err = os.Stat(filepath.Join(".minik8s", "flannel", "node-a", "config", "hash"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func testFlannelOptions(cniBinDir, cniConfDir string) FlannelOptions {
+	return FlannelOptions{
+		HarborURL: "http://minik8s.test",
+		Node: node.New("node-a", node.NodeSpec{PodCIDR: "10.244.0.0/24"}, node.NodeStatus{
+			Addresses: []node.NodeAddress{{Type: node.NodeAddressInternalIP, Address: "192.168.1.8"}},
+		}),
+		ConfigMap: &k8scompat.ConfigMap{
+			TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindConfigMap, APIVersion: "v1"},
+			ObjectMeta: pod.ObjectMeta{Name: k8scompat.FlannelConfigMap, Namespace: k8scompat.FlannelNamespace},
+			Data: map[string]string{
+				"cni-conf.json": `{"name":"cbr0","cniVersion":"0.3.1","plugins":[{"type":"flannel"}]}`,
+				"net-conf.json": `{"Network":"10.244.0.0/16","Backend":{"Type":"vxlan"}}`,
+			},
+		},
+		DaemonSet: &k8scompat.DaemonSet{
+			TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindDaemonSet, APIVersion: "apps/v1"},
+			ObjectMeta: pod.ObjectMeta{Name: k8scompat.FlannelDaemonSet, Namespace: k8scompat.FlannelNamespace},
+			Spec: k8scompat.DaemonSetSpec{Template: k8scompat.PodTemplateSpec{Spec: k8scompat.PodTemplatePodSpec{
+				InitContainers: []k8scompat.Container{{Name: "install-cni-plugin", Image: "ghcr.io/flannel-io/flannel-cni-plugin:v1.9.1-flannel1"}},
+				Containers:     []k8scompat.Container{{Name: "kube-flannel", Image: "ghcr.io/flannel-io/flannel:v0.28.5"}},
+			}}},
+		},
+		CNIBinDir:  cniBinDir,
+		CNIConfDir: cniConfDir,
+	}
 }
 
 func TestCLICNIInitRejectsInvalidRouteSyntax(t *testing.T) {
@@ -927,7 +1365,7 @@ func TestCLIDoctorNetworkShowsCNIPaths(t *testing.T) {
 
 	assert.Contains(t, out.String(), "󰋽  confDir:")
 	assert.Contains(t, out.String(), "󰋽  binDir:")
-	assert.Contains(t, out.String(), "󰋽  plugin: minik8s-bridge")
+	assert.Contains(t, out.String(), "󰋽  plugin: mooring")
 }
 
 func TestCLIApplyStoresPendingPodWithoutRuntimeSync(t *testing.T) {
@@ -1271,6 +1709,30 @@ func newHTTPTestApp(t *testing.T, handler http.Handler, podStore store.PodStore,
 			return rec.Result(), nil
 		})},
 	})
+}
+
+func writeTempManifest(t *testing.T, data string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "manifest.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(data), 0o644))
+	return path
+}
+
+type fakeFlannelRunner struct {
+	calls        []FlannelOptions
+	cleanupCalls []FlannelCleanupOptions
+}
+
+func (f *fakeFlannelRunner) Ensure(ctx context.Context, options FlannelOptions) error {
+	_ = ctx
+	f.calls = append(f.calls, options)
+	return nil
+}
+
+func (f *fakeFlannelRunner) Cleanup(ctx context.Context, options FlannelCleanupOptions) error {
+	_ = ctx
+	f.cleanupCalls = append(f.cleanupCalls, options)
+	return nil
 }
 
 type cliRoundTripFunc func(req *http.Request) (*http.Response, error)

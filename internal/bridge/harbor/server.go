@@ -22,6 +22,7 @@ import (
 	"minik8s/internal/function"
 	"minik8s/internal/functionrunner"
 	"minik8s/internal/hpa"
+	"minik8s/internal/k8scompat"
 	"minik8s/internal/metrics"
 	"minik8s/internal/minilog"
 	"minik8s/internal/netregistry"
@@ -41,6 +42,7 @@ type Config struct {
 	HPAStore          store.HPAStore
 	MetricsStore      store.MetricsStore
 	NodeStore         store.NodeStore
+	K8sCompatStore    store.K8sCompatStore
 	FunctionStore     store.FunctionStore
 	EventTriggerStore store.EventTriggerStore
 	WorkflowStore     store.WorkflowStore
@@ -59,6 +61,7 @@ type Server struct {
 	hpas          store.HPAStore
 	metrics       store.MetricsStore
 	nodes         store.NodeStore
+	k8sCompat     store.K8sCompatStore
 	functions     store.FunctionStore
 	eventTriggers store.EventTriggerStore
 	workflows     store.WorkflowStore
@@ -66,6 +69,7 @@ type Server struct {
 	nodeTTL       time.Duration
 	netRegistry   *netregistry.Store
 	cidrAlloc     *nodeCIDRAllocator
+	nodeWatch     *nodeWatchHub
 }
 
 func New(config Config) *Server {
@@ -96,6 +100,10 @@ func New(config Config) *Server {
 	nodeStore := config.NodeStore
 	if nodeStore == nil {
 		nodeStore = store.NewInMemoryNodeStore()
+	}
+	k8sCompatStore := config.K8sCompatStore
+	if k8sCompatStore == nil {
+		k8sCompatStore = store.NewInMemoryK8sCompatStore()
 	}
 	functionStore := config.FunctionStore
 	if functionStore == nil {
@@ -133,6 +141,7 @@ func New(config Config) *Server {
 		hpas:          hpaStore,
 		metrics:       metricsStore,
 		nodes:         nodeStore,
+		k8sCompat:     k8sCompatStore,
 		functions:     functionStore,
 		eventTriggers: eventTriggerStore,
 		workflows:     workflowStore,
@@ -140,6 +149,7 @@ func New(config Config) *Server {
 		nodeTTL:       nodeTTL,
 		netRegistry:   netRegistryStore,
 		cidrAlloc:     cidrAlloc,
+		nodeWatch:     newNodeWatchHub(),
 	}
 }
 
@@ -155,11 +165,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/version":
 		writeJSON(w, http.StatusOK, map[string]any{
 			"component":  "harbor",
-			"gitVersion": "v0.1.0",
+			"gitVersion": "v0.2.0-flannel",
 			"apiVersion": "v1",
 		})
 	case r.URL.Path == "/api":
 		writeJSON(w, http.StatusOK, map[string]any{"kind": "APIVersions", "versions": []string{"v1"}})
+	case r.URL.Path == "/apis/apps/v1":
+		writeJSON(w, http.StatusOK, map[string]any{
+			"kind":         "APIResourceList",
+			"apiVersion":   "v1",
+			"groupVersion": "apps/v1",
+			"resources": []map[string]any{{
+				"name":       "daemonsets",
+				"namespaced": true,
+				"kind":       "DaemonSet",
+				"verbs":      []string{"get", "create", "update"},
+			}},
+		})
 	case r.URL.Path == "/apis/metrics.k8s.io/v1beta1":
 		writeJSON(w, http.StatusOK, map[string]any{
 			"kind":         "APIResourceList",
@@ -211,7 +233,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"name":       "nodes",
 				"namespaced": false,
 				"kind":       "Node",
-				"verbs":      []string{"get", "list"},
+				"verbs":      []string{"get", "list", "patch"},
+			}, {
+				"name":       "configmaps",
+				"namespaced": true,
+				"kind":       "ConfigMap",
+				"verbs":      []string{"get", "create", "update"},
+			}, {
+				"name":       "serviceaccounts",
+				"namespaced": true,
+				"kind":       "ServiceAccount",
+				"verbs":      []string{"create", "update"},
 			}, {
 				"name":       "functions",
 				"namespaced": true,
@@ -251,10 +283,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleNodes(w, r, "")
 	case len(parts) == 4 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes" && parts[3] != "":
 		s.handleNodes(w, r, parts[3])
+	case len(parts) == 3 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "namespaces":
+		s.handleGenericCompat(w, r, "", k8scompat.KindNamespace, nil)
+	case len(parts) == 4 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "namespaces" && parts[3] != "":
+		s.handleGenericCompat(w, r, "", k8scompat.KindNamespace, parts[3:])
 	case len(parts) == 5 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes" && parts[4] == "pods":
 		s.handleNodePods(w, r, parts[3])
 	case len(parts) == 5 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes" && parts[4] == "metrics":
 		s.handleNodeMetrics(w, r, parts[3])
+	case len(parts) == 5 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes" && parts[4] == "status":
+		s.handleNodeStatus(w, r, parts[3])
 	case len(parts) >= 5 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "namespaces":
 		namespace := parts[3]
 		switch parts[4] {
@@ -274,9 +312,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.handleEventTriggers(w, r, namespace, parts[5:])
 		case "workflows":
 			s.handleWorkflows(w, r, namespace, parts[5:])
+		case "configmaps":
+			s.handleConfigMaps(w, r, namespace, parts[5:])
+		case "serviceaccounts":
+			s.handleGenericCompat(w, r, namespace, k8scompat.KindServiceAccount, parts[5:])
 		default:
 			writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("resource %q not found", parts[4]))
 		}
+	case len(parts) >= 6 && parts[0] == "apis" && parts[1] == "apps" && parts[2] == "v1" && parts[3] == "namespaces" && parts[5] == "daemonsets":
+		s.handleDaemonSets(w, r, parts[4], parts[6:])
+	case len(parts) >= 3 && parts[0] == "apis" && parts[1] == "rbac.authorization.k8s.io" && parts[2] == "v1":
+		if len(parts) == 4 && (parts[3] == "clusterroles" || parts[3] == "clusterrolebindings") {
+			kind := k8scompat.KindClusterRole
+			if parts[3] == "clusterrolebindings" {
+				kind = k8scompat.KindClusterRoleBinding
+			}
+			s.handleGenericCompat(w, r, "", kind, nil)
+			return
+		}
+		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("path %q not found", r.URL.Path))
 	default:
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("path %q not found", r.URL.Path))
 	}
@@ -445,6 +499,7 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 	if shouldLogConnect {
 		minilog.Info("node-connect", "node=%s", nodeName)
 	}
+	s.nodeWatch.publish("MODIFIED", *assigned)
 	if err := s.syncReplicaSets(r.Context()); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -498,6 +553,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string
 			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 			return
 		}
+		s.nodeWatch.publish("ADDED", *assigned)
 		writeJSON(w, http.StatusCreated, assigned)
 		return
 	case http.MethodPut:
@@ -527,7 +583,15 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string
 			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 			return
 		}
+		s.nodeWatch.publish("MODIFIED", *assigned)
 		writeJSON(w, http.StatusOK, assigned)
+		return
+	case http.MethodPatch:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "patch must target a node")
+			return
+		}
+		s.patchNodeAnnotations(w, r, name)
 		return
 	default:
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
@@ -544,7 +608,19 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string
 			return
 		}
 		sortNodes(nodes)
-		writeJSON(w, http.StatusOK, map[string]any{"kind": "NodeList", "apiVersion": "v1", "items": nodes})
+		if r.URL.Query().Get("watch") == "true" {
+			s.writeNodeWatch(r.Context(), w, nodes)
+			return
+		}
+		for i := range nodes {
+			nodes[i] = s.nodeWatch.stamp(nodes[i])
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"kind":       "NodeList",
+			"apiVersion": "v1",
+			"metadata":   map[string]string{"resourceVersion": s.nodeWatch.resourceVersion()},
+			"items":      nodes,
+		})
 		return
 	}
 	n, err := s.nodes.Get(name)
@@ -552,7 +628,222 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string
 		writeStoreError(w, err, "nodes", name)
 		return
 	}
-	writeJSON(w, http.StatusOK, n)
+	writeJSON(w, http.StatusOK, s.nodeWatch.stamp(*n))
+}
+
+func (s *Server) writeNodeWatch(ctx context.Context, w http.ResponseWriter, nodes []node.Node) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	enc := json.NewEncoder(w)
+	id, events := s.nodeWatch.subscribe()
+	defer s.nodeWatch.unsubscribe(id)
+	for _, n := range nodes {
+		if err := enc.Encode(nodeWatchEvent{Type: "ADDED", Object: s.nodeWatch.stamp(n)}); err != nil {
+			return
+		}
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			if err := enc.Encode(event); err != nil {
+				return
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}
+}
+
+func (s *Server) handleNodeStatus(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodPatch {
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	s.patchNodeAnnotations(w, r, name)
+}
+
+func (s *Server) patchNodeAnnotations(w http.ResponseWriter, r *http.Request, name string) {
+	current, err := s.nodes.Get(name)
+	if err != nil {
+		writeStoreError(w, err, "nodes", name)
+		return
+	}
+	var patch struct {
+		Metadata struct {
+			Annotations map[string]string `json:"annotations" yaml:"annotations"`
+		} `json:"metadata" yaml:"metadata"`
+	}
+	if err := decodeObject(r.Body, &patch); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	if current.Annotations == nil {
+		current.Annotations = map[string]string{}
+	}
+	for k, v := range patch.Metadata.Annotations {
+		current.Annotations[k] = v
+	}
+	if err := s.nodes.Upsert(current); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	s.nodeWatch.publish("MODIFIED", *current)
+	writeJSON(w, http.StatusOK, current)
+}
+
+func (s *Server) handleConfigMaps(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
+	name := ""
+	if len(parts) > 0 {
+		name = parts[0]
+	}
+	if len(parts) > 1 {
+		writeStatus(w, http.StatusNotFound, "NotFound", "configmap path not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost, http.MethodPut:
+		var cm k8scompat.ConfigMap
+		if err := decodeObject(r.Body, &cm); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if cm.Kind == "" {
+			cm.Kind = k8scompat.KindConfigMap
+		}
+		if cm.Namespace == "" {
+			cm.Namespace = namespace
+		}
+		if name != "" && cm.Name != "" && cm.Name != name {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("configmap name %q does not match path %q", cm.Name, name))
+			return
+		}
+		if cm.Name == "" {
+			cm.Name = name
+		}
+		if cm.Name == "" {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "metadata.name is required")
+			return
+		}
+		if err := s.k8sCompat.UpsertConfigMap(&cm); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		status := http.StatusCreated
+		if r.Method == http.MethodPut {
+			status = http.StatusOK
+		}
+		writeJSON(w, status, &cm)
+	case http.MethodGet:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "list configmaps is not implemented")
+			return
+		}
+		cm, err := s.k8sCompat.GetConfigMap(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "configmaps", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, cm)
+	default:
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+	}
+}
+
+func (s *Server) handleDaemonSets(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
+	name := ""
+	if len(parts) > 0 {
+		name = parts[0]
+	}
+	if len(parts) > 1 {
+		writeStatus(w, http.StatusNotFound, "NotFound", "daemonset path not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost, http.MethodPut:
+		var ds k8scompat.DaemonSet
+		if err := decodeObject(r.Body, &ds); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if ds.Kind == "" {
+			ds.Kind = k8scompat.KindDaemonSet
+		}
+		if ds.Namespace == "" {
+			ds.Namespace = namespace
+		}
+		if name != "" && ds.Name != "" && ds.Name != name {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("daemonset name %q does not match path %q", ds.Name, name))
+			return
+		}
+		if ds.Name == "" {
+			ds.Name = name
+		}
+		if ds.Name == "" {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "metadata.name is required")
+			return
+		}
+		if err := s.k8sCompat.UpsertDaemonSet(&ds); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		status := http.StatusCreated
+		if r.Method == http.MethodPut {
+			status = http.StatusOK
+		}
+		writeJSON(w, status, &ds)
+	case http.MethodGet:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "list daemonsets is not implemented")
+			return
+		}
+		ds, err := s.k8sCompat.GetDaemonSet(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "daemonsets", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, ds)
+	default:
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+	}
+}
+
+func (s *Server) handleGenericCompat(w http.ResponseWriter, r *http.Request, namespace, kind string, parts []string) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	var obj k8scompat.GenericObject
+	if err := decodeObject(r.Body, &obj); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	if obj.Kind == "" {
+		obj.Kind = kind
+	}
+	if obj.Namespace == "" {
+		obj.Namespace = namespace
+	}
+	if obj.Name == "" && len(parts) > 0 {
+		obj.Name = parts[0]
+	}
+	if obj.Name == "" {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "metadata.name is required")
+		return
+	}
+	if err := s.k8sCompat.UpsertGeneric(&obj); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, &obj)
 }
 
 func (s *Server) readNodeHeartbeat(r *http.Request, nodeName string) (node.Node, error) {
@@ -1488,6 +1779,9 @@ func (s *Server) refreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 		if transition.To != node.NodeUnknown {
 			continue
 		}
+		if n, getErr := s.nodes.Get(transition.Name); getErr == nil {
+			s.nodeWatch.publish("MODIFIED", *n)
+		}
 		count, err := s.markPodsNodeLost(transition.Name)
 		if err != nil {
 			return nil, err
@@ -1732,6 +2026,8 @@ func writeStoreError(w http.ResponseWriter, err error, resource, name string) {
 	case errors.Is(err, store.ErrWorkflowAlreadyExists):
 		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
 	case errors.Is(err, store.ErrNodeNotFound):
+		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
+	case errors.Is(err, store.ErrK8sObjectNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
 	default:
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())

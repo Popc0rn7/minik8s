@@ -88,17 +88,34 @@ func (r *Runner) exec(ctx context.Context, command string, pod PodNetwork) ([]by
 	if err != nil {
 		return nil, err
 	}
-	pluginType, err := configPluginType(conf)
+	plugins, err := configPlugins(conf)
 	if err != nil {
 		return nil, err
 	}
-	pluginPath := filepath.Join(r.binDir, pluginType)
 	if pod.IfName == "" {
 		pod.IfName = defaultIfName
 	}
+	var result []byte
+	for i, plugin := range plugins {
+		stdin := plugin.Config
+		if i > 0 && len(result) > 0 {
+			stdin, err = injectPrevResult(stdin, result)
+			if err != nil {
+				return nil, err
+			}
+		}
+		result, err = r.execPlugin(ctx, command, plugin.Type, stdin, pod)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
 
+func (r *Runner) execPlugin(ctx context.Context, command, pluginType string, stdin []byte, pod PodNetwork) ([]byte, error) {
+	pluginPath := filepath.Join(r.binDir, pluginType)
 	cmd := exec.CommandContext(ctx, pluginPath)
-	cmd.Stdin = bytes.NewReader(conf)
+	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Env = append(os.Environ(),
 		"CNI_COMMAND="+command,
 		"CNI_CONTAINERID="+pod.ContainerID,
@@ -143,23 +160,82 @@ func (r *Runner) loadConfig() ([]byte, error) {
 	return os.ReadFile(filepath.Join(r.confDir, names[0]))
 }
 
-func configPluginType(data []byte) (string, error) {
+type pluginInvocation struct {
+	Type   string
+	Config []byte
+}
+
+func configPlugins(data []byte) ([]pluginInvocation, error) {
 	var conf struct {
-		Type    string `json:"type"`
-		Plugins []struct {
+		CNIVersion string `json:"cniVersion"`
+		Name       string `json:"name"`
+		Type       string `json:"type"`
+		Plugins    []struct {
 			Type string `json:"type"`
 		} `json:"plugins"`
 	}
 	if err := json.Unmarshal(data, &conf); err != nil {
-		return "", fmt.Errorf("parse cni config: %w", err)
+		return nil, fmt.Errorf("parse cni config: %w", err)
 	}
 	if conf.Type != "" {
-		return conf.Type, nil
+		return []pluginInvocation{{Type: conf.Type, Config: data}}, nil
 	}
-	if len(conf.Plugins) > 0 && conf.Plugins[0].Type != "" {
-		return conf.Plugins[0].Type, nil
+	if len(conf.Plugins) > 0 {
+		var raw struct {
+			CNIVersion string            `json:"cniVersion"`
+			Name       string            `json:"name"`
+			Plugins    []json.RawMessage `json:"plugins"`
+		}
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return nil, fmt.Errorf("parse cni config: %w", err)
+		}
+		plugins := make([]pluginInvocation, 0, len(raw.Plugins))
+		for _, pluginData := range raw.Plugins {
+			var plugin struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(pluginData, &plugin); err != nil {
+				return nil, fmt.Errorf("parse cni plugin config: %w", err)
+			}
+			if plugin.Type == "" {
+				return nil, fmt.Errorf("cni plugin config missing plugin type")
+			}
+			merged, err := mergePluginConfig(raw.CNIVersion, raw.Name, pluginData)
+			if err != nil {
+				return nil, err
+			}
+			plugins = append(plugins, pluginInvocation{Type: plugin.Type, Config: merged})
+		}
+		return plugins, nil
 	}
-	return "", fmt.Errorf("cni config missing plugin type")
+	return nil, fmt.Errorf("cni config missing plugin type")
+}
+
+func mergePluginConfig(cniVersion, name string, pluginData []byte) ([]byte, error) {
+	var config map[string]any
+	if err := json.Unmarshal(pluginData, &config); err != nil {
+		return nil, fmt.Errorf("parse cni plugin config: %w", err)
+	}
+	if _, ok := config["cniVersion"]; !ok && cniVersion != "" {
+		config["cniVersion"] = cniVersion
+	}
+	if _, ok := config["name"]; !ok && name != "" {
+		config["name"] = name
+	}
+	return json.Marshal(config)
+}
+
+func injectPrevResult(configData, prevResult []byte) ([]byte, error) {
+	var config map[string]any
+	if err := json.Unmarshal(configData, &config); err != nil {
+		return nil, fmt.Errorf("parse cni plugin config: %w", err)
+	}
+	var prev any
+	if err := json.Unmarshal(prevResult, &prev); err != nil {
+		return nil, fmt.Errorf("parse previous cni result: %w", err)
+	}
+	config["prevResult"] = prev
+	return json.Marshal(config)
 }
 
 func extractPodIP(data []byte) (string, error) {
@@ -170,6 +246,7 @@ func extractPodIP(data []byte) (string, error) {
 		IP4 *struct {
 			IP string `json:"ip"`
 		} `json:"ip4"`
+		PrevResult json.RawMessage `json:"prevResult"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
 		return "", fmt.Errorf("parse cni result: %w", err)
@@ -183,6 +260,9 @@ func extractPodIP(data []byte) (string, error) {
 		if ip := stripCIDR(result.IP4.IP); ip != "" {
 			return ip, nil
 		}
+	}
+	if len(result.PrevResult) > 0 {
+		return extractPodIP(result.PrevResult)
 	}
 	return "", fmt.Errorf("cni result missing pod ip")
 }

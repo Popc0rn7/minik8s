@@ -45,8 +45,10 @@
 
 - [x] 自研 bridge CNI、host-local IPAM、同节点 Pod IP 通信。
 - [x] 控制面分配 PodCIDR，sailer 写入 CNI 配置并同步 VXLAN/host-gw route。
+- [x] 自研 `mooring` 可通过 `manifest/cni/mooring.yaml` 的
+  ConfigMap + DaemonSet 兼容对象激活，`sailer` 仍负责写入节点本地 CNI 配置。
 - [ ] 增加外部 CNI 模式：允许 `sailer` 只使用用户指定的 CNI conf/bin 目录调用
-  标准 CNI 插件，而不覆盖为自研 `minik8s-bridge` 配置。
+  标准 CNI 插件，而不覆盖为自研 `mooring` 配置。
 - [ ] 提供常见 CNI 的安装/配置辅助，例如 `minik8s cni install flannel` 或
   `minik8s addon enable flannel`。第一阶段目标是兼容 flannel CNI 配置和二进制；
   完整支持原生 flannel DaemonSet/RBAC/ConfigMap YAML 需等 Minik8s 具备对应对象能力。

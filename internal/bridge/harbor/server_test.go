@@ -38,6 +38,44 @@ func serve(t *testing.T, handler http.Handler, method, path, body string) *httpt
 	return rec
 }
 
+type streamResponseRecorder struct {
+	header http.Header
+	lines  chan string
+}
+
+func newStreamResponseRecorder() *streamResponseRecorder {
+	return &streamResponseRecorder{
+		header: make(http.Header),
+		lines:  make(chan string, 16),
+	}
+}
+
+func (r *streamResponseRecorder) Header() http.Header {
+	return r.header
+}
+
+func (r *streamResponseRecorder) Write(data []byte) (int, error) {
+	r.lines <- string(data)
+	return len(data), nil
+}
+
+func (r *streamResponseRecorder) WriteHeader(statusCode int) {
+	_ = statusCode
+}
+
+func (r *streamResponseRecorder) Flush() {}
+
+func (r *streamResponseRecorder) waitLine(t *testing.T) string {
+	t.Helper()
+	select {
+	case line := <-r.lines:
+		return line
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for watch line")
+		return ""
+	}
+}
+
 func TestHarborPodCRUDDoesNotRunRuntime(t *testing.T) {
 	srv := newTestServer()
 	body := `{
@@ -486,6 +524,115 @@ func TestHarborGetNode(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"name":"node-a"`)
 }
 
+func TestHarborNodePatchMergesFlannelAnnotations(t *testing.T) {
+	nodeStore := store.NewInMemoryNodeStore()
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{PodCIDR: "10.244.0.0/24"}, node.NodeStatus{
+		Addresses: []node.NodeAddress{{Type: node.NodeAddressInternalIP, Address: "192.168.1.8"}},
+	})))
+	srv := New(Config{NodeStore: nodeStore})
+
+	rec := serve(t, srv, http.MethodPatch, "/api/v1/nodes/node-a", `{
+		"metadata": {
+			"annotations": {
+				"flannel.alpha.coreos.com/kube-subnet-manager": "true",
+				"flannel.alpha.coreos.com/public-ip": "192.168.1.8"
+			}
+		}
+	}`)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	got, err := nodeStore.Get("node-a")
+	require.NoError(t, err)
+	assert.Equal(t, "true", got.Annotations["flannel.alpha.coreos.com/kube-subnet-manager"])
+	assert.Equal(t, "192.168.1.8", got.Annotations["flannel.alpha.coreos.com/public-ip"])
+}
+
+func TestHarborNodeWatchReturnsAddedEvents(t *testing.T) {
+	nodeStore := store.NewInMemoryNodeStore()
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{PodCIDR: "10.244.0.0/24"}, node.NodeStatus{})))
+	srv := New(Config{NodeStore: nodeStore})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/nodes?watch=true", nil).WithContext(ctx)
+	rec := newStreamResponseRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.ServeHTTP(rec, req)
+	}()
+
+	added := rec.waitLine(t)
+	assert.Contains(t, added, `"type":"ADDED"`)
+	assert.Contains(t, added, `"name":"node-a"`)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for watch handler to exit")
+	}
+}
+
+func TestHarborNodeWatchStreamsModifiedEvents(t *testing.T) {
+	nodeStore := store.NewInMemoryNodeStore()
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{PodCIDR: "10.244.0.0/24"}, node.NodeStatus{})))
+	srv := New(Config{NodeStore: nodeStore})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/nodes?watch=true", nil).WithContext(ctx)
+	rec := newStreamResponseRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.ServeHTTP(rec, req)
+	}()
+	added := rec.waitLine(t)
+	assert.Contains(t, added, `"type":"ADDED"`)
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/v1/nodes/node-a", strings.NewReader(`{
+		"metadata": {"annotations": {"flannel.alpha.coreos.com/public-ip": "192.168.1.8"}}
+	}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchRec := httptest.NewRecorder()
+	srv.ServeHTTP(patchRec, patchReq)
+	require.Equal(t, http.StatusOK, patchRec.Code, patchRec.Body.String())
+
+	modified := rec.waitLine(t)
+	assert.Contains(t, modified, `"type":"MODIFIED"`)
+	assert.Contains(t, modified, `"flannel.alpha.coreos.com/public-ip":"192.168.1.8"`)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for watch handler to exit")
+	}
+}
+
+func TestHarborNodeListResourceVersionIncrements(t *testing.T) {
+	nodeStore := store.NewInMemoryNodeStore()
+	srv := New(Config{NodeStore: nodeStore})
+	first := serve(t, srv, http.MethodGet, "/api/v1/nodes", "")
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	var firstList struct {
+		Metadata struct {
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+	}
+	require.NoError(t, json.Unmarshal(first.Body.Bytes(), &firstList))
+
+	create := serve(t, srv, http.MethodPost, "/api/v1/nodes", `{"kind":"Node","apiVersion":"v1","metadata":{"name":"node-a"}}`)
+	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
+	second := serve(t, srv, http.MethodGet, "/api/v1/nodes", "")
+	var secondList struct {
+		Metadata struct {
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+	}
+	require.NoError(t, json.Unmarshal(second.Body.Bytes(), &secondList))
+	assert.NotEmpty(t, firstList.Metadata.ResourceVersion)
+	assert.NotEmpty(t, secondList.Metadata.ResourceVersion)
+	assert.NotEqual(t, firstList.Metadata.ResourceVersion, secondList.Metadata.ResourceVersion)
+}
+
 func TestHarborNodePodsHeartbeatUpdatesNodeNetworkFields(t *testing.T) {
 	nodeStore := store.NewInMemoryNodeStore()
 	srv := New(Config{
@@ -740,7 +887,7 @@ func TestHarborPodStatusUpdateRefreshesServiceEndpoints(t *testing.T) {
 }
 
 func TestHarborRejectsUnsupportedResourceWithStatus(t *testing.T) {
-	rec := serve(t, newTestServer(), http.MethodGet, "/api/v1/namespaces/default/configmaps", "")
+	rec := serve(t, newTestServer(), http.MethodGet, "/api/v1/namespaces/default/widgets", "")
 
 	require.Equal(t, http.StatusNotFound, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"kind":"Status"`)

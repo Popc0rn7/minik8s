@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 	"minik8s/internal/dns"
 	"minik8s/internal/dnssync"
 	"minik8s/internal/hpa"
+	"minik8s/internal/k8scompat"
 	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
 	"minik8s/internal/natslite"
@@ -51,6 +53,7 @@ type Config struct {
 	HPAStore          store.HPAStore
 	MetricsStore      store.MetricsStore
 	NodeStore         store.NodeStore
+	K8sCompatStore    store.K8sCompatStore
 	FunctionStore     store.FunctionStore
 	EventTriggerStore store.EventTriggerStore
 	WorkflowStore     store.WorkflowStore
@@ -59,6 +62,8 @@ type Config struct {
 	ServiceProxy      kubeproxy.Proxy
 	HTTPClient        *http.Client
 	NetRunner         netagent.Runner
+	FlannelRunner     FlannelRunner
+	MooringCNIRunner  MooringCNIRunner
 }
 
 // App is the Minik8s command-line application.
@@ -71,6 +76,7 @@ type App struct {
 	hpaStore          store.HPAStore
 	metricsStore      store.MetricsStore
 	nodeStore         store.NodeStore
+	k8sCompatStore    store.K8sCompatStore
 	functionStore     store.FunctionStore
 	eventTriggerStore store.EventTriggerStore
 	workflowStore     store.WorkflowStore
@@ -79,6 +85,8 @@ type App struct {
 	serviceProxy      kubeproxy.Proxy
 	httpClient        *http.Client
 	netRunner         netagent.Runner
+	flannelRunner     FlannelRunner
+	mooringCNIRunner  MooringCNIRunner
 	server            string
 	namespace         string
 }
@@ -113,6 +121,10 @@ func New(config Config) *App {
 	if nodeStore == nil {
 		nodeStore = store.NewInMemoryNodeStore()
 	}
+	k8sCompatStore := config.K8sCompatStore
+	if k8sCompatStore == nil {
+		k8sCompatStore = store.NewInMemoryK8sCompatStore()
+	}
 	functionStore := config.FunctionStore
 	if functionStore == nil {
 		functionStore = store.NewInMemoryFunctionStore()
@@ -136,6 +148,7 @@ func New(config Config) *App {
 			HPAStore:          hpaStore,
 			MetricsStore:      metricsStore,
 			NodeStore:         nodeStore,
+			K8sCompatStore:    k8sCompatStore,
 			FunctionStore:     functionStore,
 			EventTriggerStore: eventTriggerStore,
 			WorkflowStore:     workflowStore,
@@ -150,6 +163,7 @@ func New(config Config) *App {
 		hpaStore:          hpaStore,
 		metricsStore:      metricsStore,
 		nodeStore:         nodeStore,
+		k8sCompatStore:    k8sCompatStore,
 		functionStore:     functionStore,
 		eventTriggerStore: eventTriggerStore,
 		workflowStore:     workflowStore,
@@ -158,6 +172,8 @@ func New(config Config) *App {
 		serviceProxy:      serviceProxy,
 		httpClient:        config.HTTPClient,
 		netRunner:         config.NetRunner,
+		flannelRunner:     config.FlannelRunner,
+		mooringCNIRunner:  config.MooringCNIRunner,
 		namespace:         "default",
 	}
 }
@@ -180,12 +196,22 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	kind, err := podyaml.LoadObjectKindFromFile(path)
+	objects, err := loadApplyObjects(ctx, path, a.httpClient)
 	if err != nil {
 		return err
 	}
+	for _, object := range objects {
+		if err := a.applyObject(ctx, client, object, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *App) applyObject(ctx context.Context, client *controlPlaneClient, object applyObject, out io.Writer) error {
+	kind := object.Kind
 	if kind == "Service" {
-		svc, err := podyaml.LoadServiceFromFile(path)
+		svc, err := podyaml.LoadServiceFromYAML(object.Data)
 		if err != nil {
 			return err
 		}
@@ -196,7 +222,7 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("service/%s created (%s)", updated.Name, updated.Spec.Type))
 	}
 	if kind == dns.Kind {
-		d, err := podyaml.LoadDNSFromFile(path)
+		d, err := podyaml.LoadDNSFromYAML(object.Data)
 		if err != nil {
 			return err
 		}
@@ -207,7 +233,7 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("dns/%s created (%s)", updated.Name, updated.Spec.Host))
 	}
 	if kind == "Node" {
-		n, err := podyaml.LoadNodeFromFile(path)
+		n, err := podyaml.LoadNodeFromYAML(object.Data)
 		if err != nil {
 			return err
 		}
@@ -218,7 +244,7 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("node/%s created (%s)", updated.Name(), updated.Status.Phase))
 	}
 	if kind == "ReplicaSet" {
-		rs, err := podyaml.LoadReplicaSetFromFile(path)
+		rs, err := podyaml.LoadReplicaSetFromYAML(object.Data)
 		if err != nil {
 			return err
 		}
@@ -229,7 +255,7 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("replicaset/%s created (%d/%d)", updated.Name, updated.Status.Replicas, updated.Spec.Replicas))
 	}
 	if kind == "Function" {
-		fn, err := podyaml.LoadFunctionFromFile(path)
+		fn, err := podyaml.LoadFunctionFromYAML(object.Data)
 		if err != nil {
 			return err
 		}
@@ -240,7 +266,7 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("function/%s created (%s)", updated.Name, updated.Spec.Runtime))
 	}
 	if kind == "EventTrigger" {
-		trigger, err := podyaml.LoadEventTriggerFromFile(path)
+		trigger, err := podyaml.LoadEventTriggerFromYAML(object.Data)
 		if err != nil {
 			return err
 		}
@@ -251,7 +277,7 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("eventtrigger/%s created (%s)", updated.Name, updated.Spec.Subject))
 	}
 	if kind == "Workflow" {
-		wf, err := podyaml.LoadWorkflowFromFile(path)
+		wf, err := podyaml.LoadWorkflowFromYAML(object.Data)
 		if err != nil {
 			return err
 		}
@@ -262,7 +288,7 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("workflow/%s created (%d steps)", updated.Name, len(updated.Spec.Steps)))
 	}
 	if kind == hpa.Kind {
-		autoscaler, err := podyaml.LoadHPAFromFile(path)
+		autoscaler, err := podyaml.LoadHPAFromYAML(object.Data)
 		if err != nil {
 			return err
 		}
@@ -272,10 +298,43 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return writes(out, cliui.SuccessLine("hpa/%s created (%d/%d)", updated.Name, updated.Status.DesiredReplicas, updated.Spec.MaxReplicas))
 	}
+	if kind == k8scompat.KindConfigMap {
+		var cm k8scompat.ConfigMap
+		if err := yaml.Unmarshal(object.Data, &cm); err != nil {
+			return err
+		}
+		updated, err := client.ApplyConfigMap(ctx, &cm)
+		if err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("configmap/%s created", updated.Name))
+	}
+	if kind == k8scompat.KindDaemonSet {
+		var ds k8scompat.DaemonSet
+		if err := yaml.Unmarshal(object.Data, &ds); err != nil {
+			return err
+		}
+		updated, err := client.ApplyDaemonSet(ctx, &ds)
+		if err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("daemonset/%s created", updated.Name))
+	}
+	if isGenericK8sCompatKind(kind) {
+		var obj k8scompat.GenericObject
+		if err := yaml.Unmarshal(object.Data, &obj); err != nil {
+			return err
+		}
+		updated, err := client.ApplyGenericCompat(ctx, &obj)
+		if err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("%s/%s accepted", strings.ToLower(updated.Kind), updated.Name))
+	}
 	if kind != "" && kind != "Pod" {
 		return fmt.Errorf("unsupported kind %q", kind)
 	}
-	p, err := podyaml.LoadPodFromFile(path)
+	p, err := podyaml.LoadPodFromYAML(object.Data)
 	if err != nil {
 		return err
 	}
@@ -295,6 +354,76 @@ func (a *App) apply(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.WarnLine("reason: %s", updated.Status.Reason))
 	}
 	return nil
+}
+
+type applyObject struct {
+	Source string
+	Kind   string
+	Data   []byte
+}
+
+func loadApplyObjects(ctx context.Context, source string, client *http.Client) ([]applyObject, error) {
+	data, err := readApplySource(ctx, source, client)
+	if err != nil {
+		return nil, err
+	}
+	dec := yaml.NewDecoder(strings.NewReader(string(data)))
+	var objects []applyObject
+	for {
+		var raw map[string]any
+		err := dec.Decode(&raw)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", source, err)
+		}
+		if len(raw) == 0 {
+			continue
+		}
+		doc, err := yaml.Marshal(raw)
+		if err != nil {
+			return nil, err
+		}
+		kind, _ := raw["kind"].(string)
+		objects = append(objects, applyObject{Source: source, Kind: kind, Data: doc})
+	}
+	if len(objects) == 0 {
+		return nil, fmt.Errorf("%s contains no Kubernetes objects", source)
+	}
+	return objects, nil
+}
+
+func readApplySource(ctx context.Context, source string, client *http.Client) ([]byte, error) {
+	parsed, err := url.Parse(source)
+	if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		if client == nil {
+			client = http.DefaultClient
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("fetch %s: %s", source, resp.Status)
+		}
+		return io.ReadAll(resp.Body)
+	}
+	return os.ReadFile(source)
+}
+
+func isGenericK8sCompatKind(kind string) bool {
+	switch kind {
+	case k8scompat.KindNamespace, k8scompat.KindClusterRole, k8scompat.KindClusterRoleBinding, k8scompat.KindServiceAccount:
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
@@ -572,7 +701,7 @@ func (a *App) doctorNetwork(out io.Writer) error {
 	if err := writes(out, cliui.InfoLine("binDir: %s", DefaultCNIBinDir())); err != nil {
 		return err
 	}
-	if err := writes(out, cliui.InfoLine("plugin: minik8s-bridge")); err != nil {
+	if err := writes(out, cliui.InfoLine("plugin: mooring")); err != nil {
 		return err
 	}
 	configPresent := false
@@ -593,10 +722,10 @@ func (a *App) doctorNetwork(out io.Writer) error {
 			return err
 		}
 	}
-	if _, err := os.Stat(filepath.Join(DefaultCNIBinDir(), "minik8s-bridge")); err == nil {
-		return writes(out, cliui.InfoLine("minik8s-bridge: present"))
+	if _, err := os.Stat(filepath.Join(DefaultCNIBinDir(), "mooring")); err == nil {
+		return writes(out, cliui.InfoLine("mooring: present"))
 	} else if os.IsNotExist(err) {
-		return writes(out, cliui.WarnLine("minik8s-bridge: missing"))
+		return writes(out, cliui.WarnLine("mooring: missing"))
 	} else {
 		return err
 	}
@@ -622,7 +751,7 @@ type cniDoctorIPAMState struct {
 }
 
 func (a *App) writeCNIDiagnostics(out io.Writer) error {
-	data, err := os.ReadFile(filepath.Join(DefaultCNIConfDir(), "10-minik8s.conf"))
+	data, err := os.ReadFile(filepath.Join(DefaultCNIConfDir(), "10-mooring.conf"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return writes(out, cliui.WarnLine("config-file: missing"))
@@ -871,19 +1000,6 @@ func addonManifestPath(addon AddonName) string {
 	}
 }
 
-func addonPodName(addon AddonName) string {
-	switch addon {
-	case AddonDNS:
-		return "dns-gateway"
-	case AddonServerless:
-		return "serverless-nats"
-	case AddonMetrics:
-		return "metrics-server"
-	default:
-		return string(addon)
-	}
-}
-
 func writePodManifestFile(path string, p *pod.Pod) error {
 	data, err := yaml.Marshal(p)
 	if err != nil {
@@ -936,7 +1052,7 @@ func cniInitConfig(args []string) (cniInitPluginConfig, error) {
 	config := cniInitPluginConfig{
 		CNIVersion: "1.0.0",
 		Name:       "minik8s",
-		Type:       "minik8s-bridge",
+		Type:       "mooring",
 		Bridge:     "mk8s0",
 		PodCIDR:    "10.244.0.0/24",
 		Gateway:    "10.244.0.1",
@@ -981,13 +1097,17 @@ func cniInitConfig(args []string) (cniInitPluginConfig, error) {
 }
 
 func writeCNIConfig(config cniInitPluginConfig) (string, error) {
-	if err := os.MkdirAll(DefaultCNIBinDir(), 0o755); err != nil {
+	return writeCNIConfigTo(config, DefaultCNIBinDir(), DefaultCNIConfDir())
+}
+
+func writeCNIConfigTo(config cniInitPluginConfig, binDir, confDir string) (string, error) {
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(DefaultCNIConfDir(), 0o755); err != nil {
+	if err := os.MkdirAll(confDir, 0o755); err != nil {
 		return "", err
 	}
-	configPath := filepath.Join(DefaultCNIConfDir(), "10-minik8s.conf")
+	configPath := filepath.Join(confDir, "10-mooring.conf")
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return "", err
@@ -997,6 +1117,26 @@ func writeCNIConfig(config cniInitPluginConfig) (string, error) {
 		return "", err
 	}
 	return configPath, nil
+}
+
+func cniConfigExists(confDir string) (bool, error) {
+	entries, err := os.ReadDir(confDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasSuffix(name, ".conf") || strings.HasSuffix(name, ".conflist") || strings.HasSuffix(name, ".json") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func cniConfigForPodCIDR(podCIDR string) (cniInitPluginConfig, error) {
@@ -1787,9 +1927,7 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 }
 
 func listenPort(value string) (int32, error) {
-	if strings.HasPrefix(value, ":") {
-		value = strings.TrimPrefix(value, ":")
-	}
+	value = strings.TrimPrefix(value, ":")
 	_, portText, err := net.SplitHostPort(value)
 	if err == nil {
 		value = portText
@@ -1969,6 +2107,14 @@ type sailerOptions struct {
 	clusterDNS    string
 }
 
+type sailerNetworkMode int
+
+const (
+	sailerNetworkBuiltIn sailerNetworkMode = iota
+	sailerNetworkFlannel
+	sailerNetworkMooringCNI
+)
+
 func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
 	options, err := parseSailerOptions(args)
 	if err != nil {
@@ -1989,23 +2135,39 @@ func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
 	options.nodeName = assignedNode.Name()
 	options.nodeIP = assignedNode.InternalIP()
 	options.podCIDR = assignedNode.Spec.PodCIDR
-	cniConfig, err := cniConfigForPodCIDR(options.podCIDR)
+	networkMode, err := a.ensureManifestCNIIfApplied(ctx, options.harbor, assignedNode)
 	if err != nil {
 		return err
 	}
-	if _, err := writeCNIConfig(cniConfig); err != nil {
-		return err
+	if networkMode == sailerNetworkBuiltIn {
+		hasConfig, err := cniConfigExists(DefaultCNIConfDir())
+		if err != nil {
+			return err
+		}
+		if !hasConfig {
+			cniConfig, err := cniConfigForPodCIDR(options.podCIDR)
+			if err != nil {
+				return err
+			}
+			if _, err := writeCNIConfig(cniConfig); err != nil {
+				return err
+			}
+		}
 	}
+	network := cniNetworkManager{runner: cni.NewRunner(cni.Config{BinDir: DefaultCNIBinDir(), ConfDir: DefaultCNIConfDir()})}
 	k := nodeSailer.New(nodeSailer.Config{
 		Node:         assignedNode,
 		Runtime:      a.runtime,
-		Network:      a.network,
+		Network:      network,
 		Client:       podClient,
 		ServiceProxy: a.sailerServiceProxy(options),
 		Interval:     options.interval,
 		ClusterDNS:   options.clusterDNS,
 	})
-	networkAgent, err := a.sailerNetworkAgent(options)
+	var networkAgent *netagent.Agent
+	if networkMode != sailerNetworkFlannel {
+		networkAgent, err = a.sailerNetworkAgent(options)
+	}
 	if err != nil {
 		return err
 	}
@@ -2027,6 +2189,102 @@ func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
 		return runSailerWithNetwork(ctx, k, networkAgent, options.interval)
 	}
 	return k.Run(ctx)
+}
+
+func (a *App) ensureManifestCNIIfApplied(ctx context.Context, harborURL string, assignedNode *node.Node) (sailerNetworkMode, error) {
+	flannelActive, err := a.ensureFlannelIfApplied(ctx, harborURL, assignedNode)
+	if err != nil {
+		return sailerNetworkBuiltIn, err
+	}
+	if flannelActive {
+		return sailerNetworkFlannel, nil
+	}
+	minik8sActive, err := a.ensureMooringCNIIfApplied(ctx, harborURL, assignedNode)
+	if err != nil {
+		return sailerNetworkBuiltIn, err
+	}
+	if minik8sActive {
+		return sailerNetworkMooringCNI, nil
+	}
+	return sailerNetworkBuiltIn, nil
+}
+
+func (a *App) ensureFlannelIfApplied(ctx context.Context, harborURL string, assignedNode *node.Node) (bool, error) {
+	client, err := newControlPlaneClient(harborURL, a.httpClient)
+	if err != nil {
+		return false, err
+	}
+	cm, err := client.GetConfigMap(ctx, k8scompat.FlannelConfigMap, k8scompat.FlannelNamespace)
+	if err != nil {
+		if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusNotFound {
+			return false, a.cleanupFlannel(ctx, assignedNode)
+		}
+		return false, err
+	}
+	ds, err := client.GetDaemonSet(ctx, k8scompat.FlannelDaemonSet, k8scompat.FlannelNamespace)
+	if err != nil {
+		if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusNotFound {
+			return false, a.cleanupFlannel(ctx, assignedNode)
+		}
+		return false, err
+	}
+	runner := a.flannelRunner
+	if runner == nil {
+		runner = DockerFlannelRunner{}
+	}
+	if err := runner.Ensure(ctx, FlannelOptions{
+		HarborURL:  harborURL,
+		Node:       assignedNode,
+		ConfigMap:  cm,
+		DaemonSet:  ds,
+		CNIBinDir:  DefaultCNIBinDir(),
+		CNIConfDir: DefaultCNIConfDir(),
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (a *App) ensureMooringCNIIfApplied(ctx context.Context, harborURL string, assignedNode *node.Node) (bool, error) {
+	client, err := newControlPlaneClient(harborURL, a.httpClient)
+	if err != nil {
+		return false, err
+	}
+	cm, err := client.GetConfigMap(ctx, k8scompat.MooringCNIConfigMap, k8scompat.MooringCNINamespace)
+	if err != nil {
+		if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	runner := a.mooringCNIRunner
+	if runner == nil {
+		runner = LocalMooringCNIRunner{}
+	}
+	if err := runner.Ensure(ctx, MooringCNIOptions{
+		Node:       assignedNode,
+		ConfigMap:  cm,
+		CNIBinDir:  DefaultCNIBinDir(),
+		CNIConfDir: DefaultCNIConfDir(),
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (a *App) cleanupFlannel(ctx context.Context, assignedNode *node.Node) error {
+	if assignedNode == nil {
+		return fmt.Errorf("node is required")
+	}
+	runner := a.flannelRunner
+	if runner == nil {
+		runner = DockerFlannelRunner{}
+	}
+	return runner.Cleanup(ctx, FlannelCleanupOptions{
+		NodeName:   assignedNode.Name(),
+		CNIBinDir:  DefaultCNIBinDir(),
+		CNIConfDir: DefaultCNIConfDir(),
+	})
 }
 
 func (a *App) bootstrapSailerNode(ctx context.Context, client *nodeSailer.HTTPPodClient, nodeConfig *node.Node) (*node.Node, error) {
@@ -2442,7 +2700,7 @@ func DefaultCNIBinDir() string {
 	if dir := os.Getenv("MINIK8S_CNI_BIN_DIR"); dir != "" {
 		return dir
 	}
-	return filepath.Join(".minik8s", "cni", "bin")
+	return filepath.Join(string(os.PathSeparator), "opt", "cni", "bin")
 }
 
 // DefaultCNIConfDir returns the default CNI config directory.
@@ -2450,7 +2708,7 @@ func DefaultCNIConfDir() string {
 	if dir := os.Getenv("MINIK8S_CNI_CONF_DIR"); dir != "" {
 		return dir
 	}
-	return filepath.Join(".minik8s", "cni", "net.d")
+	return filepath.Join(string(os.PathSeparator), "etc", "cni", "net.d")
 }
 
 type cniNetworkManager struct {

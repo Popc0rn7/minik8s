@@ -15,7 +15,7 @@ func RunPython(ctx context.Context, fn *function.Function, input string) (string
 	if err != nil {
 		return "", fmt.Errorf("creating function temp dir: %w", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	codePath := dir + "/function.py"
 	if err := os.WriteFile(codePath, []byte(fn.Spec.Code), 0o600); err != nil {
 		return "", fmt.Errorf("writing function code: %w", err)

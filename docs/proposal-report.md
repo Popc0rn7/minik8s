@@ -129,7 +129,7 @@
 
 ```
 minik8s/
-├── cmd/           # 主程序入口（minik8s, minik8s-bridge）
+├── cmd/           # 主程序入口（minik8s, mooring）
 ├── internal/      # 内部包
 ├── pkg/           # 公共库（runtime 接口, yaml 解析）
 ├── api/           # Protobuf 定义

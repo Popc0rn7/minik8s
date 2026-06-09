@@ -28,7 +28,7 @@ Minik8s 当前是一个教学版 Kubernetes 核心闭环：
 
 ```text
 cmd/minik8s/              # 主 CLI、bridge、sailer 入口
-cmd/minik8s-bridge/       # CNI bridge 插件入口
+cmd/mooring/       # CNI bridge 插件入口
 internal/bridge/          # 控制面边界
 internal/bridge/harbor/   # HTTP API
 internal/bridge/logbook/  # in-memory/file/etcd 状态存储

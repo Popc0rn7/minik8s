@@ -116,7 +116,7 @@
 
 - `minik8s cni init` 生成 CNI 配置。
 - CNI runner 查找配置并调用插件。
-- `minik8s-bridge` 插件创建 bridge、veth、Pod IP、默认路由、NAT。
+- `mooring` 插件创建 bridge、veth、Pod IP、默认路由、NAT。
 - IPAM 用 JSON 文件持久化 allocation。
 - 支持静态 host-gw routes。
 - Harbor 内置网络注册表，`sailer` 使用 Node YAML 注册节点，控制面分配 PodCIDR 后能动态注册并同步 VXLAN route。

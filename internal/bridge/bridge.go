@@ -18,6 +18,7 @@ type Config struct {
 	HPAStore          store.HPAStore
 	MetricsStore      store.MetricsStore
 	NodeStore         store.NodeStore
+	K8sCompatStore    store.K8sCompatStore
 	FunctionStore     store.FunctionStore
 	EventTriggerStore store.EventTriggerStore
 	WorkflowStore     store.WorkflowStore
@@ -35,6 +36,7 @@ type Bridge struct {
 	hpaStore          store.HPAStore
 	metricsStore      store.MetricsStore
 	nodeStore         store.NodeStore
+	k8sCompatStore    store.K8sCompatStore
 	functionStore     store.FunctionStore
 	eventTriggerStore store.EventTriggerStore
 	workflowStore     store.WorkflowStore
@@ -73,6 +75,10 @@ func New(config Config) *Bridge {
 	if nodeStore == nil {
 		nodeStore = store.NewInMemoryNodeStore()
 	}
+	k8sCompatStore := config.K8sCompatStore
+	if k8sCompatStore == nil {
+		k8sCompatStore = store.NewInMemoryK8sCompatStore()
+	}
 	functionStore := config.FunctionStore
 	if functionStore == nil {
 		functionStore = store.NewInMemoryFunctionStore()
@@ -101,6 +107,7 @@ func New(config Config) *Bridge {
 		hpaStore:          hpaStore,
 		metricsStore:      metricsStore,
 		nodeStore:         nodeStore,
+		k8sCompatStore:    k8sCompatStore,
 		functionStore:     functionStore,
 		eventTriggerStore: eventTriggerStore,
 		workflowStore:     workflowStore,
@@ -120,6 +127,7 @@ func (k *Bridge) Handler() http.Handler {
 		HPAStore:          k.hpaStore,
 		MetricsStore:      k.metricsStore,
 		NodeStore:         k.nodeStore,
+		K8sCompatStore:    k.k8sCompatStore,
 		FunctionStore:     k.functionStore,
 		EventTriggerStore: k.eventTriggerStore,
 		WorkflowStore:     k.workflowStore,
@@ -144,6 +152,7 @@ func (k *Bridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 		HPAStore:          k.hpaStore,
 		MetricsStore:      k.metricsStore,
 		NodeStore:         k.nodeStore,
+		K8sCompatStore:    k.k8sCompatStore,
 		FunctionStore:     k.functionStore,
 		EventTriggerStore: k.eventTriggerStore,
 		WorkflowStore:     k.workflowStore,
@@ -180,6 +189,10 @@ func (k *Bridge) MetricsStore() store.MetricsStore {
 
 func (k *Bridge) NodeStore() store.NodeStore {
 	return k.nodeStore
+}
+
+func (k *Bridge) K8sCompatStore() store.K8sCompatStore {
+	return k.k8sCompatStore
 }
 
 func (k *Bridge) FunctionStore() store.FunctionStore {

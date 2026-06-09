@@ -24,7 +24,7 @@ func Publish(ctx context.Context, rawURL, subject string, payload []byte) error 
 	if err != nil {
 		return fmt.Errorf("connecting to NATS: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	reader := bufio.NewReader(conn)
 	_, _ = reader.ReadString('\n')
 	if _, err := conn.Write([]byte("CONNECT {\"verbose\":false}\r\n")); err != nil {
@@ -73,7 +73,7 @@ func Subscribe(ctx context.Context, rawURL, subject string, handler func([]byte)
 	if err != nil {
 		return fmt.Errorf("connecting to NATS: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	go func() {
 		<-ctx.Done()
 		_ = conn.Close()
@@ -83,7 +83,7 @@ func Subscribe(ctx context.Context, rawURL, subject string, handler func([]byte)
 	if _, err := conn.Write([]byte("CONNECT {\"verbose\":false}\r\n")); err != nil {
 		return fmt.Errorf("sending NATS CONNECT: %w", err)
 	}
-	if _, err := conn.Write([]byte(fmt.Sprintf("SUB %s 1\r\nPING\r\n", subject))); err != nil {
+	if _, err := fmt.Fprintf(conn, "SUB %s 1\r\nPING\r\n", subject); err != nil {
 		return fmt.Errorf("sending NATS SUB: %w", err)
 	}
 	for {
