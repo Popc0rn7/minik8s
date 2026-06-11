@@ -2,7 +2,7 @@ MINIK8S ?= ./minik8s
 KUBECTL ?= ./kubectl
 CNI_PLUGIN ?= .minik8s/cni/bin/mooring
 HARBOR ?= http://127.0.0.1:18080
-CTL ?= env MINIK8S_HARBOR=$(HARBOR) $(KUBECTL)
+CTL ?= $(KUBECTL)
 RUN ?= $(MINIK8S)
 
 PROD_IMAGE ?= golang:1.25.9-bookworm

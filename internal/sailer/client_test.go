@@ -81,6 +81,36 @@ func TestHTTPPodClientListsServices(t *testing.T) {
 	assert.Equal(t, "10.96.0.1", services[0].Status.ClusterIP)
 }
 
+func TestHTTPPodClientSendsBearerToken(t *testing.T) {
+	var got []string
+	client := NewHTTPPodClientWithToken("http://minik8s.test", "node_node-a_secret", &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			got = append(got, req.Header.Get("Authorization"))
+			rec := httptest.NewRecorder()
+			switch req.URL.Path {
+			case "/api/v1/nodes/node-a/pods":
+				rec.WriteHeader(http.StatusOK)
+				_, _ = rec.WriteString(`{"items":[]}`)
+			case "/api/v1/nodes/node-a/metrics":
+				rec.WriteHeader(http.StatusOK)
+				_, _ = rec.WriteString(`{"status":"Success"}`)
+			default:
+				rec.WriteHeader(http.StatusOK)
+				_, _ = rec.WriteString(`{"items":[]}`)
+			}
+			return rec.Result(), nil
+		}),
+	})
+
+	_, err := client.ListAssignedPods(t.Context(), NodeHeartbeat{Node: node.New("node-a", node.NodeSpec{}, node.NodeStatus{})})
+	require.NoError(t, err)
+	require.NoError(t, client.UpdateNodeMetrics(t.Context(), "node-a", nil))
+
+	require.Len(t, got, 2)
+	assert.Equal(t, "Bearer node_node-a_secret", got[0])
+	assert.Equal(t, "Bearer node_node-a_secret", got[1])
+}
+
 func TestHTTPPodClientUpdateStatusErrorIncludesResponseBody(t *testing.T) {
 	client := NewHTTPPodClient("http://minik8s.test", &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

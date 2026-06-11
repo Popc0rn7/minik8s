@@ -25,7 +25,6 @@ export NODE_A_IP=192.168.1.8
 export NODE_B_IP=192.168.1.6
 export CLUSTER_CIDR=10.244.0.0/16
 export HARBOR=http://${NODE_A_IP}:18080
-export MINIK8S_HARBOR=${HARBOR}
 ```
 
 确认 `manifest/node/node_a.yaml` 和 `manifest/node/node_b.yaml` 中的 `InternalIP` 与当前两台机器一致；如果不同，先按实际地址更新这两个 Node YAML。Node YAML 不需要写 `spec.podCIDR`，控制面会从 `${CLUSTER_CIDR}` 自动分配。
@@ -40,7 +39,6 @@ make build
 
 ```bash
 export MINIK8S_STATE_DIR=.minik8s/testcase-state
-export MINIK8S_HARBOR=${HARBOR}
 ./minik8s bridge \
   --listen :18080 \
   --cluster-cidr ${CLUSTER_CIDR} \
@@ -50,7 +48,7 @@ export MINIK8S_HARBOR=${HARBOR}
 在 node-a 的另一个终端验证控制面可用：
 
 ```bash
-./kubectl version --server ${HARBOR}
+./kubectl version
 ```
 
 除 `POD-01` 外，本文默认两台机器分别启动启用 CNI 的 sailer。sailer 会先注册 Node，等待控制面分配 `spec.podCIDR`，再自动写入本机 CNI 配置。
@@ -103,7 +101,6 @@ unset MINIK8S_CNI_DISABLED
 前置：停止 node-a 上当前启用 CNI 的 sailer，然后在 node-a 的单独终端临时启动禁用 CNI 的 sailer。
 
 ```bash
-export MINIK8S_HARBOR=${HARBOR}
 export MINIK8S_CNI_DISABLED=1
 ./minik8s sailer \
   manifest/node/node_a.yaml \

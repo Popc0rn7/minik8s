@@ -4,16 +4,12 @@
 
 ## 公共前置
 
-在 node-a 的测试终端设置一次公共变量。后续命令默认在仓库根目录执行。
-
-```bash
-export MINIK8S_HARBOR=${HARBOR}
-```
+后续命令默认在 node-a 的仓库根目录执行，并使用 `bridge` 写入的 `.minik8s/config.json`。
 
 确认控制面已运行，且 bridge 使用默认 ReplicaSet 同步周期，或显式指定 `--replicaset-sync-interval 5s`。
 
 ```bash
-./kubectl version --server ${HARBOR}
+./kubectl version
 ./kubectl api-resources | grep replicasets
 ```
 

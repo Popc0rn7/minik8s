@@ -18,6 +18,7 @@ import (
 	"minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/bridge/navigator"
+	"minik8s/internal/bridge/tokens"
 	"minik8s/internal/dns"
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
@@ -36,41 +37,44 @@ import (
 )
 
 type Config struct {
-	PodStore          store.PodStore
-	ServiceStore      store.ServiceStore
-	DNSStore          store.DNSStore
-	ReplicaSetStore   store.ReplicaSetStore
-	HPAStore          store.HPAStore
-	MetricsStore      store.MetricsStore
-	NodeStore         store.NodeStore
-	K8sCompatStore    store.K8sCompatStore
-	FunctionStore     store.FunctionStore
-	EventTriggerStore store.EventTriggerStore
-	WorkflowStore     store.WorkflowStore
-	Navigator         navigator.Navigator
-	NodeTTL           time.Duration
-	NetRegistry       *netregistry.Store
-	ClusterCIDR       string
-	NodeCIDRMaskSize  int
+	PodStore           store.PodStore
+	ServiceStore       store.ServiceStore
+	DNSStore           store.DNSStore
+	ReplicaSetStore    store.ReplicaSetStore
+	HPAStore           store.HPAStore
+	MetricsStore       store.MetricsStore
+	NodeStore          store.NodeStore
+	K8sCompatStore     store.K8sCompatStore
+	FunctionStore      store.FunctionStore
+	EventTriggerStore  store.EventTriggerStore
+	WorkflowStore      store.WorkflowStore
+	Navigator          navigator.Navigator
+	NodeTTL            time.Duration
+	NetRegistry        *netregistry.Store
+	ClusterCIDR        string
+	NodeCIDRMaskSize   int
+	BootstrapTokenPath string
 }
 
 type Server struct {
-	pods          store.PodStore
-	services      store.ServiceStore
-	dns           store.DNSStore
-	replicaSets   store.ReplicaSetStore
-	hpas          store.HPAStore
-	metrics       store.MetricsStore
-	nodes         store.NodeStore
-	k8sCompat     store.K8sCompatStore
-	functions     store.FunctionStore
-	eventTriggers store.EventTriggerStore
-	workflows     store.WorkflowStore
-	navigator     navigator.Navigator
-	nodeTTL       time.Duration
-	netRegistry   *netregistry.Store
-	cidrAlloc     *nodeCIDRAllocator
-	nodeWatch     *nodeWatchHub
+	pods               store.PodStore
+	services           store.ServiceStore
+	dns                store.DNSStore
+	replicaSets        store.ReplicaSetStore
+	hpas               store.HPAStore
+	metrics            store.MetricsStore
+	nodes              store.NodeStore
+	k8sCompat          store.K8sCompatStore
+	functions          store.FunctionStore
+	eventTriggers      store.EventTriggerStore
+	workflows          store.WorkflowStore
+	navigator          navigator.Navigator
+	nodeTTL            time.Duration
+	netRegistry        *netregistry.Store
+	cidrAlloc          *nodeCIDRAllocator
+	nodeWatch          *nodeWatchHub
+	bootstrapTokenPath string
+	nodeTokens         *nodeTokenRegistry
 }
 
 func New(config Config) *Server {
@@ -135,22 +139,24 @@ func New(config Config) *Server {
 		panic(err)
 	}
 	return &Server{
-		pods:          podStore,
-		services:      serviceStore,
-		dns:           dnsStore,
-		replicaSets:   replicaSetStore,
-		hpas:          hpaStore,
-		metrics:       metricsStore,
-		nodes:         nodeStore,
-		k8sCompat:     k8sCompatStore,
-		functions:     functionStore,
-		eventTriggers: eventTriggerStore,
-		workflows:     workflowStore,
-		navigator:     podNavigator,
-		nodeTTL:       nodeTTL,
-		netRegistry:   netRegistryStore,
-		cidrAlloc:     cidrAlloc,
-		nodeWatch:     newNodeWatchHub(),
+		pods:               podStore,
+		services:           serviceStore,
+		dns:                dnsStore,
+		replicaSets:        replicaSetStore,
+		hpas:               hpaStore,
+		metrics:            metricsStore,
+		nodes:              nodeStore,
+		k8sCompat:          k8sCompatStore,
+		functions:          functionStore,
+		eventTriggers:      eventTriggerStore,
+		workflows:          workflowStore,
+		navigator:          podNavigator,
+		nodeTTL:            nodeTTL,
+		netRegistry:        netRegistryStore,
+		cidrAlloc:          cidrAlloc,
+		nodeWatch:          newNodeWatchHub(),
+		bootstrapTokenPath: config.BootstrapTokenPath,
+		nodeTokens:         newNodeTokenRegistry(),
 	}
 }
 
@@ -280,6 +286,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleMetricsNodes(w, r)
 	case r.URL.Path == "/nodes":
 		s.handleNetRegistryNodes(w, r)
+	case len(parts) == 4 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes" && parts[3] == "join":
+		s.handleNodeJoin(w, r)
 	case len(parts) == 3 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes":
 		s.handleNodes(w, r, "")
 	case len(parts) == 4 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "nodes" && parts[3] != "":
@@ -480,6 +488,10 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 		return
 	}
+	if !s.authorizeNodeRequest(r, nodeName) {
+		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "node token is invalid")
+		return
+	}
 	if _, err := s.refreshNodeLiveness(r.Context()); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
@@ -534,6 +546,67 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 	}
 	sortPods(items)
 	writeJSON(w, http.StatusOK, map[string]any{"kind": "PodList", "apiVersion": "v1", "items": items})
+}
+
+type nodeJoinRequest struct {
+	Token string    `json:"token"`
+	Node  node.Node `json:"node"`
+}
+
+type nodeJoinResponse struct {
+	Node      node.Node `json:"node"`
+	NodeToken string    `json:"nodeToken"`
+}
+
+func (s *Server) handleNodeJoin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	var req nodeJoinRequest
+	if err := decodeObject(r.Body, &req); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	if err := tokens.ValidateBootstrapToken(s.bootstrapTokenPath, req.Token, time.Now().UTC()); err != nil {
+		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "bootstrap token is invalid or expired")
+		return
+	}
+	joined, err := s.prepareJoinedNode(&req.Node)
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	if _, err := s.nodes.Get(joined.Name()); err == nil {
+		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("node %q already exists", joined.Name()))
+		return
+	} else if err != nil && !errors.Is(err, store.ErrNodeNotFound) {
+		writeStoreError(w, err, "nodes", joined.Name())
+		return
+	}
+	if err := s.nodes.Upsert(joined); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	assigned, err := s.ensureNodePodCIDR(joined.Name())
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	if assigned.InternalIP() != "" && assigned.Spec.PodCIDR != "" {
+		if err := s.netRegistry.Register(netregistry.Node{Name: assigned.Name(), NodeIP: assigned.InternalIP(), PodCIDR: assigned.Spec.PodCIDR}); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+	}
+	token, err := generateNodeToken(assigned.Name())
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	s.nodeTokens.Set(assigned.Name(), token)
+	s.nodeWatch.publish("ADDED", *assigned)
+	writeJSON(w, http.StatusCreated, nodeJoinResponse{Node: *assigned, NodeToken: token})
 }
 
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string) {
@@ -679,6 +752,10 @@ func (s *Server) writeNodeWatch(ctx context.Context, w http.ResponseWriter, node
 func (s *Server) handleNodeStatus(w http.ResponseWriter, r *http.Request, name string) {
 	if r.Method != http.MethodPatch {
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	if !s.authorizeNodeRequest(r, name) {
+		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "node token is invalid")
 		return
 	}
 	s.patchNodeAnnotations(w, r, name)
@@ -883,12 +960,49 @@ func (s *Server) readNodeHeartbeat(r *http.Request, nodeName string) (node.Node,
 	return *heartbeat, nil
 }
 
+func (s *Server) authorizeNodeRequest(r *http.Request, nodeName string) bool {
+	if s.nodeTokens == nil {
+		return true
+	}
+	return s.nodeTokens.Validate(nodeName, bearerToken(r))
+}
+
+func (s *Server) prepareJoinedNode(n *node.Node) (*node.Node, error) {
+	if n == nil {
+		return nil, fmt.Errorf("node is required")
+	}
+	copy := n.DeepCopy()
+	if strings.TrimSpace(copy.Name()) == "" {
+		return nil, fmt.Errorf("metadata.name is required")
+	}
+	copy.ObjectMeta.Name = strings.TrimSpace(copy.Name())
+	if copy.InternalIP() == "" {
+		return nil, fmt.Errorf("status.addresses InternalIP is required")
+	}
+	copy.Kind = "Node"
+	copy.APIVersion = "v1"
+	copy.Spec.Role = node.NodeRoleWorker
+	copy.Status.Phase = node.NodeReady
+	copy.Status.LastHeartbeat = time.Now().UTC()
+	copy.SetReadyCondition(node.ConditionTrue, copy.Status.LastHeartbeat, "Join", "Node joined the cluster")
+	if copy.Status.Allocatable == (node.ResourceList{}) {
+		copy.Status.Allocatable = copy.Spec.Capacity
+	}
+	if err := s.validateRequestedPodCIDR(copy.Name(), copy.Spec.PodCIDR); err != nil {
+		return nil, err
+	}
+	return copy, nil
+}
+
 func (s *Server) ensureNodePodCIDR(name string) (*node.Node, error) {
 	current, err := s.nodes.Get(name)
 	if err != nil {
 		return nil, err
 	}
 	if current.Spec.PodCIDR != "" {
+		if err := s.validateRequestedPodCIDR(name, current.Spec.PodCIDR); err != nil {
+			return nil, err
+		}
 		return current, nil
 	}
 	nodes, err := s.nodes.List()
@@ -906,6 +1020,25 @@ func (s *Server) ensureNodePodCIDR(name string) (*node.Node, error) {
 	return s.nodes.Get(name)
 }
 
+func (s *Server) validateRequestedPodCIDR(name, podCIDR string) error {
+	if podCIDR == "" {
+		return nil
+	}
+	if err := s.cidrAlloc.validate(podCIDR); err != nil {
+		return fmt.Errorf("invalid PodCIDR %q: %w", podCIDR, err)
+	}
+	nodes, err := s.nodes.List()
+	if err != nil {
+		return err
+	}
+	for _, existing := range nodes {
+		if existing.Name() != name && existing.Spec.PodCIDR == podCIDR {
+			return fmt.Errorf("PodCIDR %q conflicts with node %q", podCIDR, existing.Name())
+		}
+	}
+	return nil
+}
+
 func (s *Server) handlePodStatus(w http.ResponseWriter, r *http.Request, namespace, name string) {
 	if r.Method != http.MethodPut {
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
@@ -914,6 +1047,10 @@ func (s *Server) handlePodStatus(w http.ResponseWriter, r *http.Request, namespa
 	existing, err := s.pods.Get(name, namespace)
 	if err != nil {
 		writeStoreError(w, err, "pods", name)
+		return
+	}
+	if existing.Spec.NodeName != "" && !s.authorizeNodeRequest(r, existing.Spec.NodeName) {
+		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "node token is invalid")
 		return
 	}
 	var status pod.PodStatus
@@ -1579,6 +1716,10 @@ func (s *Server) handleHPAs(w http.ResponseWriter, r *http.Request, namespace st
 func (s *Server) handleNodeMetrics(w http.ResponseWriter, r *http.Request, nodeName string) {
 	if r.Method != http.MethodPut {
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	if !s.authorizeNodeRequest(r, nodeName) {
+		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "node token is invalid")
 		return
 	}
 	var list struct {

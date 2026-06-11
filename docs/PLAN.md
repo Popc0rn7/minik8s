@@ -167,8 +167,8 @@ flowchart LR
 
 ## Public Interfaces
 
-- `minik8s [--server http://127.0.0.1:18080] [-n namespace] apply -f xxx.yaml`
-  - 通过 Harbor 提交 Pod、Service 等声明对象；默认 server 来自 `MINIK8S_HARBOR`。
+- `minik8s [-n namespace] apply -f xxx.yaml`
+  - 通过 Harbor 提交 Pod、Service 等声明对象；默认 Harbor 地址来自本地 `.minik8s/config.json`，`MINIK8S_HARBOR` 可临时覆盖。
 
 - `minik8s get pods|po|services|svc|nodes|no [name] [-o table|json|yaml]`
   - 输出名称、namespace、labels、状态和关键运行信息；当前已实现 Pod、Service、Node。

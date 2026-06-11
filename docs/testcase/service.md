@@ -42,7 +42,7 @@ sleep 6
 失败排查：
 
 - endpoints 为空：确认 Pod 已 Running 且 label `app=nginx` 存在。
-- Service 不存在：确认 `MINIK8S_HARBOR=${HARBOR}`。
+- Service 不存在：确认 node-a 已运行 `bridge` 并生成 `.minik8s/config.json`，或临时设置 `MINIK8S_HARBOR=${HARBOR}`。
 
 ## SVC-02：ClusterIP 规则与数据面
 

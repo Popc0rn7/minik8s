@@ -108,7 +108,8 @@ static pod manifests，不启动进程。它会生成核心 `storage-etcd` 以�
 
 启动控制面。默认 `bridge` 会先读取 `.minik8s/manifests/` 下的 `storage-etcd.yaml`
 并通过私有本地 `sailer` 启动核心依赖 Pod，然后再启动 Harbor API。默认不启用
-addon；需要 DNS、metrics 或 serverless 时显式传 `--addons`：
+addon；启动后会把 Harbor 地址写入 `.minik8s/config.json`，后续 `./kubectl`
+默认读取该配置。需要 DNS、metrics 或 serverless 时显式传 `--addons`：
 
 ```bash
 ./minik8s bridge \

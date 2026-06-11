@@ -24,7 +24,6 @@ controller 创建或删除 Pod。
 ## HPA-01：创建 ReplicaSet 和 HPA
 
 ```bash
-export MINIK8S_HARBOR=http://127.0.0.1:18080
 ./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
 ./kubectl apply -f manifest/hpa/hpa_nginx.yaml
 ./kubectl get hpa

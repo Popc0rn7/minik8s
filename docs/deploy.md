@@ -137,7 +137,7 @@ cd /opt/minik8s
 export NODE_A_IP=<node-a 内网 IP>
 export HARBOR=http://${NODE_A_IP}:18080
 cd /opt/minik8s
-./kubectl --server $HARBOR version
+./kubectl version
 ```
 
 ## 6. 启用 mooring CNI
@@ -146,7 +146,7 @@ cd /opt/minik8s
 
 ```bash
 cd /opt/minik8s
-./kubectl --server $HARBOR apply -f manifest/cni/mooring.yaml
+./kubectl apply -f manifest/cni/mooring.yaml
 ```
 
 预期输出包含：
@@ -201,7 +201,7 @@ export HARBOR=http://${NODE_A_IP}:18080
 
 ```bash
 cd /opt/minik8s
-./kubectl --server $HARBOR get nodes
+./kubectl get nodes
 ```
 
 预期：
@@ -223,10 +223,10 @@ bridge fdb show dev mk8s-vxlan
 部署 Pod 并查看调度结果：
 
 ```bash
-./kubectl --server $HARBOR apply -f manifest/pod/pod_nginx_node_a.yaml
-./kubectl --server $HARBOR apply -f manifest/pod/pod_nginx_node_b.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_a.yaml
+./kubectl apply -f manifest/pod/pod_nginx_node_b.yaml
 sleep 8
-./kubectl --server $HARBOR get pods
+./kubectl get pods
 ```
 
 网络实验后需要清理本地 mooring 网络状态时，在每台 worker 上执行：

@@ -22,6 +22,7 @@ import (
 	bridgeCaptain "minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
 	bridgeServerless "minik8s/internal/bridge/serverless"
+	"minik8s/internal/bridge/tokens"
 	"minik8s/internal/cliui"
 	"minik8s/internal/cni"
 	"minik8s/internal/dns"
@@ -87,7 +88,6 @@ type App struct {
 	netRunner         netagent.Runner
 	flannelRunner     FlannelRunner
 	mooringCNIRunner  MooringCNIRunner
-	server            string
 	namespace         string
 }
 
@@ -141,17 +141,18 @@ func New(config Config) *App {
 	controlBridge := config.Bridge
 	if controlBridge == nil {
 		controlBridge = bridge.New(bridge.Config{
-			PodStore:          config.Store,
-			ServiceStore:      serviceStore,
-			DNSStore:          dnsStore,
-			ReplicaSetStore:   replicaSetStore,
-			HPAStore:          hpaStore,
-			MetricsStore:      metricsStore,
-			NodeStore:         nodeStore,
-			K8sCompatStore:    k8sCompatStore,
-			FunctionStore:     functionStore,
-			EventTriggerStore: eventTriggerStore,
-			WorkflowStore:     workflowStore,
+			PodStore:           config.Store,
+			ServiceStore:       serviceStore,
+			DNSStore:           dnsStore,
+			ReplicaSetStore:    replicaSetStore,
+			HPAStore:           hpaStore,
+			MetricsStore:       metricsStore,
+			NodeStore:          nodeStore,
+			K8sCompatStore:     k8sCompatStore,
+			FunctionStore:      functionStore,
+			EventTriggerStore:  eventTriggerStore,
+			WorkflowStore:      workflowStore,
+			BootstrapTokenPath: DefaultBootstrapTokenPath(),
 		})
 	}
 	return &App{
@@ -503,11 +504,14 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func (a *App) controlPlaneClient() (*controlPlaneClient, error) {
-	server := a.server
-	if strings.TrimSpace(server) == "" {
-		server = os.Getenv("MINIK8S_HARBOR")
+	if server := strings.TrimSpace(os.Getenv("MINIK8S_HARBOR")); server != "" {
+		return newControlPlaneClient(server, a.httpClient)
 	}
-	return newControlPlaneClient(server, a.httpClient)
+	conf, err := readLocalConfig(DefaultLocalConfigPath())
+	if err != nil {
+		return nil, err
+	}
+	return newControlPlaneClient(conf.Harbor, a.httpClient)
 }
 
 func (a *App) invokeFunction(ctx context.Context, name, data string, out io.Writer) error {
@@ -1543,6 +1547,13 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	harborURL, err := bridgeHarborURL(options.listen)
+	if err != nil {
+		return err
+	}
+	if err := writeLocalConfig(DefaultLocalConfigPath(), localConfig{Harbor: harborURL}); err != nil {
+		return err
+	}
 	a.controlBridge.SetNodeCIDRConfig(options.clusterCIDR, options.nodeCIDRMaskSize)
 	server := &http.Server{
 		Addr:    options.listen,
@@ -2194,6 +2205,18 @@ type sailerOptions struct {
 	clusterDNS    string
 }
 
+type localSailerConfig struct {
+	APIServer string `json:"apiserver"`
+	NodeName  string `json:"nodeName"`
+	NodeIP    string `json:"nodeIP"`
+	PodCIDR   string `json:"podCIDR"`
+	NodeToken string `json:"nodeToken"`
+}
+
+type localConfig struct {
+	Harbor string `json:"harbor"`
+}
+
 type sailerNetworkMode int
 
 const (
@@ -2222,6 +2245,84 @@ func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
 	options.nodeName = assignedNode.Name()
 	options.nodeIP = assignedNode.InternalIP()
 	options.podCIDR = assignedNode.Spec.PodCIDR
+	return a.runAssignedSailer(ctx, options, podClient, assignedNode, out)
+}
+
+func (a *App) sailerJoin(ctx context.Context, apiserver, token, nodeFile string, out io.Writer) error {
+	if strings.TrimSpace(apiserver) == "" {
+		return fmt.Errorf("--apiserver is required")
+	}
+	if strings.TrimSpace(token) == "" {
+		return fmt.Errorf("--token is required")
+	}
+	if strings.TrimSpace(nodeFile) == "" {
+		return fmt.Errorf("missing required -f flag")
+	}
+	nodeConfig, err := podyaml.LoadNodeFromFile(nodeFile)
+	if err != nil {
+		return err
+	}
+	if nodeConfig.InternalIP() == "" {
+		return fmt.Errorf("node InternalIP is required")
+	}
+	client := nodeSailer.NewHTTPPodClient(apiserver, a.httpClient)
+	joined, err := client.JoinNode(ctx, token, nodeConfig)
+	if err != nil {
+		return err
+	}
+	if joined.NodeToken == "" {
+		return fmt.Errorf("bridge did not return a node token")
+	}
+	if joined.Node.Spec.PodCIDR == "" {
+		return fmt.Errorf("bridge did not assign a podCIDR")
+	}
+	conf := localSailerConfig{
+		APIServer: strings.TrimRight(apiserver, "/"),
+		NodeName:  joined.Node.Name(),
+		NodeIP:    joined.Node.InternalIP(),
+		PodCIDR:   joined.Node.Spec.PodCIDR,
+		NodeToken: joined.NodeToken,
+	}
+	if err := writeLocalSailerConfig(DefaultSailerConfigPath(), conf); err != nil {
+		return err
+	}
+	if err := writeLocalConfig(DefaultLocalConfigPath(), localConfig{Harbor: conf.APIServer}); err != nil {
+		return err
+	}
+	return writes(out, cliui.SuccessLine("sailer joined node=%s apiserver=%s", conf.NodeName, conf.APIServer))
+}
+
+func (a *App) sailerRun(ctx context.Context, args []string, out io.Writer) error {
+	options, err := parseSailerRunOptions(args)
+	if err != nil {
+		return err
+	}
+	conf, err := readLocalSailerConfig(DefaultSailerConfigPath())
+	if err != nil {
+		return err
+	}
+	options.harbor = conf.APIServer
+	options.nodeName = conf.NodeName
+	options.nodeIP = conf.NodeIP
+	options.podCIDR = conf.PodCIDR
+	podClient := nodeSailer.NewHTTPPodClientWithToken(conf.APIServer, conf.NodeToken, a.httpClient)
+	assignedNode, err := podClient.GetNode(ctx, conf.NodeName)
+	if err != nil {
+		return err
+	}
+	if assignedNode.Spec.PodCIDR == "" {
+		assignedNode.Spec.PodCIDR = conf.PodCIDR
+	}
+	if assignedNode.InternalIP() == "" && conf.NodeIP != "" {
+		assignedNode.Status.Addresses = append(assignedNode.Status.Addresses, node.NodeAddress{Type: node.NodeAddressInternalIP, Address: conf.NodeIP})
+	}
+	options.nodeName = assignedNode.Name()
+	options.nodeIP = assignedNode.InternalIP()
+	options.podCIDR = assignedNode.Spec.PodCIDR
+	return a.runAssignedSailer(ctx, options, podClient, assignedNode, out)
+}
+
+func (a *App) runAssignedSailer(ctx context.Context, options sailerOptions, podClient *nodeSailer.HTTPPodClient, assignedNode *node.Node, out io.Writer) error {
 	networkMode, err := a.ensureManifestCNIIfApplied(ctx, options.harbor, assignedNode)
 	if err != nil {
 		return err
@@ -2445,6 +2546,35 @@ func runSailerWithNetwork(ctx context.Context, k *nodeSailer.Sailer, agent *neta
 	return err
 }
 
+func (a *App) bridgeTokenSet(token string, ttl time.Duration, out io.Writer) error {
+	if err := tokens.SetBootstrapToken(DefaultBootstrapTokenPath(), token, ttl, time.Now().UTC()); err != nil {
+		return err
+	}
+	return writes(out, cliui.SuccessLine("bridge bootstrap token set path=%s expiresIn=%s", DefaultBootstrapTokenPath(), ttl))
+}
+
+func (a *App) bridgeTokenClear(out io.Writer) error {
+	if err := tokens.ClearBootstrapToken(DefaultBootstrapTokenPath()); err != nil {
+		return err
+	}
+	return writes(out, cliui.SuccessLine("bridge bootstrap token cleared path=%s", DefaultBootstrapTokenPath()))
+}
+
+func (a *App) bridgeTokenStatus(out io.Writer) error {
+	status, err := tokens.BootstrapTokenStatus(DefaultBootstrapTokenPath(), time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if !status.Configured {
+		return writes(out, cliui.InfoLine("bridge bootstrap token not configured path=%s", DefaultBootstrapTokenPath()))
+	}
+	state := "valid"
+	if status.Expired {
+		state = "expired"
+	}
+	return writes(out, cliui.InfoLine("bridge bootstrap token %s path=%s expiresAt=%s", state, DefaultBootstrapTokenPath(), status.ExpiresAt.Format(time.RFC3339)))
+}
+
 func parseSailerOptions(args []string) (sailerOptions, error) {
 	options := sailerOptions{
 		interval:  5 * time.Second,
@@ -2534,6 +2664,177 @@ func parseSailerOptions(args []string) (sailerOptions, error) {
 		return options, fmt.Errorf("--harbor is required")
 	}
 	return options, nil
+}
+
+func parseSailerRunOptions(args []string) (sailerOptions, error) {
+	options := sailerOptions{
+		interval:  5 * time.Second,
+		vxlanID:   42,
+		vxlanPort: 4789,
+		vxlanName: "mk8s-vxlan",
+	}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "run":
+		case "--interval":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --interval")
+			}
+			interval, err := time.ParseDuration(args[i])
+			if err != nil {
+				return options, fmt.Errorf("invalid --interval %q: %w", args[i], err)
+			}
+			options.interval = interval
+		case "--cluster-dns":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --cluster-dns")
+			}
+			if net.ParseIP(args[i]) == nil {
+				return options, fmt.Errorf("invalid --cluster-dns %q", args[i])
+			}
+			options.clusterDNS = args[i]
+		case "--vxlan-id":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-id")
+			}
+			id, err := strconv.Atoi(args[i])
+			if err != nil || id <= 0 {
+				return options, fmt.Errorf("invalid --vxlan-id %q", args[i])
+			}
+			options.vxlanID = id
+		case "--vxlan-port":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-port")
+			}
+			port, err := strconv.Atoi(args[i])
+			if err != nil || port <= 0 || port > 65535 {
+				return options, fmt.Errorf("invalid --vxlan-port %q", args[i])
+			}
+			options.vxlanPort = port
+		case "--vxlan-name":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --vxlan-name")
+			}
+			if strings.TrimSpace(args[i]) == "" {
+				return options, fmt.Errorf("invalid --vxlan-name %q", args[i])
+			}
+			options.vxlanName = args[i]
+		case "--once":
+			options.once = true
+		case "--proxy-disabled":
+			options.proxyDisabled = true
+		default:
+			return options, fmt.Errorf("unknown sailer run flag %q", args[i])
+		}
+	}
+	return options, nil
+}
+
+func writeLocalSailerConfig(path string, conf localSailerConfig) error {
+	if conf.APIServer == "" {
+		return fmt.Errorf("apiserver is required")
+	}
+	if conf.NodeName == "" {
+		return fmt.Errorf("nodeName is required")
+	}
+	if conf.NodeToken == "" {
+		return fmt.Errorf("nodeToken is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating sailer state dir: %w", err)
+	}
+	data, err := json.MarshalIndent(conf, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding sailer config: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("writing sailer config: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("replacing sailer config: %w", err)
+	}
+	return nil
+}
+
+func readLocalSailerConfig(path string) (localSailerConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return localSailerConfig{}, fmt.Errorf("sailer is not joined; run minik8s sailer join first")
+		}
+		return localSailerConfig{}, fmt.Errorf("reading sailer config: %w", err)
+	}
+	var conf localSailerConfig
+	if err := json.Unmarshal(data, &conf); err != nil {
+		return localSailerConfig{}, fmt.Errorf("parsing sailer config: %w", err)
+	}
+	if conf.APIServer == "" || conf.NodeName == "" || conf.NodeToken == "" {
+		return localSailerConfig{}, fmt.Errorf("sailer config is incomplete")
+	}
+	return conf, nil
+}
+
+func writeLocalConfig(path string, conf localConfig) error {
+	if strings.TrimSpace(conf.Harbor) == "" {
+		return fmt.Errorf("harbor is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating minik8s config dir: %w", err)
+	}
+	data, err := json.MarshalIndent(conf, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding minik8s config: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("writing minik8s config: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("replacing minik8s config: %w", err)
+	}
+	return nil
+}
+
+func readLocalConfig(path string) (localConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return localConfig{}, fmt.Errorf("Harbor API is not configured; run minik8s bridge on the control-plane node or minik8s sailer join on this worker to create %s", path)
+		}
+		return localConfig{}, fmt.Errorf("reading minik8s config: %w", err)
+	}
+	var conf localConfig
+	if err := json.Unmarshal(data, &conf); err != nil {
+		return localConfig{}, fmt.Errorf("parsing minik8s config: %w", err)
+	}
+	if strings.TrimSpace(conf.Harbor) == "" {
+		return localConfig{}, fmt.Errorf("minik8s config is incomplete: harbor is required")
+	}
+	return conf, nil
+}
+
+func bridgeHarborURL(listen string) (string, error) {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		if !strings.HasPrefix(listen, ":") {
+			return "", fmt.Errorf("invalid bridge listen address %q: %w", listen, err)
+		}
+		host = ""
+		port = strings.TrimPrefix(listen, ":")
+	}
+	if strings.TrimSpace(port) == "" {
+		return "", fmt.Errorf("invalid bridge listen address %q: missing port", listen)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "127.0.0.1"
+	}
+	return (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}).String(), nil
 }
 
 func (a *App) sailerServiceProxy(options sailerOptions) kubeproxy.Proxy {
@@ -2767,6 +3068,24 @@ func DefaultNodeStatePath() string {
 		return filepath.Join(dir, "nodes.json")
 	}
 	return filepath.Join(".minik8s", "state", "nodes.json")
+}
+
+func DefaultBootstrapTokenPath() string {
+	return tokens.DefaultBootstrapTokenPath()
+}
+
+func DefaultSailerConfigPath() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "sailer.json")
+	}
+	return filepath.Join(".minik8s", "state", "sailer.json")
+}
+
+func DefaultLocalConfigPath() string {
+	if path := os.Getenv("MINIK8S_CONFIG"); path != "" {
+		return path
+	}
+	return filepath.Join(".minik8s", "config.json")
 }
 
 func DefaultFunctionStatePath() string {
