@@ -121,9 +121,15 @@ func TestCLIApplyMooringCNIManifestStoresCompatObjects(t *testing.T) {
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
 	assert.Contains(t, out.String(), "namespace/kube-mooring accepted")
 	assert.Contains(t, out.String(), "configmap/mooring-cni-cfg created")
+	assert.Contains(t, out.String(), "daemonset/mooring-cni-ds created")
 	cm, err := k8sStore.GetConfigMap(k8scompat.MooringCNIConfigMap, k8scompat.MooringCNINamespace)
 	require.NoError(t, err)
 	assert.Contains(t, cm.Data["cni-conf.json"], `"type":"mooring"`)
+	ds, err := k8sStore.GetDaemonSet(k8scompat.MooringCNIDaemonSet, k8scompat.MooringCNINamespace)
+	require.NoError(t, err)
+	require.Len(t, ds.Spec.Template.Spec.InitContainers, 1)
+	assert.Equal(t, "install-cni-plugin", ds.Spec.Template.Spec.InitContainers[0].Name)
+	assert.Equal(t, "ghcr.io/popc0rn7/mooring-cni:latest", ds.Spec.Template.Spec.InitContainers[0].Image)
 }
 
 const mooringCNIConfigMapManifest = `---
@@ -140,6 +146,18 @@ metadata:
 data:
   cni-conf.json: |
     {"cniVersion":"1.0.0","name":"minik8s","type":"mooring","bridge":"mk8s0","ipam":{"statePath":".minik8s/state/cni-ipam.json"}}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mooring-cni-ds
+  namespace: kube-mooring
+spec:
+  template:
+    spec:
+      initContainers:
+      - name: install-cni-plugin
+        image: ghcr.io/popc0rn7/mooring-cni:latest
 `
 
 func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
@@ -283,25 +301,18 @@ func TestCLIDoctorLogbookWarnsWhenEndpointsUnset(t *testing.T) {
 	assert.Contains(t, out.String(), "MINIK8S_LOGBOOK_ENDPOINTS is not set")
 }
 
-func TestBridgeOptionsDefaultToInternalDependencies(t *testing.T) {
+func TestBridgeOptionsRejectDepsFlag(t *testing.T) {
+	_, err := parseBridgeOptions([]string{"--deps", "none"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown bridge flag")
+}
+
+func TestBridgeOptionsDefaultToNoAddons(t *testing.T) {
 	options, err := parseBridgeOptions([]string{"--listen", ":18080"})
 
 	require.NoError(t, err)
-	assert.Equal(t, bridgeDepsInternal, options.deps)
-}
-
-func TestBridgeOptionsAllowDisablingDependencies(t *testing.T) {
-	options, err := parseBridgeOptions([]string{"--deps", "none"})
-
-	require.NoError(t, err)
-	assert.Equal(t, bridgeDepsNone, options.deps)
-}
-
-func TestBridgeOptionsRejectUnknownDependencies(t *testing.T) {
-	_, err := parseBridgeOptions([]string{"--deps", "external"})
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid --deps")
+	assert.Equal(t, "none", options.addons.String())
 }
 
 func TestBridgeDependencyEtcdDirIsAbsolute(t *testing.T) {
@@ -313,6 +324,25 @@ func TestBridgeDependencyEtcdDirIsAbsolute(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(cwd, ".minik8s", "state", "bridge-deps", "etcd"), dir)
+}
+
+func TestWaitForBridgeDependenciesReadyUsesEtcdProbe(t *testing.T) {
+	calls := 0
+	originalProbe := bridgeDependencyEtcdProbe
+	bridgeDependencyEtcdProbe = func(ctx context.Context, endpoints []string) error {
+		calls++
+		assert.Equal(t, []string{"http://127.0.0.1:2379"}, endpoints)
+		if calls < 2 {
+			return fmt.Errorf("not ready")
+		}
+		return nil
+	}
+	defer func() { bridgeDependencyEtcdProbe = originalProbe }()
+
+	err := waitForBridgeDependenciesReady(context.Background(), make(chan error), bridgeOptions{addons: newAddonSet()}, 2*time.Second)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls)
 }
 
 func TestCLIInitWritesStaticDependencyManifests(t *testing.T) {
@@ -338,13 +368,14 @@ func TestCLIInitWritesStaticDependencyManifests(t *testing.T) {
 	assert.Equal(t, "dns-gateway", dns.Name)
 	metricsPod := readPodManifest(t, filepath.Join(root, "manifests", "metrics-server.yaml"))
 	assert.Equal(t, "metrics-server", metricsPod.Name)
-	_, err := os.Stat(filepath.Join(root, "manifests", "serverless-nats.yaml"))
-	assert.True(t, os.IsNotExist(err))
+	serverlessPod := readPodManifest(t, filepath.Join(root, "manifests", "serverless-nats.yaml"))
+	assert.Equal(t, "serverless-nats", serverlessPod.Name)
 	assert.Contains(t, out.String(), "static pod manifests initialized")
-	assert.Contains(t, out.String(), "next: ./minik8s bridge --listen :18080 --addons dns,metrics")
+	assert.Contains(t, out.String(), "next: ./minik8s bridge --listen :18080")
+	assert.NotContains(t, out.String(), "--addons")
 }
 
-func TestCLIInitAddonsOnlyWritesSelectedAddonManifests(t *testing.T) {
+func TestCLIInitRejectsAddonsFlag(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MINIK8S_STATE_DIR", filepath.Join(root, "state"))
 	t.Setenv("MINIK8S_DNS_DIR", filepath.Join(root, "dns"))
@@ -352,14 +383,10 @@ func TestCLIInitAddonsOnlyWritesSelectedAddonManifests(t *testing.T) {
 	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), []string{"init", "--addons", "serverless"}, &out))
+	err := app.Run(context.Background(), []string{"init", "--addons", "serverless"}, &out)
 
-	_ = readPodManifest(t, filepath.Join(root, "manifests", "storage-etcd.yaml"))
-	_ = readPodManifest(t, filepath.Join(root, "manifests", "serverless-nats.yaml"))
-	_, err := os.Stat(filepath.Join(root, "manifests", "dns-gateway.yaml"))
-	assert.True(t, os.IsNotExist(err))
-	_, err = os.Stat(filepath.Join(root, "manifests", "metrics-server.yaml"))
-	assert.True(t, os.IsNotExist(err))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown flag: --addons")
 }
 
 func TestCLIInitRefusesToOverwriteManifestWithoutForce(t *testing.T) {
@@ -426,7 +453,7 @@ func TestBridgeDependencyPodsRequireEnabledAddonManifest(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "addon dns manifest")
-	assert.Contains(t, err.Error(), "minik8s init --addons")
+	assert.Contains(t, err.Error(), "minik8s init --force")
 }
 
 func TestBridgeDependencyPodsRejectInvalidStaticManifest(t *testing.T) {
@@ -684,7 +711,7 @@ status:
 			return rec.Result(), nil
 		})},
 		NetRunner: func(name string, args ...string) error {
-			return fmt.Errorf("skip host networking in test")
+			return nil
 		},
 	})
 	var out bytes.Buffer
@@ -853,6 +880,9 @@ status:
 			return rec.Result(), nil
 		})},
 		FlannelRunner: flannel,
+		NetRunner: func(name string, args ...string) error {
+			return nil
+		},
 	})
 	var out bytes.Buffer
 
@@ -887,6 +917,13 @@ status:
 			"cni-conf.json": `{"cniVersion":"1.0.0","name":"mooring-addon","type":"mooring","bridge":"mk8s1","ipam":{"statePath":".minik8s/state/addon-ipam.json"}}`,
 		},
 	}))
+	require.NoError(t, k8sStore.UpsertDaemonSet(&k8scompat.DaemonSet{
+		TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindDaemonSet, APIVersion: "apps/v1"},
+		ObjectMeta: pod.ObjectMeta{Name: k8scompat.MooringCNIDaemonSet, Namespace: k8scompat.MooringCNINamespace},
+		Spec: k8scompat.DaemonSetSpec{Template: k8scompat.PodTemplateSpec{Spec: k8scompat.PodTemplatePodSpec{
+			InitContainers: []k8scompat.Container{{Name: "install-cni-plugin", Image: "ghcr.io/popc0rn7/mooring-cni:latest"}},
+		}}},
+	}))
 	srv := harbor.New(harbor.Config{
 		NodeStore:        nodeStore,
 		K8sCompatStore:   k8sStore,
@@ -894,6 +931,7 @@ status:
 		NodeCIDRMaskSize: 24,
 	})
 	var netCalls int
+	mooring := &fakeMooringCNIRunner{}
 	app := New(Config{
 		Runtime:      mock.NewMockRuntime(),
 		Store:        store.NewInMemoryPodStore(),
@@ -907,11 +945,15 @@ status:
 			netCalls++
 			return nil
 		},
+		MooringCNIRunner: mooring,
 	})
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"sailer", nodePath, "--harbor", "http://minik8s.test", "--once"}, &out))
 	require.Greater(t, netCalls, 0)
+	require.Len(t, mooring.calls, 1)
+	assert.Equal(t, k8scompat.MooringCNIConfigMap, mooring.calls[0].ConfigMap.Name)
+	assert.Equal(t, k8scompat.MooringCNIDaemonSet, mooring.calls[0].DaemonSet.Name)
 	data, err := os.ReadFile(filepath.Join(root, "net.d", "10-mooring.conf"))
 	require.NoError(t, err)
 	var conf struct {
@@ -931,6 +973,47 @@ status:
 	assert.Equal(t, "10.244.0.0/24", conf.PodCIDR)
 	assert.Equal(t, "10.244.0.1", conf.Gateway)
 	assert.Equal(t, ".minik8s/state/addon-ipam.json", conf.IPAM.StatePath)
+}
+
+func TestLocalMooringCNIRunnerInstallsPluginFromDaemonSetImage(t *testing.T) {
+	root := t.TempDir()
+	cniBinDir := filepath.Join(root, "bin")
+	cniConfDir := filepath.Join(root, "net.d")
+	var commands []string
+	runner := LocalMooringCNIRunner{Run: func(ctx context.Context, name string, args ...string) error {
+		_ = ctx
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return nil
+	}}
+
+	require.NoError(t, runner.Ensure(context.Background(), MooringCNIOptions{
+		Node: node.New("node-a", node.NodeSpec{PodCIDR: "10.244.0.0/24"}, node.NodeStatus{
+			Addresses: []node.NodeAddress{{Type: node.NodeAddressInternalIP, Address: "192.168.1.8"}},
+		}),
+		ConfigMap: &k8scompat.ConfigMap{
+			TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindConfigMap, APIVersion: "v1"},
+			ObjectMeta: pod.ObjectMeta{Name: k8scompat.MooringCNIConfigMap, Namespace: k8scompat.MooringCNINamespace},
+			Data: map[string]string{
+				"cni-conf.json": `{"cniVersion":"1.0.0","name":"minik8s","type":"mooring","bridge":"mk8s0","ipam":{"statePath":".minik8s/state/cni-ipam.json"}}`,
+			},
+		},
+		DaemonSet: &k8scompat.DaemonSet{
+			TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindDaemonSet, APIVersion: "apps/v1"},
+			ObjectMeta: pod.ObjectMeta{Name: k8scompat.MooringCNIDaemonSet, Namespace: k8scompat.MooringCNINamespace},
+			Spec: k8scompat.DaemonSetSpec{Template: k8scompat.PodTemplateSpec{Spec: k8scompat.PodTemplatePodSpec{
+				InitContainers: []k8scompat.Container{{Name: "install-cni-plugin", Image: "ghcr.io/popc0rn7/mooring-cni:test"}},
+			}}},
+		},
+		CNIBinDir:  cniBinDir,
+		CNIConfDir: cniConfDir,
+	}))
+
+	require.Len(t, commands, 1)
+	assert.Contains(t, commands[0], "docker run --rm")
+	assert.Contains(t, commands[0], "-v "+cniBinDir+":/opt/cni/bin")
+	assert.Contains(t, commands[0], "--entrypoint cp ghcr.io/popc0rn7/mooring-cni:test -f /mooring /opt/cni/bin/mooring")
+	_, err := os.Stat(filepath.Join(cniConfDir, "10-mooring.conf"))
+	require.NoError(t, err)
 }
 
 func TestDockerFlannelRunnerEnsureSkipsRestartWhenHashMatches(t *testing.T) {
@@ -1353,6 +1436,9 @@ func TestCLIGetNodesShowsExpiredHeartbeatNodesUnknown(t *testing.T) {
 }
 
 func TestCLIDoctorNetworkShowsCNIPaths(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
 	podStore := store.NewInMemoryPodStore()
 	runtime := mock.NewMockRuntime()
 	app := New(Config{
@@ -1366,6 +1452,72 @@ func TestCLIDoctorNetworkShowsCNIPaths(t *testing.T) {
 	assert.Contains(t, out.String(), "󰋽  confDir:")
 	assert.Contains(t, out.String(), "󰋽  binDir:")
 	assert.Contains(t, out.String(), "󰋽  plugin: mooring")
+}
+
+func TestCLIDoctorCleanRemovesMooringNetworkState(t *testing.T) {
+	root := t.TempDir()
+	confDir := filepath.Join(root, "net.d")
+	t.Setenv("MINIK8S_CNI_CONF_DIR", confDir)
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	require.NoError(t, os.MkdirAll(confDir, 0o755))
+	ipamPath := filepath.Join(root, "ipam.json")
+	require.NoError(t, os.WriteFile(ipamPath, []byte(`{"allocations":{"default/nginx":"10.244.0.2"}}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(confDir, "10-mooring.conf"), []byte(fmt.Sprintf(`{
+  "bridge": "mk8s0",
+  "podCIDR": "10.244.0.0/24",
+  "ipam": {"statePath": %q},
+  "routes": [{"dst": "10.244.1.0/24", "gw": "192.168.1.11"}]
+}`, ipamPath)), 0o644))
+	var commands []string
+	app := New(Config{
+		Runtime: mock.NewMockRuntime(),
+		Store:   store.NewInMemoryPodStore(),
+		NetRunner: func(name string, args ...string) error {
+			commands = append(commands, name+" "+strings.Join(args, " "))
+			return nil
+		},
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"doctor", "clean"}, &out))
+
+	assert.Contains(t, commands, "iptables -t nat -D POSTROUTING -s 10.244.0.0/24 -d 10.244.1.0/24 -j ACCEPT")
+	assert.Contains(t, commands, "iptables -t filter -D FORWARD -s 10.244.0.0/24 -d 10.244.1.0/24 -j ACCEPT")
+	assert.Contains(t, commands, "iptables -t filter -D FORWARD -s 10.244.1.0/24 -d 10.244.0.0/24 -j ACCEPT")
+	assert.Contains(t, commands, "ip route delete 10.244.1.0/24 dev mk8s0")
+	assert.Contains(t, commands, "iptables -t nat -D POSTROUTING -s 10.244.0.0/24 ! -o mk8s0 -j MASQUERADE")
+	assert.Contains(t, commands, "iptables -t filter -D FORWARD -i mk8s0 -j ACCEPT")
+	assert.Contains(t, commands, "iptables -t filter -D FORWARD -o mk8s0 -j ACCEPT")
+	assert.Contains(t, commands, "ip link delete mk8s-vxlan")
+	assert.Contains(t, commands, "ip link delete mk8s0")
+	_, err := os.Stat(filepath.Join(confDir, "10-mooring.conf"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	_, err = os.Stat(ipamPath)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	assert.Contains(t, out.String(), "network cleanup complete bridge=mk8s0")
+}
+
+func TestCLIDoctorCleanIsIdempotentWhenNetworkStateIsMissing(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	var commands []string
+	app := New(Config{
+		Runtime: mock.NewMockRuntime(),
+		Store:   store.NewInMemoryPodStore(),
+		NetRunner: func(name string, args ...string) error {
+			commands = append(commands, name+" "+strings.Join(args, " "))
+			return fmt.Errorf("Cannot find device")
+		},
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"doctor", "clean"}, &out))
+
+	assert.Contains(t, commands, "iptables -t filter -D FORWARD -i mk8s0 -j ACCEPT")
+	assert.Contains(t, commands, "ip link delete mk8s-vxlan")
+	assert.Contains(t, commands, "ip link delete mk8s0")
+	assert.Contains(t, out.String(), "network cleanup complete bridge=mk8s0")
 }
 
 func TestCLIApplyStoresPendingPodWithoutRuntimeSync(t *testing.T) {
@@ -1733,6 +1885,21 @@ func (f *fakeFlannelRunner) Cleanup(ctx context.Context, options FlannelCleanupO
 	_ = ctx
 	f.cleanupCalls = append(f.cleanupCalls, options)
 	return nil
+}
+
+type fakeMooringCNIRunner struct {
+	calls []MooringCNIOptions
+}
+
+func (f *fakeMooringCNIRunner) Ensure(ctx context.Context, options MooringCNIOptions) error {
+	f.calls = append(f.calls, options)
+	runner := LocalMooringCNIRunner{Run: func(ctx context.Context, name string, args ...string) error {
+		_ = ctx
+		_ = name
+		_ = args
+		return nil
+	}}
+	return runner.Ensure(ctx, options)
 }
 
 type cliRoundTripFunc func(req *http.Request) (*http.Response, error)

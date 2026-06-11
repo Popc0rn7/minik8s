@@ -11,8 +11,12 @@ PROD_GOOS ?= linux
 PROD_GOARCH ?= amd64
 PROD_GOPROXY ?= https://goproxy.cn,https://proxy.golang.org,direct
 PROD_DOCKER_USER ?= $(shell id -u):$(shell id -g)
+MOORING_CNI_IMAGE ?= ghcr.io/popc0rn7/mooring-cni
+IMAGE_TAG ?= latest
+PLATFORM ?= linux/amd64
+DEPLOY_ARGS ?=
 
-.PHONY: build prod test bridge sailer-once sailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
+.PHONY: build prod mooring-cni-image push-mooring-cni-image deploy-prod test bridge sailer-once sailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
 
 build:
 	go build -o $(MINIK8S) ./cmd/minik8s
@@ -20,22 +24,16 @@ build:
 	go build -o $(CNI_PLUGIN) ./cmd/mooring
 
 prod:
-	docker run --rm \
-		--user $(PROD_DOCKER_USER) \
-		-v "$(CURDIR):/src" \
-		-w /src \
-		-e HOME=/tmp \
-		-e GOCACHE=/tmp/go-build \
-		-e GOMODCACHE=/tmp/go/pkg/mod \
-		-e GOPROXY="$(PROD_GOPROXY)" \
-		-e CGO_ENABLED=0 \
-		-e GOOS=$(PROD_GOOS) \
-		-e GOARCH=$(PROD_GOARCH) \
-		$(PROD_IMAGE) \
-		sh -c 'mkdir -p "$(PROD_DIR)" && \
-			go build -trimpath -tags "netgo osusergo" -ldflags="-s -w" -o "$(PROD_DIR)/minik8s" ./cmd/minik8s && \
-			go build -trimpath -tags "netgo osusergo" -ldflags="-s -w" -o "$(PROD_DIR)/kubectl" ./cmd/kubectl && \
-			go build -trimpath -tags "netgo osusergo" -ldflags="-s -w" -o "$(PROD_DIR)/mooring" ./cmd/mooring'
+	PROD_IMAGE="$(PROD_IMAGE)" PROD_DIR="$(PROD_DIR)" PROD_GOOS="$(PROD_GOOS)" PROD_GOARCH="$(PROD_GOARCH)" PROD_GOPROXY="$(PROD_GOPROXY)" PROD_DOCKER_USER="$(PROD_DOCKER_USER)" scripts/prod-build.sh
+
+mooring-cni-image:
+	MOORING_CNI_IMAGE="$(MOORING_CNI_IMAGE)" IMAGE_TAG="$(IMAGE_TAG)" PLATFORM="$(PLATFORM)" scripts/build-mooring-cni-image.sh
+
+push-mooring-cni-image:
+	MOORING_CNI_IMAGE="$(MOORING_CNI_IMAGE)" IMAGE_TAG="$(IMAGE_TAG)" scripts/push-mooring-cni-image.sh
+
+deploy-prod:
+	MOORING_CNI_IMAGE="$(MOORING_CNI_IMAGE)" IMAGE_TAG="$(IMAGE_TAG)" scripts/deploy-prod.sh $(DEPLOY_ARGS)
 
 test:
 	go test ./...

@@ -140,7 +140,7 @@ func addRuntimeCommands(root *cobra.Command, app *App, out io.Writer, bind func(
 
 func newInitCommand(app *App, out io.Writer) *cobra.Command {
 	var force bool
-	var addons, dnsListen, ingressListen string
+	var dnsListen, ingressListen string
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize local Minik8s startup files",
@@ -149,9 +149,6 @@ func newInitCommand(app *App, out io.Writer) *cobra.Command {
 			legacy := []string{}
 			if force {
 				legacy = append(legacy, "--force")
-			}
-			if addons != "" {
-				legacy = append(legacy, "--addons", addons)
 			}
 			if dnsListen != "" {
 				legacy = append(legacy, "--dns-listen", dnsListen)
@@ -163,7 +160,6 @@ func newInitCommand(app *App, out io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite generated startup files")
-	cmd.Flags().StringVar(&addons, "addons", "", "Comma-separated addons to initialize: dns, metrics, serverless, or none")
 	cmd.Flags().StringVar(&dnsListen, "dns-listen", "", "DNS host listen port/address")
 	cmd.Flags().StringVar(&ingressListen, "ingress-listen", "", "HTTP ingress host listen port/address")
 	return cmd
@@ -384,7 +380,7 @@ func newVersionCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDoctorCommand(app *App, out io.Writer) *cobra.Command {
 	return &cobra.Command{
-		Use:   "doctor docker|network|logbook|serverless|addons|addon <name>",
+		Use:   "doctor docker|network|clean|logbook|serverless|addons|addon <name>",
 		Short: "Run diagnostics",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

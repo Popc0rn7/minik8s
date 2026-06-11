@@ -27,7 +27,7 @@ func newAddonSet(names ...AddonName) addonSet {
 }
 
 func defaultAddonSet() addonSet {
-	return newAddonSet(AddonDNS, AddonMetrics)
+	return newAddonSet()
 }
 
 func parseAddonSet(value string) (addonSet, error) {

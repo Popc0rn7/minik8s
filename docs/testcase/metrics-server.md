@@ -10,7 +10,7 @@
 1. 生成默认 addon manifests：
 
    ```bash
-   ./minik8s init --force --addons dns,metrics
+   ./minik8s init --force
    ```
 
 2. 启动 bridge：

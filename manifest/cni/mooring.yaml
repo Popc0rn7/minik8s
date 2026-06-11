@@ -19,3 +19,15 @@ data:
         "statePath": ".minik8s/state/cni-ipam.json"
       }
     }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mooring-cni-ds
+  namespace: kube-mooring
+spec:
+  template:
+    spec:
+      initContainers:
+      - name: install-cni-plugin
+        image: ghcr.io/popc0rn7/mooring-cni:latest

@@ -16,6 +16,7 @@ find .minik8s -maxdepth 3 -type f | sort
 sed -n '1,120p' .minik8s/manifests/storage-etcd.yaml
 sed -n '1,160p' .minik8s/manifests/dns-gateway.yaml
 sed -n '1,80p' .minik8s/manifests/metrics-server.yaml
+sed -n '1,80p' .minik8s/manifests/serverless-nats.yaml
 ```
 
 预期：
@@ -25,6 +26,7 @@ sed -n '1,80p' .minik8s/manifests/metrics-server.yaml
 - `.minik8s/manifests/dns-gateway.yaml` 包含 `coredns`、`nginx` 和 `route-proxy`
   容器。
 - `.minik8s/manifests/metrics-server.yaml` 包含 lightweight metrics addon Pod。
+- `.minik8s/manifests/serverless-nats.yaml` 包含 NATS addon Pod。
 - `.minik8s/state/bridge-deps/etcd` 和 `.minik8s/dns` 已创建。
 
 ## STARTUP-02：bridge 使用 static deps pod 启动依赖
@@ -65,37 +67,39 @@ rm -rf .minik8s/manifests
 预期：
 
 - bridge 提示 `addon dns manifest ... is missing`。
-- 修复建议包含 `minik8s init --addons dns`。
+- 修复建议包含 `minik8s init --force`。
 
-## STARTUP-04：禁用内部 deps 使用本地 JSON
+## STARTUP-04：只启动核心 storage
 
-目标：验证 `--deps none` 仍跳过内部依赖 Pod。
+目标：验证 `--addons none` 只启动核心 `storage-etcd`，不启动 addon Pod。
 
 ```bash
 rm -rf .minik8s
-./minik8s bridge --listen :18080 --deps none
+./minik8s init
+./minik8s bridge --listen :18080 --addons none
 ```
 
 预期：
 
-- bridge 不启动 `storage-etcd` 或 addon Docker 容器。
-- 控制面使用本地 JSON file store。
+- bridge 启动 `storage-etcd`。
+- bridge 不启动 `dns-gateway`、`metrics-server` 或 `serverless-nats`。
+- 控制面使用本地 etcd-backed Logbook。
 
 ## STARTUP-05：只启用 serverless addon
 
-目标：验证只初始化和启动 storage + NATS，不生成或启动 DNS 依赖 Pod。
+目标：验证 init 生成全部 manifests，但 bridge 只启动 storage + NATS。
 
 ```bash
 rm -rf .minik8s
-./minik8s init --addons serverless
+./minik8s init
 test -f .minik8s/manifests/storage-etcd.yaml
 test -f .minik8s/manifests/serverless-nats.yaml
-test ! -f .minik8s/manifests/dns-gateway.yaml
+test -f .minik8s/manifests/dns-gateway.yaml
 
 ./minik8s bridge --listen :18080 --addons serverless
 ```
 
 预期：
 
-- `storage-etcd.yaml` 和 `serverless-nats.yaml` 存在，`dns-gateway.yaml` 不存在。
+- `storage-etcd.yaml`、`serverless-nats.yaml` 和 `dns-gateway.yaml` 都存在。
 - bridge 等待 2379 和 4222 端口，不等待 DNS/ingress 端口。

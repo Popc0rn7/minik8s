@@ -154,6 +154,7 @@ Docker image 工作流定义在 `.github/workflows/docker-image.yml`。
 
 ```bash
 ghcr.io/popc0rn7/minik8s
+ghcr.io/popc0rn7/mooring-cni
 ```
 
 tag 规则：
@@ -168,13 +169,16 @@ tag 规则：
 1. 使用 Docker Buildx 构建 `linux/amd64` 镜像。
 2. 在 builder 阶段编译 `./cmd/minik8s`、`./cmd/kubectl` 和 `./cmd/mooring`。
 3. 将 `minik8s`、`kubectl` 放入 `/usr/local/bin/`，将 CNI 插件放入 `/opt/cni/bin/mooring`。
-4. 使用 GitHub Actions 内置 `GITHUB_TOKEN` 登录 GHCR 并推送镜像。
+4. 使用 `Dockerfile.mooring-cni` 构建独立的 `mooring-cni` 安装镜像，镜像内
+   `/mooring` 由 `sailer` 复制到宿主机 CNI bin 目录。
+5. 使用 GitHub Actions 内置 `GITHUB_TOKEN` 登录 GHCR 并推送镜像。
 
 本地验证：
 
 ```bash
 docker build -t minik8s:test .
 docker run --rm minik8s:test --help
+MOORING_CNI_IMAGE=ghcr.io/popc0rn7/mooring-cni IMAGE_TAG=test make mooring-cni-image
 docker pull ghcr.io/popc0rn7/minik8s:latest
 docker run --rm ghcr.io/popc0rn7/minik8s:latest --help
 ```
@@ -186,3 +190,4 @@ docker login ghcr.io
 ```
 
 该镜像包含用户侧 `kubectl` 和运行侧 `minik8s` 入口。运行 `sailer` 时仍需要宿主机提供 Docker daemon、Linux 网络工具、CNI 目录、iptables 权限以及必要的 bind mount；镜像发布只表示可分发运行入口，不表示已经实现完整托管式集群部署。
+`mooring-cni` 镜像只用于安装自研 CNI 插件，不作为控制面或节点进程入口。

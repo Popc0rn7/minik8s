@@ -25,9 +25,9 @@
 
 - [x] 增加 `minik8s init` 初始化入口：生成本地状态目录、DNS 配置和
   `.minik8s/manifests/` 下的控制面依赖 Pod manifest。
-- [x] 将 `bridge --deps internal` 的私有依赖 Pod 整理成更接近 Kubernetes
+- [x] 将 `bridge` 的私有依赖 Pod 整理成更接近 Kubernetes
   static pod 的机制：`storage-etcd` 是核心依赖，`dns`、`metrics`、`serverless`
-  是可选 addon；启用 addon 但 manifest 缺失时提示重新运行 `minik8s init --addons ...`。
+  是可选 addon；启用 addon 但 manifest 缺失时提示重新运行 `minik8s init --force`。
 - [ ] 后续继续简化启动路径：提供 `minik8s up` 或清晰的一键演示命令，同时用
   `doctor startup` 检查 Docker、CNI、iptables、Harbor、etcd/NATS 等依赖。
 
@@ -46,14 +46,17 @@
 - [x] 自研 bridge CNI、host-local IPAM、同节点 Pod IP 通信。
 - [x] 控制面分配 PodCIDR，sailer 写入 CNI 配置并同步 VXLAN/host-gw route。
 - [x] 自研 `mooring` 可通过 `manifest/cni/mooring.yaml` 的
-  ConfigMap + DaemonSet 兼容对象激活，`sailer` 仍负责写入节点本地 CNI 配置。
+  ConfigMap + DaemonSet 兼容对象激活，`sailer` 可从 `mooring-cni` 安装镜像复制
+  插件并写入节点本地 CNI 配置。
+- [x] 增加 `minik8s doctor clean`，用于清理 mooring bridge、VXLAN、iptables
+  规则、CNI 配置和本地 IPAM 状态。
 - [ ] 增加外部 CNI 模式：允许 `sailer` 只使用用户指定的 CNI conf/bin 目录调用
   标准 CNI 插件，而不覆盖为自研 `mooring` 配置。
 - [ ] 提供常见 CNI 的安装/配置辅助，例如 `minik8s cni install flannel` 或
   `minik8s addon enable flannel`。第一阶段目标是兼容 flannel CNI 配置和二进制；
   完整支持原生 flannel DaemonSet/RBAC/ConfigMap YAML 需等 Minik8s 具备对应对象能力。
-- [ ] 跨节点网络仍依赖真实网络、防火墙和 VXLAN 环境；需要继续补 smoke test 和
-  自动清理脚本。
+- [ ] 跨节点网络仍依赖真实网络、防火墙和 VXLAN 环境；需要继续补 smoke test，
+  并验证 Node crash 后的残留 veth/route 清理。
 - [ ] IPAM 并发、异常恢复、CNI 状态可视化仍较弱。
 
 ### Service

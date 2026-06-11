@@ -264,6 +264,21 @@ func TestHarborServesNetRegistryNodesEndpoint(t *testing.T) {
 	assert.NotZero(t, nodes[0].UpdatedAt)
 }
 
+func TestHarborDoesNotLogUnchangedNetNodeRegister(t *testing.T) {
+	var logs bytes.Buffer
+	restore := minilog.SetOutput(&logs)
+	defer restore()
+	srv := newTestServer()
+	body := `{"name":"node-a","nodeIP":"192.168.1.8","podCIDR":"10.244.0.0/24"}`
+
+	first := serve(t, srv, http.MethodPost, "/nodes", body)
+	require.Equal(t, http.StatusNoContent, first.Code, first.Body.String())
+	second := serve(t, srv, http.MethodPost, "/nodes", body)
+	require.Equal(t, http.StatusNoContent, second.Code, second.Body.String())
+
+	assert.Equal(t, 1, strings.Count(logs.String(), "net-node-register: node=node-a nodeIP=192.168.1.8 podCIDR=10.244.0.0/24"))
+}
+
 func TestHarborPodCRUDLogsControlPlaneEvents(t *testing.T) {
 	var logs bytes.Buffer
 	restore := minilog.SetOutput(&logs)
@@ -830,6 +845,47 @@ func TestHarborLogsPodStatusUpdate(t *testing.T) {
 	require.Equal(t, http.StatusOK, update.Code)
 
 	assert.Contains(t, logs.String(), "pod-status-update: node=node-a pod=default/nginx phase=Running")
+}
+
+func TestHarborDoesNotLogUnchangedPodStatusUpdate(t *testing.T) {
+	var logs bytes.Buffer
+	restore := minilog.SetOutput(&logs)
+	defer restore()
+	srv := newTestServer()
+	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/pods", `{
+		"kind":"Pod",
+		"apiVersion":"v1",
+		"metadata":{"name":"nginx","namespace":"default"},
+		"spec":{"nodeName":"node-a","containers":[{"name":"nginx","image":"nginx"}]}
+	}`)
+	require.Equal(t, http.StatusCreated, create.Code)
+	list := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-a/pods", "")
+	require.Equal(t, http.StatusOK, list.Code)
+	status := pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.0.2", SandboxID: "sandbox-1"}
+	data, err := json.Marshal(status)
+	require.NoError(t, err)
+
+	first := serve(t, srv, http.MethodPut, "/api/v1/namespaces/default/pods/nginx/status", string(data))
+	require.Equal(t, http.StatusOK, first.Code)
+	second := serve(t, srv, http.MethodPut, "/api/v1/namespaces/default/pods/nginx/status", string(data))
+	require.Equal(t, http.StatusOK, second.Code)
+
+	assert.Equal(t, 1, strings.Count(logs.String(), "pod-status-update: node=node-a pod=default/nginx phase=Running"))
+}
+
+func TestHarborDoesNotLogUnchangedNodeMetricsCount(t *testing.T) {
+	var logs bytes.Buffer
+	restore := minilog.SetOutput(&logs)
+	defer restore()
+	srv := newTestServer()
+	body := `{"items":[{"namespace":"default","name":"nginx","nodeName":"node-a","containers":[{"name":"nginx","usage":{"cpu":"100m","memory":"64Mi"}}]}]}`
+
+	first := serve(t, srv, http.MethodPut, "/api/v1/nodes/node-a/metrics", body)
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	second := serve(t, srv, http.MethodPut, "/api/v1/nodes/node-a/metrics", body)
+	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
+
+	assert.Equal(t, 1, strings.Count(logs.String(), "node-metrics: node=node-a pods=1"))
 }
 
 func TestHarborPodStatusEndpointUpdatesOnlyStatus(t *testing.T) {

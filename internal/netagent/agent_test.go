@@ -58,6 +58,13 @@ func TestAgentRegistersLocalNodeAndSyncsVXLANOverlay(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, registry.registered, 1)
 	assert.Equal(t, "node-a", registry.registered[0].Name)
+	assert.Contains(t, commands, "ip link show mk8s0")
+	assert.Contains(t, commands, "ip addr replace 10.244.0.1/24 dev mk8s0")
+	assert.Contains(t, commands, "ip link set mk8s0 up")
+	assert.Contains(t, commands, "sysctl -w net.ipv4.ip_forward=1")
+	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -i mk8s0 -j ACCEPT")
+	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -o mk8s0 -j ACCEPT")
+	assert.Contains(t, commands, "iptables -t nat -A POSTROUTING -s 10.244.0.0/24 ! -o mk8s0 -j MASQUERADE")
 	assert.Contains(t, commands, "ip link add mk8s-vxlan type vxlan id 42 local 192.168.1.10 dstport 4789")
 	assert.Contains(t, commands, "ip link set mk8s-vxlan master mk8s0")
 	assert.Contains(t, commands, "ip link set mk8s-vxlan up")
@@ -105,7 +112,7 @@ func TestAgentUsesCustomVXLANOptions(t *testing.T) {
 	assert.Contains(t, commands, "bridge fdb append 00:00:00:00:00:00 dev vx-test dst 192.168.1.11")
 }
 
-func TestAgentSkipsOverlaySyncUntilBridgeExists(t *testing.T) {
+func TestAgentCreatesBridgeBeforeOverlaySync(t *testing.T) {
 	registry := &fakeRegistry{
 		nodes: []netregistry.Node{
 			{Name: "node-a", NodeIP: "192.168.1.10", PodCIDR: "10.244.0.0/24"},
@@ -123,6 +130,15 @@ func TestAgentSkipsOverlaySyncUntilBridgeExists(t *testing.T) {
 			if name == "ip" && strings.Join(args, " ") == "link show mk8s0" {
 				return assert.AnError
 			}
+			if name == "ip" && strings.Join(args, " ") == "link show mk8s-vxlan" {
+				return assert.AnError
+			}
+			if name == "iptables" && len(args) > 3 && args[2] == "-C" {
+				return assert.AnError
+			}
+			if name == "bridge" && len(args) > 2 && args[1] == "fdb" && args[2] == "delete" {
+				return errNoFDBEntry
+			}
 			return nil
 		},
 	})
@@ -132,11 +148,11 @@ func TestAgentSkipsOverlaySyncUntilBridgeExists(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, registry.registered, 1)
 	assert.Contains(t, commands, "ip link show mk8s0")
-	for _, command := range commands {
-		assert.NotContains(t, command, "ip link add mk8s-vxlan")
-		assert.NotContains(t, command, "ip route replace 10.244.1.0/24 dev mk8s0")
-		assert.NotContains(t, command, "bridge fdb append")
-	}
+	assert.Contains(t, commands, "ip link add mk8s0 type bridge")
+	assert.Contains(t, commands, "ip addr replace 10.244.0.1/24 dev mk8s0")
+	assert.Contains(t, commands, "ip link add mk8s-vxlan type vxlan id 42 local 192.168.1.10 dstport 4789")
+	assert.Contains(t, commands, "ip route replace 10.244.1.0/24 dev mk8s0")
+	assert.Contains(t, commands, "bridge fdb append 00:00:00:00:00:00 dev mk8s-vxlan dst 192.168.1.11")
 }
 
 func TestAgentSkipsLocalAndInvalidRemoteNodes(t *testing.T) {

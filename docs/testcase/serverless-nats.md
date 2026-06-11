@@ -1,8 +1,8 @@
 # Serverless / NATS 测试用例
 
 本文档覆盖当前 Serverless 最小闭环：Function YAML/API/CLI、HTTP invoke、EventTrigger
-对象、Workflow 对象、NATS publish 辅助命令。默认 `bridge` 会启动一个私有本地
-`sailer`，由该内部 worker 运行包含 NATS 的依赖 Pod，并在进程内设置
+对象、Workflow 对象、NATS publish 辅助命令。启用 `serverless` addon 后，
+`bridge` 会启动一个私有本地 `sailer`，由该内部 worker 运行包含 NATS 的依赖 Pod，并在进程内设置
 `MINIK8S_NATS_URL=nats://127.0.0.1:4222`。bridge 在设置该变量时会订阅
 EventTrigger subject 并触发对应 Function。
 
@@ -12,11 +12,12 @@ EventTrigger subject 并触发对应 Function。
 
 ```bash
 make build
-./minik8s bridge --listen :18080
+./minik8s init --force
+./minik8s bridge --listen :18080 --addons dns,metrics,serverless
 export MINIK8S_HARBOR=http://127.0.0.1:18080
 ```
 
-`bridge` 默认会自己启动 NATS。另一个终端如果要运行 `doctor serverless` 或
+启用 `serverless` addon 后，`bridge` 会自己启动 NATS。另一个终端如果要运行 `doctor serverless` 或
 `publish`，需要显式设置同一个地址：
 
 ```bash
@@ -24,7 +25,8 @@ export MINIK8S_NATS_URL=nats://127.0.0.1:4222
 export MINIK8S_HARBOR=http://127.0.0.1:18080
 ```
 
-如需使用外部 NATS，可在启动 `bridge --deps none` 前设置 `MINIK8S_NATS_URL`。
+如需使用外部 NATS，可在启动 `bridge --addons dns,metrics,serverless` 前设置
+`MINIK8S_NATS_URL`。
 
 ## SL-01：Function CRUD 与 HTTP invoke
 

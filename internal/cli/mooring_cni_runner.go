@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -19,19 +21,31 @@ type MooringCNIRunner interface {
 type MooringCNIOptions struct {
 	Node       *node.Node
 	ConfigMap  *k8scompat.ConfigMap
+	DaemonSet  *k8scompat.DaemonSet
 	CNIBinDir  string
 	CNIConfDir string
 }
 
-type LocalMooringCNIRunner struct{}
+type LocalMooringCNIRunner struct {
+	Run func(ctx context.Context, name string, args ...string) error
+}
 
 func (r LocalMooringCNIRunner) Ensure(ctx context.Context, options MooringCNIOptions) error {
-	_ = ctx
 	if options.Node == nil {
 		return fmt.Errorf("node is required")
 	}
 	if options.ConfigMap == nil {
 		return fmt.Errorf("mooring cni configmap is required")
+	}
+	if options.DaemonSet == nil {
+		return fmt.Errorf("mooring cni daemonset is required")
+	}
+	image := mooringCNIPluginImage(options.DaemonSet)
+	if image == "" {
+		return fmt.Errorf("mooring cni daemonset image is incomplete")
+	}
+	if err := installMooringCNIPlugin(ctx, r.Run, image, options.CNIBinDir); err != nil {
+		return err
 	}
 	conf, err := mooringCNIConfigFromConfigMap(options.ConfigMap)
 	if err != nil {
@@ -48,6 +62,39 @@ func (r LocalMooringCNIRunner) Ensure(ctx context.Context, options MooringCNIOpt
 	conf.Gateway = gateway
 	_, err = writeCNIConfigTo(conf, options.CNIBinDir, options.CNIConfDir)
 	return err
+}
+
+func installMooringCNIPlugin(ctx context.Context, run func(context.Context, string, ...string) error, image, cniBinDir string) error {
+	if err := os.MkdirAll(cniBinDir, 0o755); err != nil {
+		return err
+	}
+	cniBinDir, err := filepath.Abs(cniBinDir)
+	if err != nil {
+		return err
+	}
+	if run == nil {
+		run = runCommand
+	}
+	if err := run(ctx, "docker", "run", "--rm",
+		"-v", cniBinDir+":/opt/cni/bin",
+		"--entrypoint", "cp",
+		image,
+		"-f", "/mooring", "/opt/cni/bin/mooring"); err != nil {
+		return fmt.Errorf("installing mooring cni plugin: %w", err)
+	}
+	return nil
+}
+
+func mooringCNIPluginImage(ds *k8scompat.DaemonSet) string {
+	if ds == nil {
+		return ""
+	}
+	for _, c := range ds.Spec.Template.Spec.InitContainers {
+		if c.Name == "install-cni-plugin" {
+			return c.Image
+		}
+	}
+	return ""
 }
 
 func mooringCNIConfigFromConfigMap(cm *k8scompat.ConfigMap) (cniInitPluginConfig, error) {

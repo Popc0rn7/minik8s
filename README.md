@@ -22,6 +22,10 @@ Service 转发和控制面状态恢复。
 - CNI bridge 插件、host-local IPAM、Pod IP 分配、同节点通信。
 - 基于 Node YAML 的节点心跳、Ready/Unknown 状态、控制面 PodCIDR 分配。
 - `sailer` 自动写入本机 CNI 配置，并同步 VXLAN/host-gw 风格的跨节点路由。
+- `manifest/cni/mooring.yaml` 可用 ConfigMap + DaemonSet 兼容对象声明自研 CNI，
+  `sailer` 会通过 `mooring-cni` 安装镜像落地 `/opt/cni/bin/mooring`。
+- `minik8s doctor network` 可检查本机 CNI 状态；`minik8s doctor clean` 可清理
+  mooring bridge、VXLAN、iptables 规则和本地 IPAM 文件。
 - Service `ClusterIP` 和 `NodePort` 对象、selector endpoints、简单负载均衡。
 - 节点本地 kube-proxy 逻辑随 `sailer` 同步 iptables 规则，可用
   `--proxy-disabled` 在无 root/iptables 环境下关闭数据面规则。
@@ -94,21 +98,21 @@ cp .env.example .env
 ```
 
 初始化本地启动文件。该命令只写入 `.minik8s/` 下的状态目录、DNS 配置和
-static pod manifests，不启动进程。默认生成核心 `storage-etcd` 以及 `dns`、
-`metrics` addon manifests：
+static pod manifests，不启动进程。它会生成核心 `storage-etcd` 以及 `dns`、
+`metrics`、`serverless` addon manifests；实际启动哪些 addon 由后续
+`bridge --addons` 决定：
 
 ```bash
 ./minik8s init
 ```
 
 启动控制面。默认 `bridge` 会先读取 `.minik8s/manifests/` 下的 `storage-etcd.yaml`
-以及启用 addon 的 manifests，通过私有本地 `sailer` 启动依赖 Pod，然后再启动
-Harbor API：
+并通过私有本地 `sailer` 启动核心依赖 Pod，然后再启动 Harbor API。默认不启用
+addon；需要 DNS、metrics 或 serverless 时显式传 `--addons`：
 
 ```bash
 ./minik8s bridge \
   --listen :18080 \
-  --addons dns,metrics \
   --cluster-cidr 10.244.0.0/16 \
   --node-cidr-mask-size 24
 ```
@@ -144,11 +148,13 @@ Harbor API：
 
 CNI 和 kube-proxy 需要 Linux network namespace、`ip`、`bridge`、`iptables`、
 `nsenter` 和通常的 root 权限。只演示控制面对象和 Pod lifecycle 时，可以使用
-`MINIK8S_CNI_DISABLED=1` 或 `sailer --proxy-disabled` 降低环境要求。
+`MINIK8S_CNI_DISABLED=1` 或 `sailer --proxy-disabled` 降低环境要求。网络实验后
+可用 `./minik8s doctor clean` 清理 mooring 相关本地网络状态。
 
 ## 双机与 etcd 演示
 
-双机公共流程见 [docs/testcase/two-node.md](docs/testcase/two-node.md)。主路径是：
+远程服务器部署流程见 [docs/deploy.md](docs/deploy.md)。双机公共验收流程见
+[docs/testcase/two-node.md](docs/testcase/two-node.md)。主路径是：
 
 1. 在 node-a 启动 `bridge --listen :18080`。
 2. 在 node-a/node-b 分别用对应 `manifest/node/*.yaml` 启动 `sailer`。
@@ -159,13 +165,10 @@ CNI 和 kube-proxy 需要 Linux network namespace、`ip`、`bridge`、`iptables`
 etcd/Logbook 流程见 [docs/testcase/logbook.md](docs/testcase/logbook.md) 和
 [docs/testcase/startup.md](docs/testcase/startup.md)。默认 `bridge` 会启动一个
 私有本地 `sailer`，由该内部 worker 运行 static deps pod manifests 中的
-etcd/NATS 依赖 Pod，并把控制面连接到 `http://127.0.0.1:2379` 和
-`nats://127.0.0.1:4222`。如果没有先运行 `init`，`bridge` 会回退到内置默认 deps
-Pod 模板。如果只想使用本地 JSON file store，可启动：
-
-```bash
-./minik8s bridge --listen :18080 --deps none
-```
+`storage-etcd` 以及启用的 addon Pod，并把控制面连接到
+`http://127.0.0.1:2379`。只有启用 `serverless` addon 时，bridge 才会同时设置
+`nats://127.0.0.1:4222`。如果没有先运行 `init`，`bridge` 会回退到内置
+`storage-etcd` 模板；启用 addon 时应先运行 `init` 生成对应 manifests。
 
 默认 etcd 模式下，Pod、Service、ReplicaSet、Node 会写入 `/registry/...` 前缀。
 

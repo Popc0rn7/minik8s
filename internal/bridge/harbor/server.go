@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -346,6 +347,7 @@ func (s *Server) handleNetRegistryNodes(w http.ResponseWriter, r *http.Request) 
 			writeStatus(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("decode node: %v", err))
 			return
 		}
+		changed := s.netNodeRegistrationChanged(n)
 		if err := s.netRegistry.Register(n); err != nil {
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
@@ -357,11 +359,22 @@ func (s *Server) handleNetRegistryNodes(w http.ResponseWriter, r *http.Request) 
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
-		minilog.Info("net-node-register", "node=%s nodeIP=%s podCIDR=%s", n.Name, n.NodeIP, n.PodCIDR)
+		if changed {
+			minilog.Info("net-node-register", "node=%s nodeIP=%s podCIDR=%s", n.Name, n.NodeIP, n.PodCIDR)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 	}
+}
+
+func (s *Server) netNodeRegistrationChanged(n netregistry.Node) bool {
+	for _, existing := range s.netRegistry.List() {
+		if existing.Name == n.Name {
+			return existing.NodeIP != n.NodeIP || existing.PodCIDR != n.PodCIDR
+		}
+	}
+	return true
 }
 
 func (s *Server) handlePods(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
@@ -908,6 +921,7 @@ func (s *Server) handlePodStatus(w http.ResponseWriter, r *http.Request, namespa
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
+	statusChanged := !podStatusLogEqual(existing.Status, status)
 	existing.Status = status
 	if err := s.pods.Update(existing); err != nil {
 		writeStoreError(w, err, "pods", name)
@@ -921,8 +935,16 @@ func (s *Server) handlePodStatus(w http.ResponseWriter, r *http.Request, namespa
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	minilog.Info("pod-status-update", "node=%s pod=%s/%s phase=%s", existing.Spec.NodeName, existing.Namespace, existing.Name, existing.Status.Phase)
+	if statusChanged {
+		minilog.Info("pod-status-update", "node=%s pod=%s/%s phase=%s", existing.Spec.NodeName, existing.Namespace, existing.Name, existing.Status.Phase)
+	}
 	writeJSON(w, http.StatusOK, existing)
+}
+
+func podStatusLogEqual(left, right pod.PodStatus) bool {
+	leftCopy := left.DeepCopy()
+	rightCopy := right.DeepCopy()
+	return reflect.DeepEqual(leftCopy, rightCopy)
 }
 
 func (s *Server) handleServices(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
@@ -1566,12 +1588,25 @@ func (s *Server) handleNodeMetrics(w http.ResponseWriter, r *http.Request, nodeN
 		writeStatus(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("decode metrics: %v", err))
 		return
 	}
+	metricsCountChanged := s.nodeMetricsCount(nodeName) != len(list.Items)
 	if err := s.metrics.UpsertNodeMetrics(nodeName, list.Items); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	minilog.Info("node-metrics", "node=%s pods=%d", nodeName, len(list.Items))
+	if metricsCountChanged {
+		minilog.Info("node-metrics", "node=%s pods=%d", nodeName, len(list.Items))
+	}
 	writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("metrics for node %q updated", nodeName))
+}
+
+func (s *Server) nodeMetricsCount(nodeName string) int {
+	count := 0
+	for _, item := range s.metrics.ListPodMetrics("") {
+		if item != nil && item.NodeName == nodeName {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *Server) handleMetricsPods(w http.ResponseWriter, r *http.Request) {

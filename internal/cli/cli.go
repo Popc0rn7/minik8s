@@ -535,7 +535,7 @@ func (a *App) publishNATS(ctx context.Context, subject, data string, out io.Writ
 
 func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: minik8s doctor docker|network|logbook|serverless|addons|addon <name>")
+		return fmt.Errorf("usage: minik8s doctor docker|network|clean|logbook|serverless|addons|addon <name>")
 	}
 	if args[0] == "addons" {
 		return a.doctorAddons(out, knownAddons...)
@@ -553,6 +553,9 @@ func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 	if args[0] == "network" {
 		return a.doctorNetwork(out)
 	}
+	if args[0] == "clean" {
+		return a.doctorClean(ctx, out)
+	}
 	if args[0] == "logbook" {
 		return a.doctorLogbook(ctx, out)
 	}
@@ -560,7 +563,7 @@ func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 		return a.doctorServerless(ctx, out)
 	}
 	if args[0] != "docker" {
-		return fmt.Errorf("usage: minik8s doctor docker|network|logbook|serverless|addons|addon <name>")
+		return fmt.Errorf("usage: minik8s doctor docker|network|clean|logbook|serverless|addons|addon <name>")
 	}
 	minilog.Info("doctor-docker", "start args=%v", args)
 	endpoint := dockerruntime.ResolveDockerEndpoint()
@@ -628,7 +631,7 @@ func addonReadiness(name AddonName) (string, string) {
 	path := addonManifestPath(name)
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
-			return "disabled", fmt.Sprintf("manifest missing; run minik8s init --addons %s", name)
+			return "disabled", "manifest missing; run minik8s init --force"
 		}
 		return "degraded", err.Error()
 	}
@@ -729,6 +732,125 @@ func (a *App) doctorNetwork(out io.Writer) error {
 	} else {
 		return err
 	}
+}
+
+func (a *App) doctorClean(ctx context.Context, out io.Writer) error {
+	conf, _ := readCNIDoctorConfig()
+	bridgeName := conf.Bridge
+	if bridgeName == "" {
+		bridgeName = "mk8s0"
+	}
+	runner := a.netRunner
+	if runner == nil {
+		runner = func(name string, args ...string) error {
+			cmd := exec.CommandContext(ctx, name, args...)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		}
+	}
+	clean := networkCleaner{runner: runner}
+	for _, route := range conf.Routes {
+		if route.Dst == "" {
+			continue
+		}
+		if conf.PodCIDR != "" {
+			if err := clean.iptables("nat", "POSTROUTING", "-s", conf.PodCIDR, "-d", route.Dst, "-j", "ACCEPT"); err != nil {
+				return err
+			}
+			if err := clean.iptables("filter", "FORWARD", "-s", conf.PodCIDR, "-d", route.Dst, "-j", "ACCEPT"); err != nil {
+				return err
+			}
+			if err := clean.iptables("filter", "FORWARD", "-s", route.Dst, "-d", conf.PodCIDR, "-j", "ACCEPT"); err != nil {
+				return err
+			}
+		}
+		if err := clean.run("ip", "route", "delete", route.Dst, "dev", bridgeName); err != nil {
+			return err
+		}
+	}
+	if conf.PodCIDR != "" {
+		if err := clean.iptables("nat", "POSTROUTING", "-s", conf.PodCIDR, "!", "-o", bridgeName, "-j", "MASQUERADE"); err != nil {
+			return err
+		}
+	}
+	if err := clean.iptables("filter", "FORWARD", "-i", bridgeName, "-j", "ACCEPT"); err != nil {
+		return err
+	}
+	if err := clean.iptables("filter", "FORWARD", "-o", bridgeName, "-j", "ACCEPT"); err != nil {
+		return err
+	}
+	if err := clean.run("ip", "link", "delete", "mk8s-vxlan"); err != nil {
+		return err
+	}
+	if err := clean.run("ip", "link", "delete", bridgeName); err != nil {
+		return err
+	}
+	if conf.IPAM.StatePath != "" {
+		if err := removeIfExists(conf.IPAM.StatePath); err != nil {
+			return err
+		}
+	}
+	if err := removeIfExists(filepath.Join(DefaultCNIConfDir(), "10-mooring.conf")); err != nil {
+		return err
+	}
+	return writes(out, cliui.SuccessLine("network cleanup complete bridge=%s", bridgeName))
+}
+
+type networkCleaner struct {
+	runner netagent.Runner
+}
+
+func (c networkCleaner) iptables(table, chain string, rule ...string) error {
+	args := append([]string{"-t", table, "-D", chain}, rule...)
+	return c.run("iptables", args...)
+}
+
+func (c networkCleaner) run(name string, args ...string) error {
+	err := c.runner(name, args...)
+	if err == nil || isNetworkCleanupMissing(err) {
+		return nil
+	}
+	return err
+}
+
+func isNetworkCleanupMissing(err error) bool {
+	msg := err.Error()
+	missing := []string{
+		"No such file or directory",
+		"Cannot find device",
+		"does a matching rule exist",
+		"No chain/target/match by that name",
+		"RTNETLINK answers: No such process",
+		"not found",
+	}
+	for _, marker := range missing {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func readCNIDoctorConfig() (cniDoctorConfig, error) {
+	var conf cniDoctorConfig
+	data, err := os.ReadFile(filepath.Join(DefaultCNIConfDir(), "10-mooring.conf"))
+	if err != nil {
+		return conf, err
+	}
+	if err := json.Unmarshal(data, &conf); err != nil {
+		return conf, err
+	}
+	return conf, nil
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 type cniDoctorRoute struct {
@@ -842,7 +964,6 @@ func routeInstalled(dst, gw string) bool {
 
 type initOptions struct {
 	force             bool
-	addons            addonSet
 	dnsListenPort     int32
 	ingressListenPort int32
 }
@@ -866,20 +987,17 @@ func (a *App) initialize(ctx context.Context, args []string, out io.Writer) erro
 	if err := os.MkdirAll(dnsDir, 0o755); err != nil {
 		return fmt.Errorf("creating dns config dir: %w", err)
 	}
-	if options.addons.Enabled(AddonDNS) {
-		if err := writeDNSGatewayConfigs(DefaultCoreDNSCorefilePath(), DefaultNginxDNSConfigPath()); err != nil {
-			return fmt.Errorf("writing dns gateway config: %w", err)
-		}
-		if err := writeTextFile(DefaultDNSHostsPath(), "# generated by minik8s dns-sync\n"); err != nil {
-			return fmt.Errorf("initializing dns hosts: %w", err)
-		}
-		if err := writeTextFile(DefaultDNSRoutesPath(), "{\"hosts\":[]}\n"); err != nil {
-			return fmt.Errorf("initializing dns routes: %w", err)
-		}
+	if err := writeDNSGatewayConfigs(DefaultCoreDNSCorefilePath(), DefaultNginxDNSConfigPath()); err != nil {
+		return fmt.Errorf("writing dns gateway config: %w", err)
+	}
+	if err := writeTextFile(DefaultDNSHostsPath(), "# generated by minik8s dns-sync\n"); err != nil {
+		return fmt.Errorf("initializing dns hosts: %w", err)
+	}
+	if err := writeTextFile(DefaultDNSRoutesPath(), "{\"hosts\":[]}\n"); err != nil {
+		return fmt.Errorf("initializing dns routes: %w", err)
 	}
 	if err := writeBridgeStaticPodManifests(initManifestOptions{
 		Force:             options.force,
-		Addons:            options.addons,
 		EtcdDir:           etcdDir,
 		DNSDir:            dnsDir,
 		DNSListenPort:     options.dnsListenPort,
@@ -891,25 +1009,15 @@ func (a *App) initialize(ctx context.Context, args []string, out io.Writer) erro
 	if err := writes(out, cliui.SuccessLine("static pod manifests initialized at %s", DefaultStaticPodDir())); err != nil {
 		return err
 	}
-	return writes(out, cliui.InfoLine("next: ./minik8s bridge --listen :18080 --addons %s", options.addons.String()))
+	return writes(out, cliui.InfoLine("next: ./minik8s bridge --listen :18080"))
 }
 
 func parseInitOptions(args []string) (initOptions, error) {
-	options := initOptions{addons: defaultAddonSet(), dnsListenPort: 53, ingressListenPort: 80}
+	options := initOptions{dnsListenPort: 53, ingressListenPort: 80}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--force":
 			options.force = true
-		case "--addons":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("missing value for --addons")
-			}
-			addons, err := parseAddonSet(args[i])
-			if err != nil {
-				return options, err
-			}
-			options.addons = addons
 		case "--dns-listen":
 			i++
 			if i >= len(args) {
@@ -939,7 +1047,6 @@ func parseInitOptions(args []string) (initOptions, error) {
 
 type initManifestOptions struct {
 	Force             bool
-	Addons            addonSet
 	EtcdDir           string
 	DNSDir            string
 	DNSListenPort     int32
@@ -951,7 +1058,7 @@ func writeBridgeStaticPodManifests(options initManifestOptions) error {
 		return fmt.Errorf("creating static pod manifest dir: %w", err)
 	}
 	paths := []string{DefaultStorageManifestPath()}
-	for _, addon := range options.Addons.Names() {
+	for _, addon := range knownAddons {
 		paths = append(paths, addonManifestPath(addon))
 	}
 	if !options.Force {
@@ -966,7 +1073,7 @@ func writeBridgeStaticPodManifests(options initManifestOptions) error {
 	if err := writePodManifestFile(DefaultStorageManifestPath(), bootstrap.StoragePod(options.EtcdDir)); err != nil {
 		return err
 	}
-	for _, addon := range options.Addons.Names() {
+	for _, addon := range knownAddons {
 		if err := writePodManifestFile(addonManifestPath(addon), addonPodTemplate(addon, options)); err != nil {
 			return err
 		}
@@ -1419,7 +1526,6 @@ func parseNetDOptions(args []string) (netDOptions, error) {
 
 type bridgeOptions struct {
 	listen                 string
-	deps                   string
 	serviceSyncInterval    time.Duration
 	dnsSyncInterval        time.Duration
 	replicaSetSyncInterval time.Duration
@@ -1431,11 +1537,6 @@ type bridgeOptions struct {
 	dnsListenPort          int32
 	ingressListenPort      int32
 }
-
-const (
-	bridgeDepsInternal = "internal"
-	bridgeDepsNone     = "none"
-)
 
 func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	options, err := parseBridgeOptions(args)
@@ -1487,17 +1588,6 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return err
 	}
-}
-
-func BridgeDependencyMode(args []string) (string, error) {
-	if len(args) == 0 || args[0] != "bridge" {
-		return bridgeDepsNone, nil
-	}
-	options, err := parseBridgeOptions(args[1:])
-	if err != nil {
-		return "", err
-	}
-	return options.deps, nil
 }
 
 func BridgeAddons(args []string) (addonSet, error) {
@@ -1603,7 +1693,7 @@ func StartBridgeDependencies(ctx context.Context, args []string, out io.Writer) 
 		cleanup()
 		return func() {}, err
 	}
-	if err := waitForBridgeDependencyPorts(runCtx, errCh, options, 45*time.Second); err != nil {
+	if err := waitForBridgeDependenciesReady(runCtx, errCh, options, 45*time.Second); err != nil {
 		cleanup()
 		return func() {}, err
 	}
@@ -1642,7 +1732,7 @@ func readRequiredAddonManifest(addon AddonName) (*pod.Pod, error) {
 	p, err := readStaticPodManifest(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("addon %s manifest %s is missing; run minik8s init --addons %s", addon, path, addon)
+			return nil, fmt.Errorf("addon %s manifest %s is missing; run minik8s init --force", addon, path)
 		}
 		return nil, err
 	}
@@ -1749,13 +1839,15 @@ func ensureBridgeDependencyPortsFree(options bridgeOptions) error {
 	return nil
 }
 
-func waitForBridgeDependencyPorts(ctx context.Context, errCh <-chan error, options bridgeOptions, timeout time.Duration) error {
+var bridgeDependencyEtcdProbe = store.Probe
+
+func waitForBridgeDependenciesReady(ctx context.Context, errCh <-chan error, options bridgeOptions, timeout time.Duration) error {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		ready := tcpPortReady("127.0.0.1:2379")
+		ready := etcdDependencyReady(ctx)
 		if options.addons.Enabled(AddonServerless) {
 			ready = ready && tcpPortReady("127.0.0.1:4222")
 		}
@@ -1774,10 +1866,16 @@ func waitForBridgeDependencyPorts(ctx context.Context, errCh <-chan error, optio
 			}
 			return fmt.Errorf("private bridge dependency sailer stopped")
 		case <-deadline.C:
-			return fmt.Errorf("timed out waiting for bridge dependency ports for addons %s", options.addons.String())
+			return fmt.Errorf("timed out waiting for bridge dependencies for addons %s", options.addons.String())
 		case <-ticker.C:
 		}
 	}
+}
+
+func etcdDependencyReady(ctx context.Context) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	return bridgeDependencyEtcdProbe(probeCtx, []string{"http://127.0.0.1:2379"}) == nil
 }
 
 func tcpPortReady(address string) bool {
@@ -1790,7 +1888,7 @@ func tcpPortReady(address string) bool {
 }
 
 func parseBridgeOptions(args []string) (bridgeOptions, error) {
-	options := bridgeOptions{listen: ":8080", deps: bridgeDepsInternal, addons: defaultAddonSet(), serviceSyncInterval: 5 * time.Second, dnsSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24, gatewayIP: "127.0.0.1", dnsListenPort: 53, ingressListenPort: 80}
+	options := bridgeOptions{listen: ":8080", addons: defaultAddonSet(), serviceSyncInterval: 5 * time.Second, dnsSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24, gatewayIP: "127.0.0.1", dnsListenPort: 53, ingressListenPort: 80}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -1799,17 +1897,6 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 				return options, fmt.Errorf("missing value for --listen")
 			}
 			options.listen = args[i]
-		case "--deps":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("missing value for --deps")
-			}
-			switch args[i] {
-			case bridgeDepsInternal, bridgeDepsNone:
-				options.deps = args[i]
-			default:
-				return options, fmt.Errorf("invalid --deps %q: must be internal or none", args[i])
-			}
 		case "--addons":
 			i++
 			if i >= len(args) {
@@ -2257,6 +2344,10 @@ func (a *App) ensureMooringCNIIfApplied(ctx context.Context, harborURL string, a
 		}
 		return false, err
 	}
+	ds, err := client.GetDaemonSet(ctx, k8scompat.MooringCNIDaemonSet, k8scompat.MooringCNINamespace)
+	if err != nil {
+		return false, err
+	}
 	runner := a.mooringCNIRunner
 	if runner == nil {
 		runner = LocalMooringCNIRunner{}
@@ -2264,6 +2355,7 @@ func (a *App) ensureMooringCNIIfApplied(ctx context.Context, harborURL string, a
 	if err := runner.Ensure(ctx, MooringCNIOptions{
 		Node:       assignedNode,
 		ConfigMap:  cm,
+		DaemonSet:  ds,
 		CNIBinDir:  DefaultCNIBinDir(),
 		CNIConfDir: DefaultCNIConfDir(),
 	}); err != nil {
@@ -2336,6 +2428,9 @@ func (a *App) sailerNetworkAgent(options sailerOptions) (*netagent.Agent, error)
 }
 
 func runSailerWithNetwork(ctx context.Context, k *nodeSailer.Sailer, agent *netagent.Agent, interval time.Duration) error {
+	if err := agent.Sync(ctx); err != nil {
+		return err
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errCh := make(chan error, 2)

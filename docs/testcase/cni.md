@@ -139,13 +139,16 @@ sleep 8
 
 ```bash
 cat /etc/cni/net.d/10-mooring.conf
+ls -l /opt/cni/bin/mooring
 ./minik8s doctor network
 ```
 
 期望：
 
 - `kubectl apply` 输出 `namespace/kube-mooring accepted`、
-  `configmap/mooring-cni-cfg created`。
+  `configmap/mooring-cni-cfg created`、`daemonset/mooring-cni-ds created`。
+- `sailer` 已通过 `ghcr.io/popc0rn7/mooring-cni:latest` 安装
+  `/opt/cni/bin/mooring`。
 - node-a 的 `10-mooring.conf` 中 `type` 为 `mooring`，`podCIDR` 为
   `10.244.0.0/24`，`gateway` 为 `10.244.0.1`。
 - node-b 的 `10-mooring.conf` 中 `type` 为 `mooring`，`podCIDR` 为
@@ -154,7 +157,8 @@ cat /etc/cni/net.d/10-mooring.conf
 
 失败排查：
 
-- 没有生成 `10-mooring.conf`：确认 ConfigMap 名称是 `kube-mooring/mooring-cni-cfg`。
+- 没有生成 `10-mooring.conf`：确认 ConfigMap 名称是 `kube-mooring/mooring-cni-cfg`，
+  DaemonSet 名称是 `kube-mooring/mooring-cni-ds`，且节点能拉取 mooring-cni 镜像。
 - `type` 不是 `mooring`：检查 ConfigMap 的 `data.cni-conf.json`。
 - PodCIDR 为空或错误：确认 `kubectl get nodes` 已显示节点 PodCIDR，且 `sailer` 使用的是正确
   Node YAML。
@@ -373,6 +377,12 @@ sleep 8
 ```bash
 docker ps -a --filter label=minik8s.pod.namespace=default
 cat .minik8s/state/cni-ipam.json 2>/dev/null || true
+```
+
+如需清理 mooring 网络设备、iptables 规则和 IPAM 状态，在每台 worker 上执行：
+
+```bash
+./minik8s doctor clean
 ```
 
 ## 快速排查索引

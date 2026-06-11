@@ -16,6 +16,7 @@ const (
 
 	MooringCNINamespace = "kube-mooring"
 	MooringCNIConfigMap = "mooring-cni-cfg"
+	MooringCNIDaemonSet = "mooring-cni-ds"
 )
 
 type GenericObject struct {

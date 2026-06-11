@@ -3,8 +3,7 @@
 本文档从 0 开始验证 Logbook 控制面状态存储。默认 `bridge` 会启动一个私有本地
 `sailer`，由该内部 worker 运行包含 etcd 的依赖 Pod，并把公开控制面连接到
 `http://127.0.0.1:2379`。Pod、Service、ReplicaSet、Node 都使用真实 etcd 作为状态源。
-如果启动 `bridge --deps none`，且未设置 `MINIK8S_LOGBOOK_ENDPOINTS`，则回退本地 JSON
-file store。node-b worker 不直连 etcd，只访问 Harbor。
+node-b worker 不直连 etcd，只访问 Harbor。
 
 ## 测试模型
 
@@ -38,7 +37,7 @@ export MINIK8S_HARBOR=${HARBOR}
 ```
 
 node-a 默认不需要手动设置 etcd endpoint；`bridge` 会在内部依赖 Pod ready 后设置进程内默认值。
-如果要连接已有外部 etcd，可在启动 `bridge --deps none` 前显式设置：
+如果要连接已有外部 etcd，可在启动 `bridge` 前显式设置：
 
 ```bash
 export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379

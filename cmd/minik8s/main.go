@@ -86,11 +86,7 @@ func loadRuntimeConfig(path string) error {
 type bridgeDependencyStarter func(context.Context, []string, io.Writer) (func(), error)
 
 func prepareBridgeDependencies(ctx context.Context, args []string, out io.Writer, starter bridgeDependencyStarter) (func(), error) {
-	mode, err := cli.BridgeDependencyMode(args)
-	if err != nil {
-		return func() {}, err
-	}
-	if mode != "internal" {
+	if len(args) == 0 || args[0] != "bridge" {
 		return func() {}, nil
 	}
 	cleanup, err := starter(ctx, args, out)

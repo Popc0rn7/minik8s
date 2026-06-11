@@ -1,7 +1,9 @@
 package sailer
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	store "minik8s/internal/bridge/logbook"
+	"minik8s/internal/minilog"
 	"minik8s/internal/pod"
 	"minik8s/pkg/runtime"
 	"minik8s/test/mock"
@@ -29,6 +32,31 @@ func (m *mockPodNetwork) Add(ctx context.Context, req PodNetworkRequest) (PodNet
 func (m *mockPodNetwork) Del(ctx context.Context, req PodNetworkRequest) error {
 	m.teardownCalls = append(m.teardownCalls, req.SandboxID+"|"+req.NetNSPath)
 	return nil
+}
+
+func TestSyncPodsDoesNotLogSteadyStateReconcileNoise(t *testing.T) {
+	var logs bytes.Buffer
+	restore := minilog.SetOutput(&logs)
+	defer restore()
+	mockRuntime := mock.NewMockRuntime()
+	podStore := store.NewInMemoryPodStore()
+	controller := NewPodController(mockRuntime, podStore)
+	testPod := &pod.Pod{
+		ObjectMeta: pod.ObjectMeta{Name: "quiet", Namespace: "default"},
+		Spec: pod.PodSpec{
+			NodeName:   "node-a",
+			Containers: []pod.ContainerSpec{{Name: "main", Image: "busybox"}},
+		},
+		Status: pod.PodStatus{Phase: pod.PodPending},
+	}
+	require.NoError(t, podStore.Create(testPod.DeepCopy()))
+
+	controller.SyncPods(context.Background(), []*pod.Pod{testPod})
+	controller.SyncPods(context.Background(), []*pod.Pod{testPod})
+
+	assert.NotContains(t, logs.String(), "controller-sync-pods")
+	assert.NotContains(t, logs.String(), "pod-reconcile: pod=default/quiet")
+	assert.Equal(t, 1, strings.Count(logs.String(), "pod-running: pod=default/quiet"))
 }
 
 // MockPodStore is a simple in-memory store for testing

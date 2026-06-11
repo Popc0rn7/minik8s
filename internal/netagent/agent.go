@@ -101,8 +101,8 @@ func (a *Agent) Sync(ctx context.Context) error {
 	if err := a.registry.Register(ctx, a.local); err != nil {
 		return err
 	}
-	if !a.bridgeExists() {
-		return nil
+	if err := a.ensureBridgeDevice(); err != nil {
+		return err
 	}
 	if err := a.ensureVXLANDevice(); err != nil {
 		return err
@@ -151,8 +151,49 @@ func (a *Agent) isRemoteNode(node netregistry.Node) bool {
 	return netregistry.ValidateNode(node) == nil
 }
 
-func (a *Agent) bridgeExists() bool {
-	return a.runner("ip", "link", "show", a.bridgeName) == nil
+func (a *Agent) ensureBridgeDevice() error {
+	if err := a.runner("ip", "link", "show", a.bridgeName); err != nil {
+		if err := a.runner("ip", "link", "add", a.bridgeName, "type", "bridge"); err != nil {
+			return err
+		}
+	}
+	gateway, prefix, err := bridgeGateway(a.local.PodCIDR)
+	if err != nil {
+		return err
+	}
+	if err := a.runner("ip", "addr", "replace", fmt.Sprintf("%s/%d", gateway, prefix), "dev", a.bridgeName); err != nil {
+		return err
+	}
+	if err := a.runner("ip", "link", "set", a.bridgeName, "up"); err != nil {
+		return err
+	}
+	if err := a.runner("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
+		return err
+	}
+	if err := a.ensureIptablesRule("filter", "FORWARD", "-I", []string{"1"}, "-i", a.bridgeName, "-j", "ACCEPT"); err != nil {
+		return err
+	}
+	if err := a.ensureIptablesRule("filter", "FORWARD", "-I", []string{"1"}, "-o", a.bridgeName, "-j", "ACCEPT"); err != nil {
+		return err
+	}
+	return a.ensureIptablesRule("nat", "POSTROUTING", "-A", nil, "-s", a.local.PodCIDR, "!", "-o", a.bridgeName, "-j", "MASQUERADE")
+}
+
+func bridgeGateway(podCIDR string) (string, int, error) {
+	ip, network, err := net.ParseCIDR(podCIDR)
+	if err != nil {
+		return "", 0, err
+	}
+	if ip.To4() == nil {
+		return "", 0, fmt.Errorf("pod CIDR must be IPv4: %s", podCIDR)
+	}
+	ones, bits := network.Mask.Size()
+	if bits != 32 {
+		return "", 0, fmt.Errorf("pod CIDR must be IPv4: %s", podCIDR)
+	}
+	gateway := append(net.IP(nil), network.IP.To4()...)
+	gateway[3]++
+	return gateway.String(), ones, nil
 }
 
 func (a *Agent) syncNode(node netregistry.Node) error {

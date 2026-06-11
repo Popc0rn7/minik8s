@@ -117,12 +117,12 @@ func TestPrepareBridgeDependenciesSetsNATSEnvForServerlessAddon(t *testing.T) {
 	cleanup()
 }
 
-func TestPrepareBridgeDependenciesNoneDoesNotSetEnv(t *testing.T) {
+func TestPrepareBridgeDependenciesSkipsNonBridgeCommands(t *testing.T) {
 	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", "")
 	t.Setenv("MINIK8S_NATS_URL", "")
 	called := false
 
-	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"bridge", "--deps", "none"}, io.Discard, func(context.Context, []string, io.Writer) (func(), error) {
+	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"get", "pods"}, io.Discard, func(context.Context, []string, io.Writer) (func(), error) {
 		called = true
 		return func() {}, nil
 	})

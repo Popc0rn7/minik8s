@@ -110,12 +110,10 @@ func (pc *PodController) Sync(ctx context.Context) {
 // SyncPods reconciles the provided Pods only. Controller uses this after fetching
 // the set of Pods assigned to one node from the API server.
 func (pc *PodController) SyncPods(ctx context.Context, pods []*pod.Pod) {
-	minilog.Info("controller-sync-pods", "count=%d", len(pods))
 	for _, p := range pods {
 		if p == nil {
 			continue
 		}
-		minilog.Info("pod-reconcile", "pod=%s/%s phase=%s", p.Namespace, p.Name, p.Status.Phase)
 		if err := pc.reconcilePod(ctx, p); err != nil {
 			minilog.Error("pod-reconcile", "pod=%s/%s error=%v", p.Namespace, p.Name, err)
 		}
@@ -152,7 +150,6 @@ func (pc *PodController) reconcile(ctx context.Context) {
 	}
 
 	for _, p := range pods {
-		minilog.Info("pod-reconcile", "pod=%s/%s phase=%s", p.Namespace, p.Name, p.Status.Phase)
 		if err := pc.reconcilePod(ctx, p); err != nil {
 			minilog.Error("pod-reconcile", "pod=%s/%s error=%v", p.Namespace, p.Name, err)
 		}
