@@ -23,7 +23,12 @@ func NewReplicaSetController(podStore store.PodStore, replicaSetStore store.Repl
 	}
 }
 
+func (c *ReplicaSetController) Name() string { return ReplicaSetControllerName }
+
 func (c *ReplicaSetController) Sync(ctx context.Context) error {
+	if c.podStore == nil || c.replicaSetStore == nil {
+		return fmt.Errorf("replicaset controller stores are required")
+	}
 	replicaSets, err := c.replicaSetStore.List("", nil)
 	if err != nil {
 		return fmt.Errorf("listing replicasets: %w", err)

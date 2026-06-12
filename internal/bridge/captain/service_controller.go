@@ -24,7 +24,12 @@ func NewServiceController(podStore store.PodStore, serviceStore store.ServiceSto
 	}
 }
 
+func (c *ServiceController) Name() string { return ServiceControllerName }
+
 func (c *ServiceController) Sync(ctx context.Context) error {
+	if c.podStore == nil || c.serviceStore == nil {
+		return fmt.Errorf("service controller stores are required")
+	}
 	services, err := c.serviceStore.List("", nil)
 	if err != nil {
 		return fmt.Errorf("listing services: %w", err)

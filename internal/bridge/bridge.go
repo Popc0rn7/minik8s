@@ -5,9 +5,12 @@ import (
 	"net/http"
 	"time"
 
+	"minik8s/internal/bridge/captain"
 	"minik8s/internal/bridge/harbor"
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/bridge/navigator"
+	"minik8s/internal/minilog"
+	"minik8s/internal/node"
 )
 
 type Config struct {
@@ -46,6 +49,7 @@ type Bridge struct {
 	clusterCIDR        string
 	nodeCIDRMaskSize   int
 	bootstrapTokenPath string
+	controllerRunner   *captain.Runner
 }
 
 func New(config Config) *Bridge {
@@ -118,6 +122,7 @@ func New(config Config) *Bridge {
 		clusterCIDR:        config.ClusterCIDR,
 		nodeCIDRMaskSize:   config.NodeCIDRMaskSize,
 		bootstrapTokenPath: config.BootstrapTokenPath,
+		controllerRunner:   captain.NewRunner(),
 	}
 }
 
@@ -168,6 +173,52 @@ func (k *Bridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 	}).RefreshNodeLiveness(ctx)
 }
 
+func (k *Bridge) RegisterDefaultControllers(serviceInterval, replicaSetInterval, hpaInterval, nodeLivenessInterval time.Duration) {
+	runner := k.ControllerRunner()
+	if serviceInterval > 0 {
+		runner.Register(captain.NewServiceController(k.podStore, k.serviceStore), captain.RunSpec{Interval: serviceInterval, InitialSync: true, SkipIfRunning: true})
+	}
+	if replicaSetInterval > 0 {
+		runner.Register(captain.NewReplicaSetController(k.podStore, k.replicaSetStore), captain.RunSpec{Interval: replicaSetInterval, InitialSync: true, SkipIfRunning: true})
+	}
+	if hpaInterval > 0 {
+		runner.Register(captain.NewHPAController(k.podStore, k.replicaSetStore, k.hpaStore, k.metricsStore, captain.HPAControllerConfig{}), captain.RunSpec{Interval: hpaInterval, InitialSync: true, SkipIfRunning: true})
+	}
+	if nodeLivenessInterval > 0 {
+		runner.Register(captain.ControllerFunc{
+			ControllerName: captain.NodeLivenessName,
+			SyncFunc: func(ctx context.Context) error {
+				transitions, err := k.RefreshNodeLiveness(ctx)
+				if err != nil {
+					return err
+				}
+				for _, transition := range transitions {
+					if transition.To != node.NodeUnknown {
+						continue
+					}
+					minilog.Warn("node-disconnect", "node=%s lastHeartbeat=%s", transition.Name, shortDuration(time.Since(transition.LastHeartbeat)))
+				}
+				return nil
+			},
+		}, captain.RunSpec{Interval: nodeLivenessInterval, InitialSync: true, SkipIfRunning: true})
+	}
+}
+
+func (k *Bridge) StartControllers(ctx context.Context) {
+	k.ControllerRunner().Start(ctx)
+}
+
+func (k *Bridge) RunControllerOnce(ctx context.Context, name string) bool {
+	return k.ControllerRunner().RunOnce(ctx, name)
+}
+
+func (k *Bridge) ControllerRunner() *captain.Runner {
+	if k.controllerRunner == nil {
+		k.controllerRunner = captain.NewRunner()
+	}
+	return k.controllerRunner
+}
+
 func (k *Bridge) PodStore() store.PodStore {
 	return k.podStore
 }
@@ -214,4 +265,14 @@ func (k *Bridge) WorkflowStore() store.WorkflowStore {
 
 func (k *Bridge) NodeTTL() time.Duration {
 	return k.nodeTTL
+}
+
+func shortDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Second {
+		return d.String()
+	}
+	return d.Round(time.Second).String()
 }
