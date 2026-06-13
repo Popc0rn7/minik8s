@@ -10,6 +10,7 @@ type MetricsStore interface {
 	UpsertNodeMetrics(nodeName string, podMetrics []*metrics.PodMetrics) error
 	GetPodMetrics(namespace, name string) (*metrics.PodMetrics, bool)
 	ListPodMetrics(namespace string) []*metrics.PodMetrics
+	DeleteNodeMetrics(nodeName string)
 }
 
 type InMemoryMetricsStore struct {
@@ -58,6 +59,16 @@ func (s *InMemoryMetricsStore) ListPodMetrics(namespace string) []*metrics.PodMe
 		result = append(result, copyPodMetrics(pm))
 	}
 	return result
+}
+
+func (s *InMemoryMetricsStore) DeleteNodeMetrics(nodeName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, pm := range s.metrics {
+		if pm != nil && pm.NodeName == nodeName {
+			delete(s.metrics, key)
+		}
+	}
 }
 
 func copyPodMetrics(pm *metrics.PodMetrics) *metrics.PodMetrics {

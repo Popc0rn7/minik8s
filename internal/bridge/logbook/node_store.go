@@ -23,6 +23,7 @@ type NodeStore interface {
 	Get(name string) (*node.Node, error)
 	List() ([]node.Node, error)
 	ListReady(ttl time.Duration) ([]node.Node, error)
+	Delete(name string) error
 }
 
 type NodeTransition struct {
@@ -106,6 +107,16 @@ func (s *InMemoryNodeStore) ListReady(ttl time.Duration) ([]node.Node, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return filterReadyNodes(sortedNodeValues(s.nodes), s.now(), ttl), nil
+}
+
+func (s *InMemoryNodeStore) Delete(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.nodes[name]; !ok {
+		return ErrNodeNotFound
+	}
+	delete(s.nodes, name)
+	return nil
 }
 
 type FileNodeStore struct {
@@ -213,6 +224,19 @@ func (s *FileNodeStore) ListReady(ttl time.Duration) ([]node.Node, error) {
 		return nil, err
 	}
 	return filterReadyNodes(sortedNodeValues(s.nodes), s.now(), ttl), nil
+}
+
+func (s *FileNodeStore) Delete(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
+	if _, ok := s.nodes[name]; !ok {
+		return ErrNodeNotFound
+	}
+	delete(s.nodes, name)
+	return s.saveLocked()
 }
 
 func (s *FileNodeStore) load() error {
