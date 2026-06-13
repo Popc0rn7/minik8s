@@ -25,34 +25,93 @@ func (c testController) Sync(ctx context.Context) error {
 	return c.sync(ctx)
 }
 
-func TestRunnerRunOnceSkipsConcurrentWork(t *testing.T) {
+func TestRunnerRunOnceSerializesConcurrentWork(t *testing.T) {
 	runner := NewRunner()
 	started := make(chan struct{})
 	release := make(chan struct{})
-	done := make(chan struct{})
+	firstDone := make(chan struct{})
+	secondDone := make(chan struct{})
 	var secondRuns atomic.Int32
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	var secondAttempted atomic.Int32
 	runner.Register(testController{name: "first", sync: func(context.Context) error {
+		current := active.Add(1)
+		maxActive.Store(current)
 		close(started)
 		<-release
+		active.Add(-1)
 		return nil
 	}}, RunSpec{SkipIfRunning: true})
 	runner.Register(testController{name: "second", sync: func(context.Context) error {
+		current := active.Add(1)
+		maxActive.Store(current)
 		secondRuns.Add(1)
+		active.Add(-1)
 		return nil
 	}}, RunSpec{SkipIfRunning: true})
 
 	go func() {
 		assert.True(t, runner.RunOnce(context.Background(), "first"))
-		close(done)
+		close(firstDone)
 	}()
 	<-started
 
-	assert.False(t, runner.RunOnce(context.Background(), "second"))
+	go func() {
+		secondAttempted.Add(1)
+		assert.True(t, runner.RunOnce(context.Background(), "second"))
+		close(secondDone)
+	}()
+	require.Eventually(t, func() bool {
+		return secondAttempted.Load() == 1
+	}, time.Second, time.Millisecond)
 	assert.Equal(t, int32(0), secondRuns.Load())
 	close(release)
-	<-done
-	assert.True(t, runner.RunOnce(context.Background(), "second"))
+	<-firstDone
+	<-secondDone
 	assert.Equal(t, int32(1), secondRuns.Load())
+	assert.Equal(t, int32(1), maxActive.Load())
+}
+
+func TestRunnerCoalescesSameControllerWhileRunning(t *testing.T) {
+	runner := NewRunner()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var runs atomic.Int32
+	runner.Register(testController{name: "coalesced", sync: func(context.Context) error {
+		run := runs.Add(1)
+		if run == 1 {
+			close(started)
+			<-release
+		}
+		return nil
+	}}, RunSpec{SkipIfRunning: true})
+
+	firstDone := make(chan bool)
+	go func() {
+		firstDone <- runner.RunOnce(context.Background(), "coalesced")
+	}()
+	<-started
+
+	done := make(chan bool, 5)
+	var attempted atomic.Int32
+	for i := 0; i < cap(done); i++ {
+		go func() {
+			attempted.Add(1)
+			done <- runner.RunOnce(context.Background(), "coalesced")
+		}()
+	}
+	require.Eventually(t, func() bool {
+		return attempted.Load() == int32(cap(done))
+	}, time.Second, time.Millisecond)
+
+	assert.Equal(t, int32(1), runs.Load())
+	close(release)
+	assert.True(t, <-firstDone)
+	for i := 0; i < cap(done); i++ {
+		assert.True(t, <-done)
+	}
+	assert.Equal(t, int32(2), runs.Load())
 }
 
 func TestRunnerStartRunsInitialAndPeriodicSync(t *testing.T) {
