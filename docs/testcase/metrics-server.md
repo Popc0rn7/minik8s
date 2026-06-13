@@ -22,13 +22,13 @@
 3. 在另一个终端启动至少一个 sailer，并确保 Pod 已被调度到该节点：
 
    ```bash
-   MINIK8S_HARBOR=http://127.0.0.1:18080 ./minik8s sailer manifest/node/node_a.yaml
+   ./minik8s sailer manifest/node/node_a.yaml --harbor http://127.0.0.1:18080
    ```
 
 4. 查看 Metrics API 资源发现：
 
    ```bash
-   MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl api-resources
+   ./kubectl api-resources
    curl http://127.0.0.1:18080/apis/metrics.k8s.io/v1beta1/pods
    curl http://127.0.0.1:18080/apis/metrics.k8s.io/v1beta1/nodes
    ```
@@ -38,8 +38,8 @@
 5. 查看 top：
 
    ```bash
-   MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl top pods
-   MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl top nodes
+   ./kubectl top pods
+   ./kubectl top nodes
    ```
 
    预期：输出 `NAME CPU MEMORY` 表格。没有 sailer metrics 样本时表格为空。

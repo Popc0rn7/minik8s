@@ -60,7 +60,12 @@ func NewHPAController(podStore store.PodStore, replicaSetStore store.ReplicaSetS
 	}
 }
 
+func (c *HPAController) Name() string { return HPAControllerName }
+
 func (c *HPAController) Sync(ctx context.Context) error {
+	if c.podStore == nil || c.replicaSetStore == nil || c.hpaStore == nil || c.metricsStore == nil {
+		return fmt.Errorf("hpa controller stores are required")
+	}
 	hpas, err := c.hpaStore.List("", nil)
 	if err != nil {
 		return fmt.Errorf("listing hpas: %w", err)

@@ -89,6 +89,9 @@ func prepareBridgeDependencies(ctx context.Context, args []string, out io.Writer
 	if len(args) == 0 || args[0] != "bridge" {
 		return func() {}, nil
 	}
+	if len(args) > 1 && args[1] == "token" {
+		return func() {}, nil
+	}
 	cleanup, err := starter(ctx, args, out)
 	if err != nil {
 		return func() {}, err
@@ -118,6 +121,9 @@ func needsDockerRuntime(args []string) bool {
 		return false
 	}
 	if args[0] == "sailer" {
+		if len(args) > 1 && args[1] == "join" {
+			return false
+		}
 		return true
 	}
 	if args[0] == "doctor" && len(args) > 1 && args[1] == "docker" {
@@ -177,16 +183,17 @@ func openStores() (store.PodStore, store.ServiceStore, store.DNSStore, store.Rep
 
 func newBridgeConfig(podStore store.PodStore, serviceStore store.ServiceStore, dnsStore store.DNSStore, replicaSetStore store.ReplicaSetStore, hpaStore store.HPAStore, metricsStore store.MetricsStore, nodeStore store.NodeStore, k8sCompatStore store.K8sCompatStore, functionStore store.FunctionStore, eventTriggerStore store.EventTriggerStore, workflowStore store.WorkflowStore) bridge.Config {
 	return bridge.Config{
-		PodStore:          podStore,
-		ServiceStore:      serviceStore,
-		DNSStore:          dnsStore,
-		ReplicaSetStore:   replicaSetStore,
-		HPAStore:          hpaStore,
-		MetricsStore:      metricsStore,
-		NodeStore:         nodeStore,
-		K8sCompatStore:    k8sCompatStore,
-		FunctionStore:     functionStore,
-		EventTriggerStore: eventTriggerStore,
-		WorkflowStore:     workflowStore,
+		PodStore:           podStore,
+		ServiceStore:       serviceStore,
+		DNSStore:           dnsStore,
+		ReplicaSetStore:    replicaSetStore,
+		HPAStore:           hpaStore,
+		MetricsStore:       metricsStore,
+		NodeStore:          nodeStore,
+		K8sCompatStore:     k8sCompatStore,
+		FunctionStore:      functionStore,
+		EventTriggerStore:  eventTriggerStore,
+		WorkflowStore:      workflowStore,
+		BootstrapTokenPath: cli.DefaultBootstrapTokenPath(),
 	}
 }

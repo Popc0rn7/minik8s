@@ -30,7 +30,6 @@ func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 	if out == nil {
 		out = io.Discard
 	}
-	var server string
 	var namespace string
 
 	root := &cobra.Command{
@@ -44,11 +43,9 @@ func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 	}
 	root.SetOut(out)
 	root.SetErr(out)
-	root.PersistentFlags().StringVar(&server, "server", "", "Harbor API server URL")
 	root.PersistentFlags().StringVarP(&namespace, "namespace", "n", "default", "Namespace for namespaced resources")
 
 	bind := func() {
-		app.server = server
 		app.namespace = namespace
 	}
 
@@ -61,7 +58,6 @@ func NewKubectlCommand(app *App, out io.Writer) *cobra.Command {
 	if out == nil {
 		out = io.Discard
 	}
-	var server string
 	var namespace string
 
 	root := &cobra.Command{
@@ -75,11 +71,9 @@ func NewKubectlCommand(app *App, out io.Writer) *cobra.Command {
 	}
 	root.SetOut(out)
 	root.SetErr(out)
-	root.PersistentFlags().StringVar(&server, "server", "", "Harbor API server URL")
 	root.PersistentFlags().StringVarP(&namespace, "namespace", "n", "default", "Namespace for namespaced resources")
 
 	bind := func() {
-		app.server = server
 		app.namespace = namespace
 	}
 
@@ -91,7 +85,6 @@ func newCompatCommand(app *App, out io.Writer) *cobra.Command {
 	if out == nil {
 		out = io.Discard
 	}
-	var server string
 	var namespace string
 	root := &cobra.Command{
 		Use:           "minik8s",
@@ -104,10 +97,8 @@ func newCompatCommand(app *App, out io.Writer) *cobra.Command {
 	}
 	root.SetOut(out)
 	root.SetErr(out)
-	root.PersistentFlags().StringVar(&server, "server", "", "Harbor API server URL")
 	root.PersistentFlags().StringVarP(&namespace, "namespace", "n", "default", "Namespace for namespaced resources")
 	bind := func() {
-		app.server = server
 		app.namespace = namespace
 	}
 	addKubectlCommands(root, app, out, bind)
@@ -236,8 +227,8 @@ func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete pod|service|dns|replicaset|hpa <name>",
-		Short: "Delete a Pod, Service, DNS, ReplicaSet, or HPA",
+		Use:   "delete pod|service|dns|replicaset|hpa|node <name>",
+		Short: "Delete a Pod, Service, DNS, ReplicaSet, HPA, or Node",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bind()
@@ -266,6 +257,10 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 				if err := app.delete(cmd.Context(), []string{"hpa", ref.name, "-n", app.namespace}, out); err != nil {
 					return err
 				}
+			case resourceNodes:
+				if err := app.delete(cmd.Context(), []string{"node", ref.name}, out); err != nil {
+					return err
+				}
 			case resourceFunctions:
 				if err := app.delete(cmd.Context(), []string{"function", ref.name, "-n", app.namespace}, out); err != nil {
 					return err
@@ -279,7 +274,7 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 					return err
 				}
 			default:
-				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, functions, eventtriggers, and workflows")
+				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, nodes, functions, eventtriggers, and workflows")
 			}
 			return nil
 		},
@@ -555,6 +550,39 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&hpaSyncInterval, "hpa-sync-interval", "", "HPA sync interval")
 	cmd.Flags().StringVar(&clusterCIDR, "cluster-cidr", "", "Cluster CIDR for Node PodCIDR allocation")
 	cmd.Flags().IntVar(&nodeCIDRMaskSize, "node-cidr-mask-size", 0, "Per-node PodCIDR mask size")
+	cmd.AddCommand(newBridgeTokenCommand(app, out))
+	return cmd
+}
+
+func newBridgeTokenCommand(app *App, out io.Writer) *cobra.Command {
+	cmd := &cobra.Command{Use: "token", Short: "Manage the local bridge bootstrap token"}
+	var ttl time.Duration
+	setCmd := &cobra.Command{
+		Use:   "set <token>",
+		Short: "Set the local bridge bootstrap token",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.bridgeTokenSet(args[0], ttl, out)
+		},
+	}
+	setCmd.Flags().DurationVar(&ttl, "ttl", time.Hour, "Bootstrap token lifetime")
+	cmd.AddCommand(setCmd)
+	cmd.AddCommand(&cobra.Command{
+		Use:   "clear",
+		Short: "Clear the local bridge bootstrap token",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.bridgeTokenClear(out)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "status",
+		Short: "Show local bridge bootstrap token status",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.bridgeTokenStatus(out)
+		},
+	})
 	return cmd
 }
 
@@ -602,6 +630,58 @@ func newSailerCommand(app *App, out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&vxlanName, "vxlan-name", "", "VXLAN device name")
 	cmd.Flags().BoolVar(&once, "once", false, "Run one sync and exit")
 	cmd.Flags().BoolVar(&proxyDisabled, "proxy-disabled", false, "Disable node-local Service proxy sync")
+	var joinAPIServer, joinToken, joinFile string
+	joinCmd := &cobra.Command{
+		Use:   "join --apiserver <url> --token <token> -f <node.yaml>",
+		Short: "Join this worker to a bridge using a bootstrap token",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.sailerJoin(cmd.Context(), joinAPIServer, joinToken, joinFile, out)
+		},
+	}
+	joinCmd.Flags().StringVar(&joinAPIServer, "apiserver", "", "Bridge Harbor API URL")
+	joinCmd.Flags().StringVar(&joinToken, "token", "", "Bootstrap token")
+	joinCmd.Flags().StringVarP(&joinFile, "filename", "f", "", "Node YAML")
+	cmd.AddCommand(joinCmd)
+
+	runCmd := &cobra.Command{
+		Use:   "run",
+		Short: "Run the worker node agent from local join config",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			legacy := []string{"run"}
+			appendFlag := func(name, value string) {
+				if value != "" {
+					legacy = append(legacy, name, value)
+				}
+			}
+			appendIntFlag := func(name string, value int) {
+				if value != 0 {
+					legacy = append(legacy, name, fmt.Sprintf("%d", value))
+				}
+			}
+			appendFlag("--interval", interval)
+			appendFlag("--cluster-dns", clusterDNS)
+			appendIntFlag("--vxlan-id", vxlanID)
+			appendIntFlag("--vxlan-port", vxlanPort)
+			appendFlag("--vxlan-name", vxlanName)
+			if once {
+				legacy = append(legacy, "--once")
+			}
+			if proxyDisabled {
+				legacy = append(legacy, "--proxy-disabled")
+			}
+			return app.sailerRun(cmd.Context(), legacy, out)
+		},
+	}
+	runCmd.Flags().StringVar(&interval, "interval", "", "Sync interval")
+	runCmd.Flags().StringVar(&clusterDNS, "cluster-dns", "", "Cluster DNS nameserver IP")
+	runCmd.Flags().IntVar(&vxlanID, "vxlan-id", 0, "VXLAN network identifier")
+	runCmd.Flags().IntVar(&vxlanPort, "vxlan-port", 0, "VXLAN UDP port")
+	runCmd.Flags().StringVar(&vxlanName, "vxlan-name", "", "VXLAN device name")
+	runCmd.Flags().BoolVar(&once, "once", false, "Run one sync and exit")
+	runCmd.Flags().BoolVar(&proxyDisabled, "proxy-disabled", false, "Disable node-local Service proxy sync")
+	cmd.AddCommand(runCmd)
 	return cmd
 }
 

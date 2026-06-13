@@ -25,7 +25,6 @@ export NODE_A_IP=192.168.1.8
 export NODE_B_IP=192.168.1.6
 export CLUSTER_CIDR=10.244.0.0/16
 export HARBOR=http://${NODE_A_IP}:18080
-export MINIK8S_HARBOR=${HARBOR}
 ```
 
 确认 `manifest/node/node_a.yaml` 和 `manifest/node/node_b.yaml` 中的 `InternalIP` 与当前两台机器一致；如果不同，先按实际地址更新这两个 Node YAML。Node YAML 不需要写 `spec.podCIDR`，控制面会从 `${CLUSTER_CIDR}` 自动分配。
@@ -40,7 +39,6 @@ make build
 
 ```bash
 export MINIK8S_STATE_DIR=.minik8s/testcase-state
-export MINIK8S_HARBOR=${HARBOR}
 ./minik8s bridge \
   --listen :18080 \
   --cluster-cidr ${CLUSTER_CIDR} \
@@ -50,7 +48,7 @@ export MINIK8S_HARBOR=${HARBOR}
 在 node-a 的另一个终端验证控制面可用：
 
 ```bash
-./kubectl version --server ${HARBOR}
+./kubectl version
 ```
 
 除 `POD-01` 外，本文默认两台机器分别启动启用 CNI 的 sailer。sailer 会先注册 Node，等待控制面分配 `spec.podCIDR`，再自动写入本机 CNI 配置。
@@ -103,7 +101,6 @@ unset MINIK8S_CNI_DISABLED
 前置：停止 node-a 上当前启用 CNI 的 sailer，然后在 node-a 的单独终端临时启动禁用 CNI 的 sailer。
 
 ```bash
-export MINIK8S_HARBOR=${HARBOR}
 export MINIK8S_CNI_DISABLED=1
 ./minik8s sailer \
   manifest/node/node_a.yaml \
@@ -352,7 +349,8 @@ sleep 35
 
 - 停止 node-b sailer 前，`nginx-node-b` 为 `Running`，有非空 `podIP`。
 - 停止 node-b sailer 前，`nginx-service` endpoints 包含 `nginx-node-b` 对应 PodIP。
-- `get nodes` 触发 liveness refresh 后，`node-b` 状态为 `Unknown`。
+- 如果用 `Ctrl-C` 或 SIGTERM 正常停止 `sailer run`，`node-b` 应很快变为 `Unknown`；如果用
+  `kill -9` 强杀进程，则需要等待默认 30s Node TTL 后由 bridge liveness loop 标记为 `Unknown`。
 - `nginx-node-b` 的 `status.phase` 为 `Unknown`，`status.reason` 为 `NodeLost`。
 - `nginx-node-b` 的 `status.podIP` 仍保留，用于诊断。
 - `nginx-service` endpoints 不再包含 `nginx-node-b` 的 PodIP；如果没有其他 Running 且 label `app=nginx` 的 Pod，endpoints 应为空。
@@ -387,6 +385,63 @@ docker ps -a --filter label=minik8s.pod.name=nginx-node-b --format '{{.Names}} {
 - Pod 仍为 `Running`：确认等待时间超过 Node TTL，且执行过 `./kubectl get nodes` 或 node liveness loop 正在运行。
 - Service endpoint 仍包含 node-b PodIP：确认使用的是包含 NodeLost 级联修复后的 `bridge`，并等待一次 service sync。
 - node-b 重新出现 Ready：确认 node-b sailer 已停止，且没有 systemd/supervisor 自动拉起。
+
+## POD-05B：Node 删除级联
+
+目标：验证显式删除 Node 时，控制面删除该 Node、级联删除已调度到该 Node 的 Pod、刷新 Service endpoints，并撤销旧 node token；被删除 worker 需要重新 `join` 后才能再次心跳。
+
+机器：node-a 执行 CLI；node-b 需要先运行 `sailer run`。
+
+前置：node-a/node-b 均启动启用 CNI 的 sailer，且 `./kubectl get nodes` 能看到两个节点为 `Ready`。
+
+```bash
+./kubectl delete service nginx-service || true
+./kubectl delete pod nginx-node-b || true
+./kubectl get nodes
+```
+
+流程：
+
+```bash
+./kubectl apply -f manifest/pod/pod_nginx_node_b.yaml
+sleep 8
+./kubectl apply -f manifest/service/service_clusterip_nginx.yaml
+sleep 6
+./kubectl get pod nginx-node-b -o yaml
+./kubectl describe service nginx-service
+./kubectl delete node node-b
+sleep 6
+./kubectl get nodes
+./kubectl get pod nginx-node-b -o yaml || true
+./kubectl describe service nginx-service
+```
+
+期望：
+
+- 删除前，`nginx-node-b` 为 `Running`，`spec.nodeName` 为 `node-b`。
+- 删除后，`get nodes` 不再包含 `node-b`。
+- 删除后，`nginx-node-b` 不再存在。
+- `nginx-service` endpoints 不再包含 `nginx-node-b` 的 PodIP；如果没有其他 Running 且 label `app=nginx` 的 Pod，endpoints 应为空。
+- node-b 上仍在运行的旧 `sailer run` 使用旧 node token 心跳会被拒绝；重新加入前不应把 `node-b` 注册回来。
+
+恢复状态：在 node-b 停止旧 `sailer run`，重新执行 join，然后启动 run。
+
+```bash
+cd /opt/minik8s
+export HARBOR=http://<node-a 内网 IP>:18080
+export BOOTSTRAP_TOKEN=<当前 bridge bootstrap token>
+./minik8s sailer join \
+  --apiserver "$HARBOR" \
+  --token "$BOOTSTRAP_TOKEN" \
+  -f manifest/node/node_b.yaml
+./minik8s sailer run
+```
+
+失败排查：
+
+- Pod 未被删除：确认 Pod 的 `spec.nodeName` 是 `node-b`，且使用的是支持 Node 删除级联的 `bridge`。
+- Service endpoint 仍包含旧 PodIP：等待一次 service sync，或执行 `./kubectl describe service nginx-service` 触发刷新。
+- node-b 自动重新出现：确认旧 `sailer run` 已停止，且重新出现前已经完成新的 `sailer join`。
 
 ## POD-06：失败原因回写
 

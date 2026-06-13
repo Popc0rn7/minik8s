@@ -29,7 +29,6 @@ export NODE_A_IP=192.168.1.8
 export NODE_B_IP=192.168.1.6
 export CLUSTER_CIDR=10.244.0.0/16
 export HARBOR=http://${NODE_A_IP}:18080
-export MINIK8S_HARBOR=${HARBOR}
 unset MINIK8S_CNI_DISABLED
 ```
 
@@ -45,7 +44,6 @@ install -m 0755 .minik8s/cni/bin/mooring /opt/cni/bin/mooring
 
 ```bash
 export MINIK8S_STATE_DIR=.minik8s/testcase-state
-export MINIK8S_HARBOR=${HARBOR}
 ./minik8s bridge \
   --listen :18080 \
   --cluster-cidr ${CLUSTER_CIDR} \

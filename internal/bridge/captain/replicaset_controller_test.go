@@ -65,6 +65,30 @@ func TestReplicaSetControllerDoesNotDeleteExternalMatchingPods(t *testing.T) {
 	assert.Equal(t, int32(1), updated.Status.Replicas)
 }
 
+func TestReplicaSetControllerReplacesNodeLostOwnedPod(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	rsStore := store.NewInMemoryReplicaSetStore()
+	require.NoError(t, rsStore.Create(testControllerReplicaSet("nginx-rs", 1)))
+	lost := ownedControllerPod("nginx-rs-1", "nginx-rs")
+	lost.Status.Phase = pod.PodUnknown
+	lost.Status.Reason = pod.PodReasonNodeLost
+	require.NoError(t, podStore.Create(lost))
+
+	ctrl := NewReplicaSetController(podStore, rsStore)
+	require.NoError(t, ctrl.Sync(context.Background()))
+
+	pods, err := podStore.List("default", &pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}})
+	require.NoError(t, err)
+	require.Len(t, pods, 2)
+	assert.Equal(t, "nginx-rs-1", pods[0].Name)
+	assert.Equal(t, pod.PodUnknown, pods[0].Status.Phase)
+	assert.Equal(t, "nginx-rs-2", pods[1].Name)
+	assert.Empty(t, pods[1].Status.Phase)
+	updated, err := rsStore.Get("nginx-rs", "default")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), updated.Status.Replicas)
+}
+
 func TestReplicaSetControllerDeletesAllOwnedPodsWhenReplicasZero(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	rsStore := store.NewInMemoryReplicaSetStore()

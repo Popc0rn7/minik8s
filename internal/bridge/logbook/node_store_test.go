@@ -94,6 +94,32 @@ func TestFileNodeStorePersistsNodeNetworkFields(t *testing.T) {
 	assert.Equal(t, "10.244.0.0/24", got.Spec.PodCIDR)
 }
 
+func TestInMemoryNodeStoreDeleteRemovesNode(t *testing.T) {
+	store := NewInMemoryNodeStore()
+	require.NoError(t, store.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{})))
+
+	require.NoError(t, store.Delete("node-a"))
+
+	_, err := store.Get("node-a")
+	assert.ErrorIs(t, err, ErrNodeNotFound)
+	assert.ErrorIs(t, store.Delete("node-a"), ErrNodeNotFound)
+}
+
+func TestFileNodeStoreDeletePersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodes.json")
+	store1, err := NewFileNodeStore(path)
+	require.NoError(t, err)
+	require.NoError(t, store1.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{})))
+
+	require.NoError(t, store1.Delete("node-a"))
+
+	store2, err := NewFileNodeStore(path)
+	require.NoError(t, err)
+	_, err = store2.Get("node-a")
+	assert.ErrorIs(t, err, ErrNodeNotFound)
+	assert.ErrorIs(t, store2.Delete("node-a"), ErrNodeNotFound)
+}
+
 func TestNodeStoreListsReadyNodes(t *testing.T) {
 	now := time.Unix(100, 0)
 	store := NewInMemoryNodeStore()

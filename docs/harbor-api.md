@@ -6,17 +6,18 @@ Harbor is the Minik8s control-plane HTTP API. The default local endpoint used by
 http://127.0.0.1:18080
 ```
 
-CLI resource commands read the server URL from `MINIK8S_HARBOR`:
+`bridge` and `sailer join` write the local CLI config at `.minik8s/config.json`.
+CLI resource commands read Harbor from that file by default:
 
 ```bash
-export MINIK8S_HARBOR=http://127.0.0.1:18080
 ./kubectl get pods
 ```
 
-The Cobra CLI also accepts `--server`, which overrides the environment variable for one invocation:
+`MINIK8S_HARBOR` remains available as an environment override for one shell or
+one invocation:
 
 ```bash
-./kubectl --server http://127.0.0.1:18080 get pods
+MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl get pods
 ```
 
 ## Discovery
@@ -54,6 +55,7 @@ The Cobra CLI also accepts `--server`, which overrides the environment variable 
 |---|---|---|
 | `GET` | `/api/v1/nodes` | List known Nodes. |
 | `GET` | `/api/v1/nodes/{name}` | Read one Node. |
+| `DELETE` | `/api/v1/nodes/{name}` | Delete one Node, cascade-delete Pods assigned to it, revoke its node token, and remove cleanable node-local control-plane state. ReplicaSet and Service controllers resync after deletion. |
 | `GET` | `/api/v1/nodes/{name}/pods?nodeIP={ip}&podCIDR={cidr}` | Worker heartbeat, optional Node network metadata update, and assigned-Pod poll endpoint. |
 
 Errors use a Kubernetes-style `Status` object with `kind`, `apiVersion`, `status`, `reason`, `message`, and `code`.

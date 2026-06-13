@@ -43,7 +43,7 @@ sed -n '1,80p' .minik8s/manifests/serverless-nats.yaml
 终端 B：
 
 ```bash
-./kubectl version --server http://127.0.0.1:18080
+./kubectl version
 docker ps --filter label=minik8s.pod.namespace=minik8s-system
 ```
 

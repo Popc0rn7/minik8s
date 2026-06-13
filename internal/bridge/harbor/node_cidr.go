@@ -71,3 +71,37 @@ func (a *nodeCIDRAllocator) assign(name string, nodes []node.Node) (string, erro
 	}
 	return "", fmt.Errorf("no free node PodCIDR in %s/%d", a.cluster.String(), a.mask)
 }
+
+func (a *nodeCIDRAllocator) validate(cidr string) error {
+	if a == nil {
+		return nil
+	}
+	ip, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return err
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return fmt.Errorf("must be IPv4")
+	}
+	ones, bits := network.Mask.Size()
+	if bits != 32 || ones != a.mask {
+		return fmt.Errorf("must use /%d mask", a.mask)
+	}
+	network.IP = ip4
+	if !network.Contains(ip4) || !a.cluster.Contains(ip4) {
+		return fmt.Errorf("must be within cluster CIDR %s", a.cluster.String())
+	}
+	last := make(net.IP, len(ip4))
+	copy(last, ip4)
+	for i := range last {
+		last[i] |= ^network.Mask[i]
+	}
+	if !a.cluster.Contains(last) {
+		return fmt.Errorf("must be within cluster CIDR %s", a.cluster.String())
+	}
+	if network.String() != cidr {
+		return fmt.Errorf("must be canonical network address %s", network.String())
+	}
+	return nil
+}

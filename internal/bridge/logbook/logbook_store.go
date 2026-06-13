@@ -730,6 +730,22 @@ func (s *EtcdNodeStore) ListReady(ttl time.Duration) ([]node.Node, error) {
 	return filterReadyNodes(nodes, s.now(), ttl), nil
 }
 
+func (s *EtcdNodeStore) Delete(name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOpTTL)
+	defer cancel()
+	resp, err := s.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(etcdNodeKey(name)), ">", 0)).
+		Then(clientv3.OpDelete(etcdNodeKey(name))).
+		Commit()
+	if err != nil {
+		return fmt.Errorf("deleting node from etcd: %w", err)
+	}
+	if !resp.Succeeded {
+		return ErrNodeNotFound
+	}
+	return nil
+}
+
 func (s *EtcdNodeStore) putNode(n *node.Node) error {
 	data, err := json.Marshal(n)
 	if err != nil {

@@ -33,7 +33,6 @@ Docker 可拉取 etcd/NATS 镜像；`etcdctl` 只用于人工检查，不是启�
 export NODE_A_IP=192.168.1.8
 export NODE_B_IP=192.168.1.6
 export HARBOR=http://${NODE_A_IP}:18080
-export MINIK8S_HARBOR=${HARBOR}
 ```
 
 node-a 默认不需要手动设置 etcd endpoint；`bridge` 会在内部依赖 Pod ready 后设置进程内默认值。
@@ -53,7 +52,6 @@ make build
 在 node-a 终端 1 启动控制面：
 
 ```bash
-export MINIK8S_HARBOR=${HARBOR}
 ./minik8s bridge --listen :18080
 ```
 
@@ -63,7 +61,6 @@ export MINIK8S_HARBOR=${HARBOR}
 ```bash
 export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
 export ETCDCTL_API=3
-export MINIK8S_HARBOR=${HARBOR}
 ./minik8s doctor logbook
 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} endpoint health
 curl -fsS ${MINIK8S_LOGBOOK_ENDPOINTS}/health
@@ -185,7 +182,6 @@ curl -fsS ${MINIK8S_LOGBOOK_ENDPOINTS}/health
 
 ```bash
 export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
-export MINIK8S_HARBOR=${HARBOR}
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} del --prefix /registry
 ./minik8s doctor logbook
 ```
@@ -194,7 +190,6 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} del --prefix /reg
 
 ```bash
 export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
-export MINIK8S_HARBOR=${HARBOR}
 ./minik8s bridge --listen :18080
 ```
 
@@ -202,7 +197,6 @@ export MINIK8S_HARBOR=${HARBOR}
 
 ```bash
 export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
-export MINIK8S_HARBOR=${HARBOR}
 ./minik8s doctor logbook
 curl -fsS ${HARBOR}/version
 ```
@@ -313,7 +307,6 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 
 ```bash
 export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
-export MINIK8S_HARBOR=${HARBOR}
 ./minik8s bridge --listen :18080
 ```
 
@@ -346,7 +339,7 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 
 - Pod/Service 消失：检查重启后的 bridge 是否带了 `MINIK8S_LOGBOOK_ENDPOINTS`。
 - Node 状态变 Unknown：确认 sailer 正在运行并持续访问 `${HARBOR}`。
-- CLI get 失败：确认 `MINIK8S_HARBOR` 指向重启后的控制面。
+- CLI get 失败：确认重启后的 bridge 已刷新 `.minik8s/config.json`，或临时设置 `MINIK8S_HARBOR=${HARBOR}`。
 
 ## LOGBOOK-06：watch 与并发检查
 

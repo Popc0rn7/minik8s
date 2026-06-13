@@ -134,6 +134,27 @@ func TestPrepareBridgeDependenciesSkipsNonBridgeCommands(t *testing.T) {
 	cleanup()
 }
 
+func TestPrepareBridgeDependenciesSkipsBridgeTokenCommands(t *testing.T) {
+	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", "")
+	called := false
+
+	cleanup, err := prepareBridgeDependencies(context.Background(), []string{"bridge", "token", "status"}, io.Discard, func(context.Context, []string, io.Writer) (func(), error) {
+		called = true
+		return func() {}, nil
+	})
+
+	require.NoError(t, err)
+	assert.False(t, called)
+	assert.Empty(t, os.Getenv("MINIK8S_LOGBOOK_ENDPOINTS"))
+	cleanup()
+}
+
+func TestNeedsDockerRuntimeSkipsSailerJoin(t *testing.T) {
+	assert.False(t, needsDockerRuntime([]string{"sailer", "join", "--apiserver", "http://127.0.0.1:18080"}))
+	assert.True(t, needsDockerRuntime([]string{"sailer", "run"}))
+	assert.True(t, needsDockerRuntime([]string{"sailer", "manifest/node/node_a.yaml"}))
+}
+
 func TestPrepareBridgeDependenciesPreservesExplicitEnv(t *testing.T) {
 	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", "http://10.0.0.1:2379")
 	t.Setenv("MINIK8S_NATS_URL", "nats://10.0.0.1:4222")

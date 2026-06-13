@@ -48,10 +48,10 @@ iptables-save -t nat >/tmp/minik8s-iptables-b.txt
 
 ```bash
 make build
-./kubectl version --server ${HARBOR} || true
+./kubectl version || true
 ```
 
-`version` 在控制面未启动前可以失败；这里只确认二进制已构建。
+`version` 在控制面未启动前可以因为尚未生成 `.minik8s/config.json` 而失败；这里只确认二进制已构建。
 
 ## 准备 Node YAML
 
@@ -63,7 +63,6 @@ make build
 
 ```bash
 export MINIK8S_STATE_DIR=.minik8s/testcase-state
-export MINIK8S_HARBOR=${HARBOR}
 export CLUSTER_CIDR=10.244.0.0/16
 ./minik8s bridge \
   --listen :18080 \
@@ -74,6 +73,7 @@ export CLUSTER_CIDR=10.244.0.0/16
 期望：
 
 - bridge 输出 `bridge listening on :18080`。
+- node-a 生成 `.minik8s/config.json`，后续本机 `./kubectl` 默认读取 Harbor 地址。
 - node-b 可访问 `curl -fsS ${HARBOR}/version`。
 - node-b 可访问 `curl -fsS ${HARBOR}/nodes`，返回网络节点注册列表。
 

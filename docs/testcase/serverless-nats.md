@@ -14,7 +14,6 @@ EventTrigger subject 并触发对应 Function。
 make build
 ./minik8s init --force
 ./minik8s bridge --listen :18080 --addons dns,metrics,serverless
-export MINIK8S_HARBOR=http://127.0.0.1:18080
 ```
 
 启用 `serverless` addon 后，`bridge` 会自己启动 NATS。另一个终端如果要运行 `doctor serverless` 或
@@ -22,7 +21,6 @@ export MINIK8S_HARBOR=http://127.0.0.1:18080
 
 ```bash
 export MINIK8S_NATS_URL=nats://127.0.0.1:4222
-export MINIK8S_HARBOR=http://127.0.0.1:18080
 ```
 
 如需使用外部 NATS，可在启动 `bridge --addons dns,metrics,serverless` 前设置

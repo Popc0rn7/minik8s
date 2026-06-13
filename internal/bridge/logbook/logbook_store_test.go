@@ -215,6 +215,18 @@ func TestEtcdNodeStoreListsReadyNodes(t *testing.T) {
 	assert.Equal(t, "node-b", nodes[1].Name())
 }
 
+func TestEtcdNodeStoreDeleteRemovesNode(t *testing.T) {
+	client := newEmbeddedEtcdClient(t)
+	store := NewEtcdNodeStore(client)
+	require.NoError(t, store.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{})))
+
+	require.NoError(t, store.Delete("node-a"))
+
+	_, err := store.Get("node-a")
+	assert.ErrorIs(t, err, ErrNodeNotFound)
+	assert.ErrorIs(t, store.Delete("node-a"), ErrNodeNotFound)
+}
+
 func TestEtcdNodeStoreRefreshLivenessPersistsUnknownStatus(t *testing.T) {
 	client := newEmbeddedEtcdClient(t)
 	now := time.Unix(100, 0)

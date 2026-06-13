@@ -23,7 +23,12 @@ func NewReplicaSetController(podStore store.PodStore, replicaSetStore store.Repl
 	}
 }
 
+func (c *ReplicaSetController) Name() string { return ReplicaSetControllerName }
+
 func (c *ReplicaSetController) Sync(ctx context.Context) error {
+	if c.podStore == nil || c.replicaSetStore == nil {
+		return fmt.Errorf("replicaset controller stores are required")
+	}
 	replicaSets, err := c.replicaSetStore.List("", nil)
 	if err != nil {
 		return fmt.Errorf("listing replicasets: %w", err)
@@ -70,8 +75,9 @@ func (c *ReplicaSetController) reconcileReplicaSet(ctx context.Context, rs *repl
 		return fmt.Errorf("listing selected pods for replicaset %s/%s: %w", rs.Namespace, rs.Name, err)
 	}
 	sortPodsByName(selected)
-	owned := filterOwnedPods(selected, rs.Name)
-	current := int32(len(selected))
+	active := activeReplicaPods(selected)
+	owned := filterOwnedPods(active, rs.Name)
+	current := int32(len(active))
 	desired := rs.Spec.Replicas
 
 	if current < desired {
@@ -99,7 +105,7 @@ func (c *ReplicaSetController) reconcileReplicaSet(ctx context.Context, rs *repl
 	if err != nil {
 		return fmt.Errorf("refreshing selected pods for replicaset %s/%s: %w", rs.Namespace, rs.Name, err)
 	}
-	rs.Status.Replicas = int32(len(refreshed))
+	rs.Status.Replicas = int32(len(activeReplicaPods(refreshed)))
 	if err := c.replicaSetStore.Update(rs); err != nil {
 		return fmt.Errorf("updating replicaset status: %w", err)
 	}
@@ -155,6 +161,20 @@ func filterOwnedPods(pods []*pod.Pod, owner string) []*pod.Pod {
 		}
 	}
 	return owned
+}
+
+func activeReplicaPods(pods []*pod.Pod) []*pod.Pod {
+	active := make([]*pod.Pod, 0, len(pods))
+	for _, p := range pods {
+		if p.Status.Phase == pod.PodUnknown && p.Status.Reason == pod.PodReasonNodeLost {
+			continue
+		}
+		if p.Status.Phase == pod.PodSucceeded || p.Status.Phase == pod.PodFailed {
+			continue
+		}
+		active = append(active, p)
+	}
+	return active
 }
 
 func sortPodsByName(pods []*pod.Pod) {

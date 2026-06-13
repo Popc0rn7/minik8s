@@ -61,7 +61,7 @@
 
 - 保持当前 API 范围，不扩新资源。
 - 明确文档：这是 Harbor API，不兼容 Kubernetes API。
-- 给所有 CLI demo 固定 `MINIK8S_HARBOR=http://127.0.0.1:18080`。
+- CLI demo 默认使用 `.minik8s/config.json`；只在需要临时覆盖控制面地址时设置 `MINIK8S_HARBOR`。
 
 ### 2. Pod 生命周期
 

@@ -161,6 +161,8 @@ spec:
 `
 
 func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
+	t.Setenv("MINIK8S_HARBOR", "")
+	t.Setenv("MINIK8S_CONFIG", filepath.Join(t.TempDir(), "missing-config.json"))
 	app := New(Config{
 		Runtime:      mock.NewMockRuntime(),
 		Store:        store.NewInMemoryPodStore(),
@@ -184,7 +186,75 @@ func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
 	} {
 		err := app.Run(context.Background(), args, &out)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "MINIK8S_HARBOR is required for apply/get/delete")
+		assert.Contains(t, err.Error(), "Harbor API is not configured")
+		assert.Contains(t, err.Error(), "minik8s bridge")
+		assert.Contains(t, err.Error(), "minik8s sailer join")
+	}
+}
+
+func TestDefaultLocalConfigPathCanBeOverridden(t *testing.T) {
+	t.Setenv("MINIK8S_CONFIG", "")
+	assert.Equal(t, filepath.Join(".minik8s", "config.json"), DefaultLocalConfigPath())
+
+	override := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MINIK8S_CONFIG", override)
+	assert.Equal(t, override, DefaultLocalConfigPath())
+}
+
+func TestWriteAndReadLocalConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "config.json")
+
+	require.NoError(t, writeLocalConfig(path, localConfig{Harbor: "http://127.0.0.1:18080"}))
+
+	conf, err := readLocalConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:18080", conf.Harbor)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"harbor":"http://127.0.0.1:18080"}`, string(data))
+}
+
+func TestControlPlaneClientUsesLocalConfigWhenEnvironmentUnset(t *testing.T) {
+	t.Setenv("MINIK8S_HARBOR", "")
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MINIK8S_CONFIG", configPath)
+	require.NoError(t, writeLocalConfig(configPath, localConfig{Harbor: "http://minik8s.test"}))
+
+	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
+
+	client, err := app.controlPlaneClient()
+	require.NoError(t, err)
+	assert.Equal(t, "http://minik8s.test", client.baseURL)
+}
+
+func TestControlPlaneClientEnvironmentOverridesLocalConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MINIK8S_CONFIG", configPath)
+	t.Setenv("MINIK8S_HARBOR", "http://from-env:18080")
+	require.NoError(t, writeLocalConfig(configPath, localConfig{Harbor: "http://from-config:18080"}))
+
+	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
+
+	client, err := app.controlPlaneClient()
+	require.NoError(t, err)
+	assert.Equal(t, "http://from-env:18080", client.baseURL)
+}
+
+func TestCommandHelpDoesNotExposeServerFlag(t *testing.T) {
+	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
+	for _, cmd := range []*cobra.Command{
+		NewKubectlCommand(app, io.Discard),
+		NewRootCommand(app, io.Discard),
+		newCompatCommand(app, io.Discard),
+	} {
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"--help"})
+
+		require.NoError(t, cmd.Execute())
+		assert.NotContains(t, out.String(), "--server")
 	}
 }
 
@@ -328,6 +398,12 @@ func TestBridgeDependencyEtcdDirIsAbsolute(t *testing.T) {
 
 func TestWaitForBridgeDependenciesReadyUsesEtcdProbe(t *testing.T) {
 	calls := 0
+	originalTCPReady := bridgeDependencyTCPReady
+	bridgeDependencyTCPReady = func(address string) bool {
+		assert.Equal(t, "127.0.0.1:2379", address)
+		return true
+	}
+	defer func() { bridgeDependencyTCPReady = originalTCPReady }()
 	originalProbe := bridgeDependencyEtcdProbe
 	bridgeDependencyEtcdProbe = func(ctx context.Context, endpoints []string) error {
 		calls++
@@ -343,6 +419,30 @@ func TestWaitForBridgeDependenciesReadyUsesEtcdProbe(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, calls)
+}
+
+func TestWaitForBridgeDependenciesReadySkipsEtcdProbeUntilTCPReady(t *testing.T) {
+	tcpCalls := 0
+	probeCalls := 0
+	originalTCPReady := bridgeDependencyTCPReady
+	bridgeDependencyTCPReady = func(address string) bool {
+		tcpCalls++
+		assert.Equal(t, "127.0.0.1:2379", address)
+		return tcpCalls >= 2
+	}
+	defer func() { bridgeDependencyTCPReady = originalTCPReady }()
+	originalProbe := bridgeDependencyEtcdProbe
+	bridgeDependencyEtcdProbe = func(ctx context.Context, endpoints []string) error {
+		probeCalls++
+		return nil
+	}
+	defer func() { bridgeDependencyEtcdProbe = originalProbe }()
+
+	err := waitForBridgeDependenciesReady(context.Background(), make(chan error), bridgeOptions{addons: newAddonSet()}, 2*time.Second)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, tcpCalls)
+	assert.Equal(t, 1, probeCalls)
 }
 
 func TestCLIInitWritesStaticDependencyManifests(t *testing.T) {
@@ -730,6 +830,17 @@ status:
 	require.NoError(t, json.Unmarshal(data, &conf))
 	assert.Equal(t, "10.244.0.0/24", conf.PodCIDR)
 	assert.Equal(t, "10.244.0.1", conf.Gateway)
+}
+
+func TestCLISailerRunRequiresLocalJoinConfig(t *testing.T) {
+	t.Setenv("MINIK8S_STATE_DIR", t.TempDir())
+	app := New(Config{Runtime: mock.NewMockRuntime()})
+	var out bytes.Buffer
+
+	err := app.Run(context.Background(), []string{"sailer", "run", "--once"}, &out)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sailer is not joined")
 }
 
 func TestCLISailerPreservesExistingExternalCNIConfig(t *testing.T) {
@@ -1274,6 +1385,75 @@ func TestSailerOptionsUseHarborFromEnvironment(t *testing.T) {
 	assert.Equal(t, "http://127.0.0.1:18080", options.harbor)
 }
 
+func TestBridgeConfigHarborURLFromListenAddress(t *testing.T) {
+	tests := []struct {
+		listen string
+		want   string
+	}{
+		{listen: ":18080", want: "http://127.0.0.1:18080"},
+		{listen: "127.0.0.1:18080", want: "http://127.0.0.1:18080"},
+		{listen: "0.0.0.0:18080", want: "http://127.0.0.1:18080"},
+		{listen: "[::]:18080", want: "http://127.0.0.1:18080"},
+		{listen: "10.0.0.1:18080", want: "http://10.0.0.1:18080"},
+	}
+
+	for _, tt := range tests {
+		got, err := bridgeHarborURL(tt.listen)
+		require.NoError(t, err)
+		assert.Equal(t, tt.want, got)
+	}
+}
+
+func TestSailerJoinWritesLocalConfig(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("MINIK8S_CONFIG", filepath.Join(root, "config.json"))
+	nodePath := filepath.Join(root, "node.yaml")
+	require.NoError(t, os.WriteFile(nodePath, []byte(`
+apiVersion: v1
+kind: Node
+metadata:
+  name: node-a
+status:
+  addresses:
+  - type: InternalIP
+    address: 192.168.1.8
+`), 0o644))
+	app := New(Config{
+		Runtime: mock.NewMockRuntime(),
+		Store:   store.NewInMemoryPodStore(),
+		HTTPClient: &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptestResponseRecorder(req)
+			require.Equal(t, http.MethodPost, req.Method)
+			require.Equal(t, "/api/v1/nodes/join", req.URL.Path)
+			rec.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(rec).Encode(map[string]any{
+				"node": map[string]any{
+					"kind":       "Node",
+					"apiVersion": "v1",
+					"metadata":   map[string]any{"name": "node-a"},
+					"spec":       map[string]any{"podCIDR": "10.244.1.0/24"},
+					"status": map[string]any{"addresses": []map[string]string{{
+						"type": "InternalIP", "address": "192.168.1.8",
+					}}},
+				},
+				"nodeToken": "node-secret",
+			})
+			return rec.Result(), nil
+		})},
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.sailerJoin(context.Background(), "http://10.0.0.1:18080/", "bootstrap-secret", nodePath, &out))
+
+	sailerConf, err := readLocalSailerConfig(DefaultSailerConfigPath())
+	require.NoError(t, err)
+	assert.Equal(t, "http://10.0.0.1:18080", sailerConf.APIServer)
+	localConf, err := readLocalConfig(DefaultLocalConfigPath())
+	require.NoError(t, err)
+	assert.Equal(t, "http://10.0.0.1:18080", localConf.Harbor)
+}
+
 func TestSailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
@@ -1433,6 +1613,24 @@ func TestCLIGetNodesShowsExpiredHeartbeatNodesUnknown(t *testing.T) {
 	assert.Contains(t, out.String(), "node-a")
 	assert.Contains(t, out.String(), "Unknown")
 	assert.NotContains(t, out.String(), "Ready")
+}
+
+func TestCLIDeleteNode(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	nodeStore := store.NewInMemoryNodeStore()
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady})))
+	app := newHTTPTestApp(t, harbor.New(harbor.Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: nodeStore,
+	}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"delete", "node", "node-a"}, &out))
+
+	assert.Contains(t, out.String(), "node/node-a deleted")
+	_, err := nodeStore.Get("node-a")
+	assert.ErrorIs(t, err, store.ErrNodeNotFound)
 }
 
 func TestCLIDoctorNetworkShowsCNIPaths(t *testing.T) {
@@ -1727,7 +1925,7 @@ func TestParseBridgeOptionsServiceSyncInterval(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid --service-sync-interval")
 }
 
-func TestServiceSyncLoopRunsPeriodically(t *testing.T) {
+func TestBridgeControllerRunnerSyncsServicesPeriodically(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
 	require.NoError(t, podStore.Create(&pod.Pod{
@@ -1749,7 +1947,8 @@ func TestServiceSyncLoopRunsPeriodically(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go app.runServiceSyncLoop(ctx, 10*time.Millisecond)
+	app.controlBridge.RegisterDefaultControllers(10*time.Millisecond, 0, 0, 0)
+	app.controlBridge.StartControllers(ctx)
 
 	require.Eventually(t, func() bool {
 		got, err := serviceStore.Get("nginx-service", "default")
@@ -1823,27 +2022,31 @@ func TestCLIOutputJSONAndYAML(t *testing.T) {
 	assert.Contains(t, out.String(), "name: nginx-pod")
 }
 
-func TestCLIDescribeAPIResourcesVersionAndServerFlag(t *testing.T) {
+func TestCLIDescribeAPIResourcesVersionUseLocalConfig(t *testing.T) {
 	t.Setenv("MINIK8S_PLAIN", "1")
 	t.Setenv("NO_COLOR", "1")
-	t.Setenv("MINIK8S_HARBOR", "http://wrong.example")
+	t.Setenv("MINIK8S_HARBOR", "")
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("MINIK8S_CONFIG", configPath)
+	require.NoError(t, writeLocalConfig(configPath, localConfig{Harbor: "http://minik8s.test"}))
 	podStore := store.NewInMemoryPodStore()
 	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	t.Setenv("MINIK8S_HARBOR", "")
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), []string{"--server", "http://minik8s.test", "apply", "-f", filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")}, &out))
 	out.Reset()
-	require.NoError(t, app.Run(context.Background(), []string{"--server", "http://minik8s.test", "describe", "pod", "nginx-pod"}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"describe", "pod", "nginx-pod"}, &out))
 	assert.Contains(t, out.String(), "Name: nginx-pod")
 	assert.Contains(t, out.String(), "Status: Pending")
 
 	out.Reset()
-	require.NoError(t, app.Run(context.Background(), []string{"--server", "http://minik8s.test", "api-resources"}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"api-resources"}, &out))
 	assert.Contains(t, out.String(), "pods")
 	assert.Contains(t, out.String(), "services")
 
 	out.Reset()
-	require.NoError(t, app.Run(context.Background(), []string{"--server", "http://minik8s.test", "version"}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"version"}, &out))
 	assert.Contains(t, out.String(), "harbor")
 }
 

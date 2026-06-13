@@ -96,7 +96,7 @@ func (e controlPlaneError) Error() string {
 
 func newControlPlaneClient(baseURL string, client *http.Client) (*controlPlaneClient, error) {
 	if strings.TrimSpace(baseURL) == "" {
-		return nil, fmt.Errorf("MINIK8S_HARBOR is required for apply/get/delete")
+		return nil, fmt.Errorf("Harbor API is not configured; run minik8s bridge or minik8s sailer join to create local config")
 	}
 	if client == nil {
 		client = http.DefaultClient
@@ -484,6 +484,14 @@ func (c *controlPlaneClient) GetNode(ctx context.Context, name string) (*node.No
 		return nil, err
 	}
 	return &n, nil
+}
+
+func (c *controlPlaneClient) DeleteNode(ctx context.Context, name string) error {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/nodes", name))
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
 }
 
 func (c *controlPlaneClient) createNode(ctx context.Context, n *node.Node) (*node.Node, error) {

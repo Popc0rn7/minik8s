@@ -11,6 +11,7 @@ import (
 
 	"minik8s/internal/metrics"
 	"minik8s/internal/minilog"
+	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/service"
 	"minik8s/pkg/runtime"
@@ -22,6 +23,7 @@ type fakePodClient struct {
 	services  []*service.Service
 	heartbeat NodeHeartbeat
 	updates   []*pod.Pod
+	statuses  []node.NodeStatus
 	metrics   []*metrics.PodMetrics
 	onUpdate  func()
 }
@@ -53,6 +55,13 @@ func (f *fakePodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {
 	if f.onUpdate != nil {
 		f.onUpdate()
 	}
+	return nil
+}
+
+func (f *fakePodClient) UpdateNodeStatus(ctx context.Context, nodeName string, status node.NodeStatus) error {
+	_ = ctx
+	_ = nodeName
+	f.statuses = append(f.statuses, status)
 	return nil
 }
 
@@ -204,6 +213,19 @@ func TestSailerShutdownCleansNodePodsWhenKnownIsEmpty(t *testing.T) {
 	require.NoError(t, k.Shutdown(context.Background()))
 
 	assert.Contains(t, rt.CleanupNodePodsCalls, "node-a")
+}
+
+func TestSailerShutdownMarksNodeUnknown(t *testing.T) {
+	rt := mock.NewMockRuntime()
+	client := &fakePodClient{}
+	k := New(Config{NodeName: "node-a", Runtime: rt, Client: client})
+
+	require.NoError(t, k.Shutdown(context.Background()))
+
+	require.Len(t, client.statuses, 1)
+	assert.Equal(t, node.NodeUnknown, client.statuses[0].Phase)
+	require.Len(t, client.statuses[0].Conditions, 1)
+	assert.Equal(t, "SailerStopped", client.statuses[0].Conditions[0].Reason)
 }
 
 func testPod(name, nodeName string) *pod.Pod {

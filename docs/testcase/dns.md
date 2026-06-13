@@ -22,7 +22,7 @@ make build
 - Start a sailer node in another shell:
 
 ```bash
-MINIK8S_HARBOR=http://127.0.0.1:18080 ./minik8s sailer manifest/node/node_a.yaml --cluster-dns 127.0.0.1
+./minik8s sailer manifest/node/node_a.yaml --harbor http://127.0.0.1:18080 --cluster-dns 127.0.0.1
 ```
 
 ## Steps
@@ -30,16 +30,16 @@ MINIK8S_HARBOR=http://127.0.0.1:18080 ./minik8s sailer manifest/node/node_a.yaml
 1. Create two Services that expose HTTP backends.
 
 ```bash
-MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl apply -f manifest/service/service_clusterip_nginx.yaml
-MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl apply -f manifest/service/service_nodeport_nginx.yaml
+./kubectl apply -f manifest/service/service_clusterip_nginx.yaml
+./kubectl apply -f manifest/service/service_nodeport_nginx.yaml
 ```
 
 2. Create a DNS object that maps one host to two paths.
 
 ```bash
-MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl apply -f manifest/dns/dns_example.yaml
-MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl get dns
-MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl describe dns example-routes
+./kubectl apply -f manifest/dns/dns_example.yaml
+./kubectl get dns
+./kubectl describe dns example-routes
 ```
 
 3. Verify the gateway from the host without changing the system resolver.
@@ -52,7 +52,7 @@ curl --resolve example.com:80:127.0.0.1 http://example.com/path2
 4. Delete the DNS object and verify the gateway no longer has a route.
 
 ```bash
-MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl delete dns example-routes
+./kubectl delete dns example-routes
 curl --resolve example.com:80:127.0.0.1 -i http://example.com/path1
 ```
 

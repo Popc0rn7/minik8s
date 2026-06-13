@@ -50,6 +50,13 @@ func (s *Store) Register(node Node) error {
 	return nil
 }
 
+// Delete removes a node registration.
+func (s *Store) Delete(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.nodes, name)
+}
+
 // List returns active nodes sorted by name.
 func (s *Store) List() []Node {
 	s.mu.RLock()

@@ -25,19 +25,59 @@ type PodClient interface {
 	ListAssignedPods(ctx context.Context, heartbeat NodeHeartbeat) ([]*pod.Pod, error)
 	ListServices(ctx context.Context) ([]*service.Service, error)
 	UpdatePodStatus(ctx context.Context, p *pod.Pod) error
+	UpdateNodeStatus(ctx context.Context, nodeName string, status node.NodeStatus) error
 	UpdateNodeMetrics(ctx context.Context, nodeName string, podMetrics []*metrics.PodMetrics) error
 }
 
 type HTTPPodClient struct {
 	baseURL string
 	client  *http.Client
+	token   string
 }
 
 func NewHTTPPodClient(baseURL string, client *http.Client) *HTTPPodClient {
+	return NewHTTPPodClientWithToken(baseURL, "", client)
+}
+
+func NewHTTPPodClientWithToken(baseURL, token string, client *http.Client) *HTTPPodClient {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &HTTPPodClient{baseURL: strings.TrimRight(baseURL, "/"), client: client}
+	return &HTTPPodClient{baseURL: strings.TrimRight(baseURL, "/"), client: client, token: token}
+}
+
+type JoinResponse struct {
+	Node      node.Node `json:"node"`
+	NodeToken string    `json:"nodeToken"`
+}
+
+func (c *HTTPPodClient) JoinNode(ctx context.Context, token string, n *node.Node) (*JoinResponse, error) {
+	data, err := json.Marshal(map[string]any{"token": token, "node": n})
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err := c.url("/api/v1/nodes/join")
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("join node: %s", responseError(resp))
+	}
+	var out JoinResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *HTTPPodClient) ListAssignedPods(ctx context.Context, heartbeat NodeHeartbeat) ([]*pod.Pod, error) {
@@ -70,6 +110,7 @@ func (c *HTTPPodClient) ListAssignedPods(ctx context.Context, heartbeat NodeHear
 	}
 	req.URL = parsed
 	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -96,6 +137,7 @@ func (c *HTTPPodClient) ListServices(ctx context.Context) ([]*service.Service, e
 	if err != nil {
 		return nil, err
 	}
+	c.authorize(req)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -127,6 +169,7 @@ func (c *HTTPPodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
@@ -134,6 +177,36 @@ func (c *HTTPPodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("update pod status: %s", responseError(resp))
+	}
+	return nil
+}
+
+func (c *HTTPPodClient) UpdateNodeStatus(ctx context.Context, nodeName string, status node.NodeStatus) error {
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" {
+		return fmt.Errorf("node name is required")
+	}
+	data, err := json.Marshal(status)
+	if err != nil {
+		return err
+	}
+	endpoint, err := c.url(path.Join("/api/v1/nodes", nodeName, "status"))
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("update node status: %s", responseError(resp))
 	}
 	return nil
 }
@@ -152,6 +225,7 @@ func (c *HTTPPodClient) UpdateNodeMetrics(ctx context.Context, nodeName string, 
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
@@ -172,6 +246,7 @@ func (c *HTTPPodClient) GetPod(ctx context.Context, name, namespace string) (*po
 	if err != nil {
 		return nil, err
 	}
+	c.authorize(req)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -196,6 +271,7 @@ func (c *HTTPPodClient) GetNode(ctx context.Context, name string) (*node.Node, e
 	if err != nil {
 		return nil, err
 	}
+	c.authorize(req)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -209,6 +285,12 @@ func (c *HTTPPodClient) GetNode(ctx context.Context, name string) (*node.Node, e
 		return nil, err
 	}
 	return &n, nil
+}
+
+func (c *HTTPPodClient) authorize(req *http.Request) {
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 }
 
 func (c *HTTPPodClient) url(resourcePath string) (string, error) {
