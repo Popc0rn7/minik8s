@@ -21,11 +21,12 @@ if [ -z "$RSYNC_RSH" ]; then
 fi
 
 usage() {
-	printf 'Usage: %s [--build] [--push-image] [--pull-image] [--sync-only]\n' "$0"
+	printf 'Usage: %s [--build] [--push-image] [--pull-image] [--pull-image-only] [--sync-only]\n' "$0"
 	printf '       %s\n' "$0"
 	printf '\n'
 	printf 'With no flags, the script runs the default update flow: build, push image, sync, and remote pull.\n'
 	printf 'When any stage flag is provided, only the selected optional stages run before/after sync.\n'
+	printf '--pull-image-only pulls the CNI image on remote nodes without syncing artifacts.\n'
 	printf 'Each deploy node must be reachable from this host via ssh; use ~/.ssh/config ProxyJump if needed.\n'
 	printf '\n'
 	printf 'Environment:\n'
@@ -54,6 +55,7 @@ fi
 build=0
 push_image=0
 pull_image=0
+sync=1
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--build)
@@ -64,6 +66,11 @@ while [ "$#" -gt 0 ]; do
 			;;
 		--pull-image)
 			pull_image=1
+			;;
+		--pull-image-only)
+			pull_image=1
+			sync=0
+			default_update=0
 			;;
 		--sync-only)
 			build=0
@@ -102,28 +109,32 @@ if [ "$push_image" -eq 1 ]; then
 	MOORING_CNI_IMAGE="$MOORING_CNI_IMAGE" IMAGE_TAG="$IMAGE_TAG" make push-mooring-cni-image
 fi
 
-for file in minik8s kubectl; do
-	if [ ! -f "$PROD_DIR/$file" ]; then
-		printf 'missing artifact: %s\n' "$PROD_DIR/$file" >&2
-		printf 'run `make prod` first, or use `%s --build`\n' "$0" >&2
+if [ "$sync" -eq 1 ]; then
+	for file in minik8s kubectl; do
+		if [ ! -f "$PROD_DIR/$file" ]; then
+			printf 'missing artifact: %s\n' "$PROD_DIR/$file" >&2
+			printf 'run `make prod` first, or use `%s --build`\n' "$0" >&2
+			exit 1
+		fi
+	done
+
+	if [ ! -d manifest ]; then
+		printf 'missing manifest directory\n' >&2
 		exit 1
 	fi
-done
-
-if [ ! -d manifest ]; then
-	printf 'missing manifest directory\n' >&2
-	exit 1
 fi
 
 for node in $DEPLOY_NODES; do
-	printf 'creating %s on %s\n' "$REMOTE_DIR" "$node"
-	ssh $SSH_OPTS "$node" "mkdir -p '$REMOTE_DIR'"
+	if [ "$sync" -eq 1 ]; then
+		printf 'creating %s on %s\n' "$REMOTE_DIR" "$node"
+		ssh $SSH_OPTS "$node" "mkdir -p '$REMOTE_DIR'"
 
-	printf 'syncing binaries and manifests to %s:%s\n' "$node" "$REMOTE_DIR"
-	rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS "$PROD_DIR"/minik8s "$PROD_DIR"/kubectl manifest "$node:$REMOTE_DIR/"
+		printf 'syncing binaries and manifests to %s:%s\n' "$node" "$REMOTE_DIR"
+		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS "$PROD_DIR"/minik8s "$PROD_DIR"/kubectl manifest "$node:$REMOTE_DIR/"
 
-	printf 'setting executable bits on %s\n' "$node"
-	ssh $SSH_OPTS "$node" "chmod +x '$REMOTE_DIR/minik8s' '$REMOTE_DIR/kubectl'"
+		printf 'setting executable bits on %s\n' "$node"
+		ssh $SSH_OPTS "$node" "chmod +x '$REMOTE_DIR/minik8s' '$REMOTE_DIR/kubectl'"
+	fi
 
 	if [ "$pull_image" -eq 1 ]; then
 		printf 'pulling %s:%s on %s\n' "$MOORING_CNI_IMAGE" "$IMAGE_TAG" "$node"

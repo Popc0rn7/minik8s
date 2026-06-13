@@ -16,15 +16,23 @@ IMAGE_TAG ?= latest
 PLATFORM ?= linux/amd64
 DEPLOY_ARGS ?=
 
-.PHONY: build prod mooring-cni-image push-mooring-cni-image deploy-prod test bridge sailer-once sailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
+.PHONY: build prod prod-build prod-push prod-cni mooring-cni-image push-mooring-cni-image deploy-prod prod-deploy test bridge sailer-once sailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
 
 build:
 	go build -o $(MINIK8S) ./cmd/minik8s
 	go build -o $(KUBECTL) ./cmd/kubectl
 	go build -o $(CNI_PLUGIN) ./cmd/mooring
 
-prod:
+prod: prod-build
+
+prod-build:
 	PROD_IMAGE="$(PROD_IMAGE)" PROD_DIR="$(PROD_DIR)" PROD_GOOS="$(PROD_GOOS)" PROD_GOARCH="$(PROD_GOARCH)" PROD_GOPROXY="$(PROD_GOPROXY)" PROD_DOCKER_USER="$(PROD_DOCKER_USER)" scripts/prod-build.sh
+
+prod-push:
+	scripts/deploy-prod.sh --sync-only
+
+prod-cni: mooring-cni-image push-mooring-cni-image
+	MOORING_CNI_IMAGE="$(MOORING_CNI_IMAGE)" IMAGE_TAG="$(IMAGE_TAG)" scripts/deploy-prod.sh --pull-image-only
 
 mooring-cni-image:
 	MOORING_CNI_IMAGE="$(MOORING_CNI_IMAGE)" IMAGE_TAG="$(IMAGE_TAG)" PLATFORM="$(PLATFORM)" scripts/build-mooring-cni-image.sh
@@ -34,6 +42,8 @@ push-mooring-cni-image:
 
 deploy-prod:
 	MOORING_CNI_IMAGE="$(MOORING_CNI_IMAGE)" IMAGE_TAG="$(IMAGE_TAG)" scripts/deploy-prod.sh $(DEPLOY_ARGS)
+
+prod-deploy: prod-build prod-push prod-cni
 
 test:
 	go test ./...

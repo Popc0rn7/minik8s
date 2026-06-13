@@ -55,6 +55,7 @@ MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl get pods
 |---|---|---|
 | `GET` | `/api/v1/nodes` | List known Nodes. |
 | `GET` | `/api/v1/nodes/{name}` | Read one Node. |
+| `DELETE` | `/api/v1/nodes/{name}` | Delete one Node, cascade-delete Pods assigned to it, revoke its node token, and remove cleanable node-local control-plane state. ReplicaSet and Service controllers resync after deletion. |
 | `GET` | `/api/v1/nodes/{name}/pods?nodeIP={ip}&podCIDR={cidr}` | Worker heartbeat, optional Node network metadata update, and assigned-Pod poll endpoint. |
 
 Errors use a Kubernetes-style `Status` object with `kind`, `apiVersion`, `status`, `reason`, `message`, and `code`.
