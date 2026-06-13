@@ -41,6 +41,10 @@ type Sailer struct {
 	stats      map[string]runtime.ContainerStats
 }
 
+type nodePodLister interface {
+	ListNodePods(ctx context.Context, nodeName string) ([]runtime.PodRef, error)
+}
+
 func New(config Config) *Sailer {
 	interval := config.Interval
 	if interval == 0 {
@@ -160,6 +164,9 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 	if err := k.reportMetrics(ctx, syncPods); err != nil {
 		minilog.Warn("sailer-metrics", "node=%s error=%v", k.nodeName, err)
 	}
+	if err := k.cleanupRuntimeOrphans(ctx, desiredByKey); err != nil {
+		return err
+	}
 
 	for key, knownPod := range k.known {
 		if _, ok := desiredByKey[key]; ok {
@@ -172,6 +179,29 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 		delete(k.known, key)
 	}
 	return k.SyncProxy(ctx)
+}
+
+func (k *Sailer) cleanupRuntimeOrphans(ctx context.Context, desiredByKey map[string]*pod.Pod) error {
+	lister, ok := k.runtime.(nodePodLister)
+	if !ok {
+		return nil
+	}
+	running, err := lister.ListNodePods(ctx, k.nodeName)
+	if err != nil {
+		return fmt.Errorf("listing runtime pods on node %s: %w", k.nodeName, err)
+	}
+	for _, ref := range running {
+		namespace := podNamespace(ref.Namespace)
+		key := namespace + "/" + ref.Name
+		if _, ok := desiredByKey[key]; ok {
+			continue
+		}
+		minilog.Info("sailer-runtime-orphan", "pod=%s node=%s", key, k.nodeName)
+		if err := k.runtime.CleanupPod(ctx, namespace, ref.Name); err != nil {
+			return fmt.Errorf("cleaning runtime orphan %s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 func (k *Sailer) Shutdown(ctx context.Context) error {

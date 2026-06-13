@@ -95,6 +95,12 @@ type SandboxInfo struct {
 	State     SandboxState
 }
 
+// PodRef identifies a Pod in the local runtime.
+type PodRef struct {
+	Namespace string
+	Name      string
+}
+
 // SandboxState represents the state of a sandbox
 type SandboxState string
 

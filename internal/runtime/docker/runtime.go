@@ -320,6 +320,31 @@ func (d *DockerRuntime) CleanupNodePods(ctx context.Context, nodeName string) er
 	return nil
 }
 
+func (d *DockerRuntime) ListNodePods(ctx context.Context, nodeName string) ([]runtime.PodRef, error) {
+	args := filters.NewArgs(
+		filters.Arg("label", "minik8s.kind"),
+		filters.Arg("label", "minik8s.node.name="+nodeName),
+	)
+	containers, err := d.client.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+	if err != nil {
+		return nil, fmt.Errorf("listing node pod containers: %w", err)
+	}
+	seen := make(map[string]runtime.PodRef)
+	for _, existing := range containers {
+		namespace := existing.Labels["minik8s.pod.namespace"]
+		name := existing.Labels["minik8s.pod.name"]
+		if namespace == "" || name == "" {
+			continue
+		}
+		seen[namespace+"/"+name] = runtime.PodRef{Namespace: namespace, Name: name}
+	}
+	out := make([]runtime.PodRef, 0, len(seen))
+	for _, ref := range seen {
+		out = append(out, ref)
+	}
+	return out, nil
+}
+
 // InspectContainer returns container information
 func (d *DockerRuntime) InspectContainer(ctx context.Context, containerID string) (*runtime.ContainerInfo, error) {
 	info, err := d.client.ContainerInspect(ctx, containerID)

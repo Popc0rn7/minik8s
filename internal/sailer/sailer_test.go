@@ -160,6 +160,20 @@ func TestSailerSyncOnceCleansRemovedAssignedPods(t *testing.T) {
 	assert.Contains(t, logs.String(), "sailer-pod-removed: pod=default/nginx")
 }
 
+func TestSailerSyncOnceCleansRuntimeOrphansAfterRestart(t *testing.T) {
+	rt := mock.NewMockRuntime()
+	rt.NetNSPath = "/proc/101/ns/net"
+	rt.SeedPod("default", "deleted", "node-a")
+	client := &fakePodClient{pods: []*pod.Pod{testPod("kept", "node-a")}}
+	k := New(Config{NodeName: "node-a", Runtime: rt, Client: client})
+
+	require.NoError(t, k.SyncOnce(context.Background()))
+
+	assert.Contains(t, rt.CleanupPodCalls, "default/deleted")
+	assert.NotContains(t, rt.CleanupPodCalls, "default/kept")
+	assert.Empty(t, rt.CleanupNodePodsCalls)
+}
+
 func TestSailerSyncOnceResetsStaleRuntimeStatusForNewAssignment(t *testing.T) {
 	rt := mock.NewMockRuntime()
 	rt.NetNSPath = "/proc/101/ns/net"

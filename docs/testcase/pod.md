@@ -1,160 +1,119 @@
 # Pod 测试用例
 
-本文档覆盖 v0.1.0 的 Pod 生命周期、状态展示、资源映射、重启策略、双 worker 心跳调度，以及 NodeLost 时 Pod 状态级联更新。本文档可作为 `docs/testcase` 重构后的首个独立入口：每个 case 都写明前置，并在结束后恢复到可继续执行下一个 case 的状态。
-
-## 测试拓扑
-
-| 角色 | 节点名 | 运行组件 | PodCIDR | 说明 |
-| --- | --- | --- | --- | --- |
-| 控制面 + worker | `node-a` | `bridge`、`sailer` | `10.244.0.0/24` | API server、网络注册表与 etcd 推荐放这里 |
-| worker | `node-b` | `sailer` | `10.244.1.0/24` | 只访问 Harbor，不直连 etcd |
-
-默认端口：
-
-- Harbor: `18080`
-- nginx hostPort case: `8080`
-
-两台机器都需要 Linux、Docker、`ip`、`iptables`、`nsenter`、`curl` 或 `wget`，并以 root 用户执行测试命令。`10.244.0.0/16` 不应与局域网或宿主机路由冲突。
-
-## 公共前置
-
-在 node-a 和 node-b 的所有测试终端先设置变量；按实际局域网地址替换 `NODE_A_IP`、`NODE_B_IP`。
-
-```bash
-export NODE_A_IP=192.168.1.8
-export NODE_B_IP=192.168.1.6
-export CLUSTER_CIDR=10.244.0.0/16
-export HARBOR=http://${NODE_A_IP}:18080
-```
-
-确认 `manifest/node/node_a.yaml` 和 `manifest/node/node_b.yaml` 中的 `InternalIP` 与当前两台机器一致；如果不同，先按实际地址更新这两个 Node YAML。Node YAML 不需要写 `spec.podCIDR`，控制面会从 `${CLUSTER_CIDR}` 自动分配。
-
-在两台机器的仓库根目录构建二进制：
-
-```bash
-make build
-```
-
-在 node-a 启动控制面。后续 CLI 命令默认在 node-a 的仓库根目录执行。
-
-```bash
-export MINIK8S_STATE_DIR=.minik8s/testcase-state
-./minik8s bridge \
-  --listen :18080 \
-  --cluster-cidr ${CLUSTER_CIDR} \
-  --node-cidr-mask-size 24
-```
-
-在 node-a 的另一个终端验证控制面可用：
-
-```bash
-./kubectl version
-```
-
-除 `POD-01` 外，本文默认两台机器分别启动启用 CNI 的 sailer。sailer 会先注册 Node，等待控制面分配 `spec.podCIDR`，再自动写入本机 CNI 配置。
-
-node-a：
-
-```bash
-unset MINIK8S_CNI_DISABLED
-./minik8s sailer \
-  manifest/node/node_a.yaml \
-  --harbor ${HARBOR}
-./minik8s doctor network
-```
-
-node-b：
-
-```bash
-unset MINIK8S_CNI_DISABLED
-./minik8s sailer \
-  manifest/node/node_b.yaml \
-  --harbor ${HARBOR}
-./minik8s doctor network
-```
-
-在 node-a 验证两个节点都已注册：
-
-```bash
-./kubectl get nodes
-```
-
-期望输出包含 `node-a` 和 `node-b`，两个节点状态均为 `Ready`，并显示控制面分配的 PodCIDR：`node-a` 为 `10.244.0.0/24`，`node-b` 为 `10.244.1.0/24`。
+本文档覆盖 v0.1.0 的 Pod 生命周期、状态展示、资源映射、重启策略、双 worker
+心跳调度，以及 NodeLost/删除 Node 时的 Pod 状态级联更新。
 
 ## 覆盖矩阵
 
 | Case | 目标 | 机器 | 状态恢复要求 |
 | --- | --- | --- | --- |
-| POD-01 | 无 CNI 基础 Pod、hostPort、delete 清理 | node-a | 删除 Pod，恢复 node-a 启用 CNI 的 sailer |
+| POD-01 | 无 CNI 基础 Pod、hostPort、delete 清理 | node-a | 删除 Pod，恢复 node-a 的 `sailer run` |
 | POD-02 | hostPath volume 与 CPU/memory limit | node-a，必要时 node-b 辅助检查 | 删除 Pod，删除 marker 文件 |
 | POD-03 | restartPolicy 崩溃重启 | node-a | 删除 Pod |
 | POD-04 | 双 worker 心跳与未指定 nodeName 的调度 | node-a + node-b | 删除 Pod，保持两个节点 Ready |
-| POD-05 | NodeLost 后 Pod Unknown 与 Service endpoint 移除 | node-a + node-b | 重启 node-b sailer，删除 Pod 和 Service |
+| POD-05 | NodeLost 后 Pod Unknown 与 Service endpoint 移除 | node-a + node-b | 重启 node-b 的 `sailer run`，删除 Pod 和 Service |
+| POD-05B | 删除 Node 后级联删除 assigned Pods | node-a + node-b | node-b 重新 join 并启动 worker |
 | POD-06 | mock runtime 失败原因回写 | 任意开发机 | 无集群状态变更 |
 
 ## POD-01：基础 Pod 生命周期
 
 目标：验证 `kind: Pod`、metadata、container image/tag、command/args、hostPort、`apply/get/delete`。
 
-机器：node-a。此 case 使用 hostPort，建议临时禁用 CNI，避免已有 CNI 配置影响 Docker hostPort 行为。此 case 仍然需要 node-a 的 `bridge` 运行，但不需要 node-b。
+机器：node-a。此 case 是 hostPort 诊断用例，必须和默认双 worker + mooring CNI
+环境隔离执行；不要在已经 `apply -f manifest/cni/mooring.yaml` 的默认环境里把
+`curl 127.0.0.1:8080` 写作必过项。
 
-前置：停止 node-a 上当前启用 CNI 的 sailer，然后在 node-a 的单独终端临时启动禁用 CNI 的 sailer。
+前置：
 
-```bash
-export MINIK8S_CNI_DISABLED=1
-./minik8s sailer \
-  manifest/node/node_a.yaml \
-  --harbor ${HARBOR}
+- 使用干净的测试状态目录，或在启用 mooring CNI manifest 前执行本 case。
+- 本 case 应使用固定到 node-a 的 Pod manifest。可以直接使用
+  `manifest/pod/pod_nginx_hostport_node_a.yaml`；不要用未指定 node 的
+  `manifest/pod/pod_nginx.yaml` 验证 node-a hostPort。
+- 停止 node-a 上当前默认 `sailer run`，然后只在该终端设置
+  `MINIK8S_CNI_DISABLED=1`。
+- 如果集群里已经存在 `kube-mooring/mooring-cni-cfg` 和
+  `kube-mooring/mooring-cni-ds`，当前 `sailer run` 会优先启用 manifest CNI；
+  `MINIK8S_CNI_DISABLED=1` 不会覆盖这条路径。此时本 case 只能验证
+  Pod lifecycle 和 Docker runtime 信息，hostPort curl 预期应记录为当前实现偏差。
+
+```fish
+set -gx MINIK8S_CNI_DISABLED 1
+./minik8s sailer run
 ```
 
 流程：
 
-```bash
-./kubectl delete pod nginx-pod || true
-./kubectl apply -f manifest/pod/pod_nginx.yaml
+```fish
+# 清掉上一次残留，保证 apply 结果可判断
+./kubectl delete pod nginx-hostport-node-a; or true
+
+# 创建固定到 node-a 的 Pod 并观察 API 状态
+./kubectl apply -f manifest/pod/pod_nginx_hostport_node_a.yaml
 ./kubectl get pods
+./kubectl get pod nginx-hostport-node-a -o yaml
+
+# 验证 hostPort 和 Docker runtime 状态
 curl -fsS http://127.0.0.1:8080 >/tmp/minik8s-nginx.html
-docker ps --filter label=minik8s.pod.name=nginx-pod
-docker inspect nginx-pod-nginx --format '{{json .Config.Image}} {{json .Config.Entrypoint}} {{json .Config.Cmd}}'
-./kubectl delete pod nginx-pod
+docker ps --filter label=minik8s.pod.name=nginx-hostport-node-a
+docker inspect nginx-hostport-node-a-nginx --format '{{json .Config.Image}} {{json .Config.Entrypoint}} {{json .Config.Cmd}}'
+docker inspect minik8s-pod-default-nginx-hostport-node-a-sandbox --format '{{json .HostConfig.PortBindings}} {{json .HostConfig.NetworkMode}}'
+
+# 删除 Pod，等待 sailer 清理本地容器
+./kubectl delete pod nginx-hostport-node-a
 sleep 6
-docker ps -a --filter label=minik8s.pod.name=nginx-pod --format '{{.Names}} {{.Status}}'
+docker ps -a --filter label=minik8s.pod.name=nginx-hostport-node-a --format '{{.Names}} {{.Status}}'
 ```
 
 期望：
 
-- `apply` 输出 `pod/nginx-pod created`。
-- `get pods` 包含 `nginx-pod`、`Running`、`default`、`app=nginx`。
-- `curl` 返回 nginx 页面。
+- `apply` 输出 `pod/nginx-hostport-node-a created`。
+- `get pods` 包含 `nginx-hostport-node-a`、`Running`、`default`、`app=nginx`；`get pod -o yaml`
+  中 `spec.nodeName` 应为 `node-a`。
+- 在未启用 manifest CNI 且 Docker hostPort 生效时，`curl` 返回 nginx 页面。
+- 在已启用 mooring CNI 的默认环境中，如果 Pod status 含 `cniResult`，则
+  `curl 127.0.0.1:8080` 失败是当前实现偏差，不应归因于 nginx 容器未启动。
 - Docker 中能看到 sandbox 和 workload 容器。
-- 删除后不再有 `nginx-pod` 对应容器。
+- 删除后不再有 `nginx-hostport-node-a` 对应容器。
+
+本轮实测暴露的问题与处理方式：
+
+| 反预期点 | 证据 | Solution |
+| --- | --- | --- |
+| hostPort case 使用了未固定节点的 manifest，导致测试命令和实际运行节点不一致 | `get pod -o yaml` 中 `spec.nodeName` 不是 node-a | 这不是调度器错误，而是 testcase 设计错误；POD-01 必须 apply 固定到 node-a 的 manifest。 |
+| 已设置 `MINIK8S_CNI_DISABLED=1`，Pod 仍走 CNI | `status.cniResult` 非空，sandbox `NetworkMode` 为 `none` | 预期上，显式禁用 CNI 应让本 case 走 Docker 原生网络/端口发布路径；如果 manifest CNI 已启用并覆盖该环境变量，则 hostPort 正向验证不成立。可选修正是让 `MINIK8S_CNI_DISABLED=1` 优先级高于 manifest CNI，或把本 case 放到未启用 manifest CNI 的独立状态目录。 |
+| sandbox 有 `HostPort: 8080`，但宿主机没有 8080 监听 | `docker inspect` 有 `HostConfig.PortBindings`，`ss -ltnp | grep :8080` 为空 | 如果走 Docker hostPort 路径，宿主机应监听或可访问 8080；如果走 CNI `NetworkMode=none` 路径，Docker 不会自动完成 hostPort 转发。当前实现没有额外 hostPort portmap，因此该现象是 CNI 路径下 hostPort 未实现。 |
+| 删除 API Pod 后实际节点仍有容器 | 删除事件发生时对应 node worker 未运行，节点无法执行本地 GC | Kubernetes 合理行为是：API 删除 Pod 后，kubelet 在线时应尽快终止容器；kubelet 离线时控制面不能直接清理该节点容器。Minik8s 的预期行为是 worker 恢复后列出本节点 runtime Pod，并清理不在当前 assigned desired 集合里的 orphan 容器。testcase 不应在 worker 停止时断言容器立即消失，应在 worker 恢复并完成一次 sync 后检查残留为空。 |
 
 恢复状态：
 
-```bash
-./kubectl delete pod nginx-pod || true
+```fish
+./kubectl delete pod nginx-hostport-node-a; or true
 rm -f /tmp/minik8s-nginx.html
 ```
 
-停止 node-a 临时禁用 CNI 的 sailer，然后在 node-a sailer 终端恢复启用 CNI 的模式：
+停止 node-a 临时禁用 CNI 的 `sailer run`，然后在 node-a worker 终端恢复默认模式。
+如果为了保证 node-a 单节点调度而停止了 node-b，也要恢复 node-b 的默认
+`sailer run`。worker 恢复后应完成一次同步，并自动清理该节点上已经不属于
+assigned Pods 的 Minik8s runtime 容器：
 
-```bash
-unset MINIK8S_CNI_DISABLED
-./minik8s sailer \
-  manifest/node/node_a.yaml \
-  --harbor ${HARBOR}
+```fish
+set -e MINIK8S_CNI_DISABLED
+./minik8s sailer run
 ```
 
 确认 node-a 回到 Ready 后再继续后续 case：
 
-```bash
+```fish
 ./kubectl get nodes
 ```
 
 失败排查：
 
-- `curl 127.0.0.1:8080` 失败：确认 node-a 的临时 sailer 正在运行，且没有其他进程占用 `8080`。
-- 删除后容器仍在：等待 sailer 下一轮同步，或临时执行 `./minik8s sailer manifest/node/node_a.yaml --harbor ${HARBOR} --once`。
+- `curl 127.0.0.1:8080` 失败：先看 `spec.nodeName` 是否为 node-a，再看
+  `status.cniResult` 是否非空；如果非空，说明当前走的是 CNI 路径，不是 hostPort
+  正向环境。
+- 删除后容器仍在：确认对应节点的 `sailer run` 已恢复并完成一次同步；恢复后仍残留才是
+  runtime orphan GC 问题。
 
 ## POD-02：volume 与资源限制
 
@@ -162,26 +121,30 @@ unset MINIK8S_CNI_DISABLED
 
 机器：node-a 执行 CLI。Pod 可能被调度到 node-a 或 node-b；marker 文件和 Docker inspect 需要在实际运行节点检查。
 
-前置：node-a/node-b 的启用 CNI sailer 均在运行，`./kubectl get nodes` 能看到两个节点为 `Ready`。
+前置：node-a/node-b 均运行默认 `sailer run`，`./kubectl get nodes` 能看到两个节点为 `Ready`。
 
-```bash
-./kubectl delete pod volume-resource-pod -n demo || true
+```fish
+./kubectl delete pod volume-resource-pod -n demo; or true
 mkdir -p /tmp/minik8s-case-data
 rm -f /tmp/minik8s-case-data/marker
 ```
 
 流程：
 
-```bash
+```fish
+# 创建带 hostPath volume 和 resource limit 的 Pod
 ./kubectl apply -f manifest/pod/pod_volume_resource.yaml
 sleep 6
+
+# 查看 namespace 过滤、调度节点和资源声明
 ./kubectl get pods -n demo
 ./kubectl describe pod volume-resource-pod -n demo
 ```
 
 根据 `describe pod` 中的 Node，到实际运行节点执行宿主机检查：
 
-```bash
+```fish
+# 在实际运行节点检查 hostPath 写入和 Docker resource 映射
 cat /tmp/minik8s-case-data/marker
 docker inspect volume-resource-pod-writer --format '{{json .HostConfig.Mounts}} {{.HostConfig.NanoCpus}} {{.HostConfig.Memory}}'
 ```
@@ -196,8 +159,8 @@ docker inspect volume-resource-pod-writer --format '{{json .HostConfig.Mounts}} 
 
 恢复状态：
 
-```bash
-./kubectl delete pod volume-resource-pod -n demo || true
+```fish
+./kubectl delete pod volume-resource-pod -n demo; or true
 rm -f /tmp/minik8s-case-data/marker
 sleep 6
 docker ps -a --filter label=minik8s.pod.name=volume-resource-pod --format '{{.Names}} {{.Status}}'
@@ -205,7 +168,7 @@ docker ps -a --filter label=minik8s.pod.name=volume-resource-pod --format '{{.Na
 
 如果 Pod 被调度到 node-b，也在 node-b 执行 marker 和 Docker 残留检查：
 
-```bash
+```fish
 rm -f /tmp/minik8s-case-data/marker
 docker ps -a --filter label=minik8s.pod.name=volume-resource-pod --format '{{.Names}} {{.Status}}'
 ```
@@ -221,28 +184,34 @@ docker ps -a --filter label=minik8s.pod.name=volume-resource-pod --format '{{.Na
 
 机器：node-a 执行 CLI。Pod 可能被调度到 node-a 或 node-b；`docker kill` 与 `docker inspect` 需要在实际运行节点执行。
 
-前置：node-a/node-b 的启用 CNI sailer 均在运行，`./kubectl get nodes` 能看到两个节点为 `Ready`。
+前置：node-a/node-b 均运行默认 `sailer run`，`./kubectl get nodes` 能看到两个节点为 `Ready`。
 
-```bash
-./kubectl delete pod busybox-client || true
+```fish
+./kubectl delete pod busybox-client; or true
 ```
 
 流程：
 
-```bash
+```fish
+# 创建会长期 sleep 的 client Pod
 ./kubectl apply -f manifest/pod/pod_busybox_client.yaml
 sleep 6
+
+# 先确认 Pod 被调度到哪个节点，再去该节点执行 Docker 检查
 ./kubectl describe pod busybox-client
 ```
 
 根据 `describe pod` 中的 Node，到实际运行节点执行重启检查：
 
-```bash
-CLIENT_CID=$(docker ps -q --filter label=minik8s.pod.name=busybox-client --filter label=minik8s.container.name=client)
-docker kill "${CLIENT_CID}"
-docker inspect "${CLIENT_CID}" --format '{{.State.Status}}'
+```fish
+# 找到 workload 容器并模拟崩溃
+set CLIENT_CID (docker ps -q --filter label=minik8s.pod.name=busybox-client --filter label=minik8s.container.name=client)
+docker kill "$CLIENT_CID"
+docker inspect "$CLIENT_CID" --format '{{.State.Status}}'
+
+# 等待 sailer 下一轮同步后确认容器恢复运行
 sleep 6
-docker inspect "${CLIENT_CID}" --format '{{.State.Status}}'
+docker inspect "$CLIENT_CID" --format '{{.State.Status}}'
 ./kubectl get pods
 ```
 
@@ -254,8 +223,8 @@ docker inspect "${CLIENT_CID}" --format '{{.State.Status}}'
 
 恢复状态：
 
-```bash
-./kubectl delete pod busybox-client || true
+```fish
+./kubectl delete pod busybox-client; or true
 sleep 6
 docker ps -a --filter label=minik8s.pod.name=busybox-client --format '{{.Names}} {{.Status}}'
 ```
@@ -271,20 +240,25 @@ docker ps -a --filter label=minik8s.pod.name=busybox-client --format '{{.Names}}
 
 目标：验证 node-a、node-b 都能注册为 Ready；未指定 `spec.nodeName` 的 Pod 会在节点心跳后被 Navigator 分配。
 
-机器：node-a 执行 CLI；node-a/node-b 的 sailer 都需运行。
+机器：node-a 执行 CLI；node-a/node-b 都需运行默认 `sailer run`。
 
-前置：node-a/node-b 均启动启用 CNI 的 sailer，且 node-a 已退出 `POD-01` 使用的 `MINIK8S_CNI_DISABLED=1` 临时模式。
+前置：node-a/node-b 均运行默认 `sailer run`，且 node-a 已退出 `POD-01` 使用的
+`MINIK8S_CNI_DISABLED=1` 临时模式。
 
-```bash
-./kubectl delete pod nginx-pod-2 || true
+```fish
+# 清理旧的第二个 nginx Pod，并确认两个 worker 仍可调度
+./kubectl delete pod nginx-pod-2; or true
 ./kubectl get nodes
 ```
 
 流程：
 
-```bash
-./kubectl apply -f manifest/pod/pod_nginx_service_peer.yaml
+```fish
+# 创建未指定 nodeName/nodeSelector 的 Pod，让 Navigator 分配节点
+./kubectl apply -f manifest/pod/pod_nginx_2.yaml
 sleep 6
+
+# 查看实际写回的 spec.nodeName 和运行状态
 ./kubectl get pod nginx-pod-2 -o yaml
 ./kubectl describe pod nginx-pod-2
 ```
@@ -297,8 +271,8 @@ sleep 6
 
 恢复状态：
 
-```bash
-./kubectl delete pod nginx-pod-2 || true
+```fish
+./kubectl delete pod nginx-pod-2; or true
 sleep 6
 ./kubectl get nodes
 docker ps -a --filter label=minik8s.pod.name=nginx-pod-2 --format '{{.Names}} {{.Status}}'
@@ -315,68 +289,73 @@ docker ps -a --filter label=minik8s.pod.name=nginx-pod-2 --format '{{.Names}} {{
 
 目标：验证 node-b heartbeat 超时后，控制面将该节点上的非终态 Pod 从 `Running` 标为 `Unknown`，写入 `reason: NodeLost`，并从匹配的 Service endpoints 中移除该 PodIP。
 
-机器：node-a 执行 CLI；node-b 需要先运行 sailer，再在流程中手动停止。
+机器：node-a 执行 CLI；node-b 需要先运行 `sailer run`，再在流程中手动停止。
 
-前置：node-a/node-b 均启动启用 CNI 的 sailer，且 `./kubectl get nodes` 能看到两个节点为 `Ready`。
+前置：node-a/node-b 均运行默认 `sailer run`，且 `./kubectl get nodes` 能看到两个节点为 `Ready`。
 
-```bash
-./kubectl delete service nginx-service || true
-./kubectl delete pod nginx-node-b || true
+```fish
+# 清理可能影响 endpoints 的旧对象
+./kubectl delete service nginx-service; or true
+./kubectl delete pod nginx-node-b; or true
 ./kubectl get nodes
 ```
 
 流程：
 
-```bash
+```fish
+# 创建固定到 node-b 的 nginx 后端
 ./kubectl apply -f manifest/pod/pod_nginx_node_b.yaml
 sleep 8
+
+# 创建 Service，记录停止 worker 前的 endpoints
 ./kubectl apply -f manifest/service/service_clusterip_nginx.yaml
 sleep 6
 ./kubectl get pod nginx-node-b -o yaml
 ./kubectl describe service nginx-service
 ```
 
-在 node-b 的 sailer 终端按 `Ctrl-C` 停止 sailer，等待超过默认 Node TTL：
+在 node-b 的 `sailer run` 终端按 `Ctrl-C` 停止 worker，等待超过默认 Node TTL：
 
-```bash
+```fish
+# node-b worker 已停止；等待控制面把节点和 Pod 标为异常
 sleep 35
 ./kubectl get nodes
+
+# 检查 Pod 状态级联和 Service endpoints 更新
 ./kubectl get pod nginx-node-b -o yaml
 ./kubectl describe service nginx-service
 ```
 
 期望：
 
-- 停止 node-b sailer 前，`nginx-node-b` 为 `Running`，有非空 `podIP`。
-- 停止 node-b sailer 前，`nginx-service` endpoints 包含 `nginx-node-b` 对应 PodIP。
+- 停止 node-b worker 前，`nginx-node-b` 为 `Running`，有非空 `podIP`。
+- 停止 node-b worker 前，`nginx-service` endpoints 包含 `nginx-node-b` 对应 PodIP。
 - 如果用 `Ctrl-C` 或 SIGTERM 正常停止 `sailer run`，`node-b` 应很快变为 `Unknown`；如果用
   `kill -9` 强杀进程，则需要等待默认 30s Node TTL 后由 bridge liveness loop 标记为 `Unknown`。
 - `nginx-node-b` 的 `status.phase` 为 `Unknown`，`status.reason` 为 `NodeLost`。
 - `nginx-node-b` 的 `status.podIP` 仍保留，用于诊断。
 - `nginx-service` endpoints 不再包含 `nginx-node-b` 的 PodIP；如果没有其他 Running 且 label `app=nginx` 的 Pod，endpoints 应为空。
 
-恢复状态：先在 node-b 重新启动启用 CNI 的 sailer，使节点重新心跳。
+恢复状态：先在 node-b 重新启动默认 `sailer run`，使节点重新心跳。
 
-```bash
-unset MINIK8S_CNI_DISABLED
-./minik8s sailer \
-  manifest/node/node_b.yaml \
-  --harbor ${HARBOR}
+```fish
+set -e MINIK8S_CNI_DISABLED
+./minik8s sailer run
 ```
 
 然后在 node-a 删除测试对象并确认节点恢复：
 
-```bash
-./kubectl delete service nginx-service || true
-./kubectl delete pod nginx-node-b || true
+```fish
+./kubectl delete service nginx-service; or true
+./kubectl delete pod nginx-node-b; or true
 sleep 6
 ./kubectl get nodes
-./kubectl describe service nginx-service || true
+./kubectl describe service nginx-service; or true
 ```
 
 如果 node-b 上仍有残留容器，在 node-b 检查：
 
-```bash
+```fish
 docker ps -a --filter label=minik8s.pod.name=nginx-node-b --format '{{.Names}} {{.Status}}'
 ```
 
@@ -384,7 +363,7 @@ docker ps -a --filter label=minik8s.pod.name=nginx-node-b --format '{{.Names}} {
 
 - Pod 仍为 `Running`：确认等待时间超过 Node TTL，且执行过 `./kubectl get nodes` 或 node liveness loop 正在运行。
 - Service endpoint 仍包含 node-b PodIP：确认使用的是包含 NodeLost 级联修复后的 `bridge`，并等待一次 service sync。
-- node-b 重新出现 Ready：确认 node-b sailer 已停止，且没有 systemd/supervisor 自动拉起。
+- node-b 重新出现 Ready：确认 node-b 的 `sailer run` 已停止，且没有 systemd/supervisor 自动拉起。
 
 ## POD-05B：Node 删除级联
 
@@ -392,27 +371,31 @@ docker ps -a --filter label=minik8s.pod.name=nginx-node-b --format '{{.Names}} {
 
 机器：node-a 执行 CLI；node-b 需要先运行 `sailer run`。
 
-前置：node-a/node-b 均启动启用 CNI 的 sailer，且 `./kubectl get nodes` 能看到两个节点为 `Ready`。
+前置：node-a/node-b 均运行默认 `sailer run`，且 `./kubectl get nodes` 能看到两个节点为 `Ready`。
 
-```bash
-./kubectl delete service nginx-service || true
-./kubectl delete pod nginx-node-b || true
+```fish
+# 清理可能影响删除级联判断的旧对象
+./kubectl delete service nginx-service; or true
+./kubectl delete pod nginx-node-b; or true
 ./kubectl get nodes
 ```
 
 流程：
 
-```bash
+```fish
+# 创建固定到 node-b 的 Pod 和选择它的 Service
 ./kubectl apply -f manifest/pod/pod_nginx_node_b.yaml
 sleep 8
 ./kubectl apply -f manifest/service/service_clusterip_nginx.yaml
 sleep 6
 ./kubectl get pod nginx-node-b -o yaml
 ./kubectl describe service nginx-service
+
+# 删除 Node，触发 assigned Pod 级联删除和 endpoint 刷新
 ./kubectl delete node node-b
 sleep 6
 ./kubectl get nodes
-./kubectl get pod nginx-node-b -o yaml || true
+./kubectl get pod nginx-node-b -o yaml; or true
 ./kubectl describe service nginx-service
 ```
 
@@ -426,13 +409,13 @@ sleep 6
 
 恢复状态：在 node-b 停止旧 `sailer run`，重新执行 join，然后启动 run。
 
-```bash
+```fish
 cd /opt/minik8s
-export HARBOR=http://<node-a 内网 IP>:18080
-export BOOTSTRAP_TOKEN=<当前 bridge bootstrap token>
+set -gx HARBOR "http://<node-a 内网 IP>:18080"
+set -gx BOOTSTRAP_TOKEN "<当前 bridge bootstrap token>"
 ./minik8s sailer join \
-  --apiserver "$HARBOR" \
-  --token "$BOOTSTRAP_TOKEN" \
+  --apiserver $HARBOR \
+  --token $BOOTSTRAP_TOKEN \
   -f manifest/node/node_b.yaml
 ./minik8s sailer run
 ```
@@ -453,7 +436,8 @@ export BOOTSTRAP_TOKEN=<当前 bridge bootstrap token>
 
 流程：
 
-```bash
+```fish
+# 只跑稳定覆盖失败状态回写的 sailer 单元测试
 go test ./internal/sailer -run 'SandboxCreationFailure|SyncOnce' -count=1 -v
 ```
 
@@ -472,13 +456,13 @@ go test ./internal/sailer -run 'SandboxCreationFailure|SyncOnce' -count=1 -v
 
 如果中途停止执行，或需要在下一组 testcase 前恢复干净状态，在 node-a 执行：
 
-```bash
-./kubectl delete service nginx-service || true
-./kubectl delete pod nginx-node-b || true
-./kubectl delete pod nginx-pod-2 || true
-./kubectl delete pod busybox-client || true
-./kubectl delete pod volume-resource-pod -n demo || true
-./kubectl delete pod nginx-pod || true
+```fish
+./kubectl delete service nginx-service; or true
+./kubectl delete pod nginx-node-b; or true
+./kubectl delete pod nginx-pod-2; or true
+./kubectl delete pod busybox-client; or true
+./kubectl delete pod volume-resource-pod -n demo; or true
+./kubectl delete pod nginx-pod; or true
 rm -f /tmp/minik8s-nginx.html
 rm -f /tmp/minik8s-case-data/marker
 sleep 6
@@ -488,9 +472,9 @@ sleep 6
 
 在 node-a 和 node-b 分别检查残留容器：
 
-```bash
+```fish
 docker ps -a --filter label=minik8s.pod.namespace=default
 docker ps -a --filter label=minik8s.pod.namespace=demo
 ```
 
-全量恢复完成后，node-a/node-b 的启用 CNI sailer 应继续运行，`./kubectl get nodes` 应显示两个节点为 `Ready`。
+全量恢复完成后，node-a/node-b 的默认 `sailer run` 应继续运行，`./kubectl get nodes` 应显示两个节点为 `Ready`。
