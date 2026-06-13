@@ -15,10 +15,12 @@ import (
 
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/function"
+	"minik8s/internal/metrics"
 	"minik8s/internal/minilog"
 	"minik8s/internal/netregistry"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
+	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
 )
 
@@ -742,6 +744,51 @@ func TestHarborNodeLostMarksAssignedPodsUnknownAndRefreshesEndpoints(t *testing.
 	assert.Equal(t, "10.244.1.2", gotSvc.Status.Endpoints[0].IP)
 }
 
+func TestHarborNodeLostEvictsReplicaSetPodAndSchedulesReplacement(t *testing.T) {
+	now := time.Unix(100, 0)
+	podStore := store.NewInMemoryPodStore()
+	rsStore := store.NewInMemoryReplicaSetStore()
+	nodeStore := store.NewInMemoryNodeStore()
+	nodeStore.SetNow(func() time.Time { return now })
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: now.Add(-time.Minute)})))
+	require.NoError(t, nodeStore.Upsert(node.New("node-b", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: now})))
+	require.NoError(t, rsStore.Create(&replicaset.ReplicaSet{
+		TypeMeta:   pod.TypeMeta{Kind: "ReplicaSet", APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{Name: "nginx-rs", Namespace: "default"},
+		Spec: replicaset.ReplicaSetSpec{
+			Replicas: int32(1),
+			Selector: pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}},
+			Template: pod.Pod{
+				ObjectMeta: pod.ObjectMeta{Labels: map[string]string{"app": "nginx"}},
+				Spec:       pod.PodSpec{Containers: []pod.ContainerSpec{{Name: "nginx", Image: "nginx"}}},
+			},
+		},
+	}))
+	require.NoError(t, podStore.Create(&pod.Pod{
+		ObjectMeta: pod.ObjectMeta{
+			Name:      "nginx-rs-1",
+			Namespace: "default",
+			Labels: map[string]string{
+				"app":                 "nginx",
+				replicaset.OwnerLabel: "nginx-rs",
+			},
+		},
+		Spec:   pod.PodSpec{NodeName: "node-a", Containers: []pod.ContainerSpec{{Name: "nginx", Image: "nginx"}}},
+		Status: pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.0.2"},
+	}))
+	srv := New(Config{PodStore: podStore, ReplicaSetStore: rsStore, NodeStore: nodeStore, NodeTTL: 30 * time.Second})
+
+	rec := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-b/pods", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	replacement, err := podStore.Get("nginx-rs-1", "default")
+	require.NoError(t, err)
+	assert.Equal(t, "node-b", replacement.Spec.NodeName)
+	assert.Empty(t, replacement.Status.Phase)
+	assert.Contains(t, rec.Body.String(), `"name":"nginx-rs-1"`)
+	assert.Contains(t, rec.Body.String(), `"nodeName":"node-b"`)
+}
+
 func TestHarborNodeLostDoesNotChangeTerminalPods(t *testing.T) {
 	now := time.Unix(100, 0)
 	podStore := store.NewInMemoryPodStore()
@@ -778,6 +825,58 @@ func TestHarborNodeLostDoesNotChangeTerminalPods(t *testing.T) {
 		assert.Equal(t, item.phase, got.Status.Phase)
 		assert.Equal(t, "existing", got.Status.Reason)
 	}
+}
+
+func TestHarborDeleteNodeCascadesAssignedPodsAndCleansState(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	serviceStore := store.NewInMemoryServiceStore()
+	nodeStore := store.NewInMemoryNodeStore()
+	metricsStore := store.NewInMemoryMetricsStore()
+	registry := netregistry.NewStore(time.Minute)
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{PodCIDR: "10.244.0.0/24"}, node.NodeStatus{
+		Phase:     node.NodeReady,
+		Addresses: []node.NodeAddress{{Type: node.NodeAddressInternalIP, Address: "192.168.1.8"}},
+	})))
+	require.NoError(t, nodeStore.Upsert(node.New("node-b", node.NodeSpec{PodCIDR: "10.244.1.0/24"}, node.NodeStatus{Phase: node.NodeReady})))
+	require.NoError(t, podStore.Create(&pod.Pod{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx-a", Namespace: "default", Labels: map[string]string{"app": "nginx"}},
+		Spec:       pod.PodSpec{NodeName: "node-a", Containers: []pod.ContainerSpec{{Name: "nginx", Image: "nginx"}}},
+		Status:     pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.0.2"},
+	}))
+	require.NoError(t, podStore.Create(&pod.Pod{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx-b", Namespace: "default", Labels: map[string]string{"app": "nginx"}},
+		Spec:       pod.PodSpec{NodeName: "node-b", Containers: []pod.ContainerSpec{{Name: "nginx", Image: "nginx"}}},
+		Status:     pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.1.2"},
+	}))
+	require.NoError(t, serviceStore.Create(&service.Service{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx-service", Namespace: "default"},
+		Spec: service.ServiceSpec{
+			Selector: pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}},
+			Ports:    []service.ServicePort{{Port: 80, TargetPort: 80, Protocol: "TCP"}},
+		},
+	}))
+	require.NoError(t, registry.Register(netregistry.Node{Name: "node-a", NodeIP: "192.168.1.8", PodCIDR: "10.244.0.0/24"}))
+	require.NoError(t, metricsStore.UpsertNodeMetrics("node-a", []*metrics.PodMetrics{{
+		Name: "nginx-a", Namespace: "default", NodeName: "node-a",
+	}}))
+	srv := New(Config{PodStore: podStore, ServiceStore: serviceStore, NodeStore: nodeStore, MetricsStore: metricsStore, NetRegistry: registry})
+	require.NoError(t, srv.syncServices(context.Background()))
+
+	rec := serve(t, srv, http.MethodDelete, "/api/v1/nodes/node-a", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	_, err := nodeStore.Get("node-a")
+	assert.ErrorIs(t, err, store.ErrNodeNotFound)
+	_, err = podStore.Get("nginx-a", "default")
+	assert.ErrorIs(t, err, store.ErrPodNotFound)
+	_, err = podStore.Get("nginx-b", "default")
+	require.NoError(t, err)
+	gotSvc, err := serviceStore.Get("nginx-service", "default")
+	require.NoError(t, err)
+	require.Len(t, gotSvc.Status.Endpoints, 1)
+	assert.Equal(t, "10.244.1.2", gotSvc.Status.Endpoints[0].IP)
+	assert.Empty(t, registry.List())
+	assert.Empty(t, metricsStore.ListPodMetrics(""))
 }
 
 func TestHarborLogsNodeConnectOnlyOnStateTransition(t *testing.T) {
@@ -821,6 +920,26 @@ func TestHarborLogsNodeReconnectFromUnknown(t *testing.T) {
 	got, err := nodeStore.Get("node-a")
 	require.NoError(t, err)
 	assert.Equal(t, node.NodeReady, got.Status.Phase)
+}
+
+func TestHarborNodeStatusPatchMarksNodeUnknown(t *testing.T) {
+	nodeStore := store.NewInMemoryNodeStore()
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady, LastHeartbeat: time.Now()})))
+	srv := New(Config{NodeStore: nodeStore})
+
+	rec := serve(t, srv, http.MethodPatch, "/api/v1/nodes/node-a/status", `{
+		"phase":"Unknown",
+		"conditions":[{"type":"Ready","status":"Unknown","reason":"SailerStopped","message":"sailer stopped"}]
+	}`)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	got, err := nodeStore.Get("node-a")
+	require.NoError(t, err)
+	assert.Equal(t, node.NodeUnknown, got.Status.Phase)
+	cond := got.ReadyCondition()
+	require.NotNil(t, cond)
+	assert.Equal(t, node.ConditionUnknown, cond.Status)
+	assert.Equal(t, "SailerStopped", cond.Reason)
 }
 
 func TestHarborLogsPodStatusUpdate(t *testing.T) {

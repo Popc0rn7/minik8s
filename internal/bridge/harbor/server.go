@@ -75,6 +75,7 @@ type Server struct {
 	nodeWatch          *nodeWatchHub
 	bootstrapTokenPath string
 	nodeTokens         *nodeTokenRegistry
+	heartbeats         *heartbeatManager
 }
 
 func New(config Config) *Server {
@@ -138,7 +139,8 @@ func New(config Config) *Server {
 	if err != nil {
 		panic(err)
 	}
-	return &Server{
+	nodeTokens := newNodeTokenRegistry()
+	server := &Server{
 		pods:               podStore,
 		services:           serviceStore,
 		dns:                dnsStore,
@@ -156,8 +158,20 @@ func New(config Config) *Server {
 		cidrAlloc:          cidrAlloc,
 		nodeWatch:          newNodeWatchHub(),
 		bootstrapTokenPath: config.BootstrapTokenPath,
-		nodeTokens:         newNodeTokenRegistry(),
+		nodeTokens:         nodeTokens,
 	}
+	server.heartbeats = newHeartbeatManager(heartbeatManagerConfig{
+		pods:        podStore,
+		services:    serviceStore,
+		metrics:     metricsStore,
+		nodes:       nodeStore,
+		replicaSets: replicaSetStore,
+		netRegistry: netRegistryStore,
+		cidrAlloc:   cidrAlloc,
+		nodeTTL:     nodeTTL,
+		nodeTokens:  nodeTokens,
+	})
+	return server
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -240,7 +254,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"name":       "nodes",
 				"namespaced": false,
 				"kind":       "Node",
-				"verbs":      []string{"get", "list", "patch"},
+				"verbs":      []string{"get", "list", "create", "update", "patch", "delete"},
 			}, {
 				"name":       "configmaps",
 				"namespaced": true,
@@ -506,20 +520,10 @@ func (s *Server) handleNodePods(w http.ResponseWriter, r *http.Request, nodeName
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
-	if err := s.nodes.UpsertHeartbeat(nodeName, heartbeat); err != nil {
+	assigned, err := s.heartbeats.Beat(r.Context(), nodeName, heartbeat)
+	if err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
-	}
-	assigned, err := s.ensureNodePodCIDR(nodeName)
-	if err != nil {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
-		return
-	}
-	if assigned.InternalIP() != "" && assigned.Spec.PodCIDR != "" {
-		if err := s.netRegistry.Register(netregistry.Node{Name: nodeName, NodeIP: assigned.InternalIP(), PodCIDR: assigned.Spec.PodCIDR}); err != nil {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-			return
-		}
 	}
 	if shouldLogConnect {
 		minilog.Info("node-connect", "node=%s", nodeName)
@@ -572,39 +576,23 @@ func (s *Server) handleNodeJoin(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "bootstrap token is invalid or expired")
 		return
 	}
-	joined, err := s.prepareJoinedNode(&req.Node)
-	if err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+	name := strings.TrimSpace(req.Node.Name())
+	if name == "" {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "metadata.name is required")
 		return
 	}
-	if _, err := s.nodes.Get(joined.Name()); err == nil {
-		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("node %q already exists", joined.Name()))
+	if _, err := s.nodes.Get(name); err == nil {
+		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("node %q already exists", name))
 		return
 	} else if err != nil && !errors.Is(err, store.ErrNodeNotFound) {
-		writeStoreError(w, err, "nodes", joined.Name())
+		writeStoreError(w, err, "nodes", name)
 		return
 	}
-	if err := s.nodes.Upsert(joined); err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-		return
-	}
-	assigned, err := s.ensureNodePodCIDR(joined.Name())
+	assigned, token, err := s.heartbeats.Join(r.Context(), &req.Node)
 	if err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
-	if assigned.InternalIP() != "" && assigned.Spec.PodCIDR != "" {
-		if err := s.netRegistry.Register(netregistry.Node{Name: assigned.Name(), NodeIP: assigned.InternalIP(), PodCIDR: assigned.Spec.PodCIDR}); err != nil {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-			return
-		}
-	}
-	token, err := generateNodeToken(assigned.Name())
-	if err != nil {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
-		return
-	}
-	s.nodeTokens.Set(assigned.Name(), token)
 	s.nodeWatch.publish("ADDED", *assigned)
 	writeJSON(w, http.StatusCreated, nodeJoinResponse{Node: *assigned, NodeToken: token})
 }
@@ -634,7 +622,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
-		assigned, err := s.ensureNodePodCIDR(n.Name())
+		assigned, err := s.heartbeats.ensureNodePodCIDR(n.Name())
 		if err != nil {
 			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 			return
@@ -664,13 +652,25 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
 		}
-		assigned, err := s.ensureNodePodCIDR(n.Name())
+		assigned, err := s.heartbeats.ensureNodePodCIDR(n.Name())
 		if err != nil {
 			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 			return
 		}
 		s.nodeWatch.publish("MODIFIED", *assigned)
 		writeJSON(w, http.StatusOK, assigned)
+		return
+	case http.MethodDelete:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target a node")
+			return
+		}
+		if err := s.deleteNode(r.Context(), name); err != nil {
+			writeStoreError(w, err, "nodes", name)
+			return
+		}
+		minilog.Info("node-delete", "node=%s", name)
+		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("node %q deleted", name))
 		return
 	case http.MethodPatch:
 		if name == "" {
@@ -717,6 +717,48 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request, name string
 	writeJSON(w, http.StatusOK, s.nodeWatch.stamp(*n))
 }
 
+func (s *Server) deleteNode(ctx context.Context, name string) error {
+	deleted, err := s.nodes.Get(name)
+	if err != nil {
+		return err
+	}
+	pods, err := s.pods.List("", nil)
+	if err != nil {
+		return fmt.Errorf("listing pods for node delete: %w", err)
+	}
+	deletedPods := 0
+	for _, p := range pods {
+		if p == nil || p.Spec.NodeName != name {
+			continue
+		}
+		if err := s.pods.Delete(p.Name, p.Namespace); err != nil && !errors.Is(err, store.ErrPodNotFound) {
+			return fmt.Errorf("deleting pod %s/%s assigned to node %s: %w", p.Namespace, p.Name, name, err)
+		}
+		deletedPods++
+	}
+	if err := s.nodes.Delete(name); err != nil {
+		return err
+	}
+	if s.nodeTokens != nil {
+		s.nodeTokens.Revoke(name)
+	}
+	if s.netRegistry != nil {
+		s.netRegistry.Delete(name)
+	}
+	if s.metrics != nil {
+		s.metrics.DeleteNodeMetrics(name)
+	}
+	s.nodeWatch.publish("DELETED", *deleted)
+	if err := s.syncReplicaSets(ctx); err != nil {
+		return fmt.Errorf("syncing replicasets after node delete: %w", err)
+	}
+	if err := s.syncServices(ctx); err != nil {
+		return fmt.Errorf("syncing services after node delete: %w", err)
+	}
+	minilog.Info("node-delete-cascade", "node=%s pods=%d", name, deletedPods)
+	return nil
+}
+
 func (s *Server) writeNodeWatch(ctx context.Context, w http.ResponseWriter, nodes []node.Node) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -758,7 +800,55 @@ func (s *Server) handleNodeStatus(w http.ResponseWriter, r *http.Request, name s
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "node token is invalid")
 		return
 	}
-	s.patchNodeAnnotations(w, r, name)
+	current, err := s.nodes.Get(name)
+	if err != nil {
+		writeStoreError(w, err, "nodes", name)
+		return
+	}
+	var status node.NodeStatus
+	if err := decodeObject(r.Body, &status); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	if status.Phase == node.NodeUnknown {
+		reason, message := "NodeStatusUnknown", "node reported unknown status"
+		if len(status.Conditions) > 0 {
+			reason = status.Conditions[0].Reason
+			message = status.Conditions[0].Message
+		}
+		updated, err := s.heartbeats.MarkUnknown(r.Context(), name, reason, message)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		current = updated
+	} else {
+		mergeNodeStatus(&current.Status, status)
+		if err := s.nodes.Upsert(current); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+	}
+	s.nodeWatch.publish("MODIFIED", *current)
+	writeJSON(w, http.StatusOK, current)
+}
+
+func mergeNodeStatus(current *node.NodeStatus, patch node.NodeStatus) {
+	if patch.Phase != "" {
+		current.Phase = patch.Phase
+	}
+	if !patch.LastHeartbeat.IsZero() {
+		current.LastHeartbeat = patch.LastHeartbeat
+	}
+	if len(patch.Addresses) > 0 {
+		current.Addresses = append([]node.NodeAddress(nil), patch.Addresses...)
+	}
+	if len(patch.Conditions) > 0 {
+		current.Conditions = append([]node.NodeCondition(nil), patch.Conditions...)
+	}
+	if patch.Allocatable != (node.ResourceList{}) {
+		current.Allocatable = patch.Allocatable
+	}
 }
 
 func (s *Server) patchNodeAnnotations(w http.ResponseWriter, r *http.Request, name string) {
@@ -965,78 +1055,6 @@ func (s *Server) authorizeNodeRequest(r *http.Request, nodeName string) bool {
 		return true
 	}
 	return s.nodeTokens.Validate(nodeName, bearerToken(r))
-}
-
-func (s *Server) prepareJoinedNode(n *node.Node) (*node.Node, error) {
-	if n == nil {
-		return nil, fmt.Errorf("node is required")
-	}
-	copy := n.DeepCopy()
-	if strings.TrimSpace(copy.Name()) == "" {
-		return nil, fmt.Errorf("metadata.name is required")
-	}
-	copy.ObjectMeta.Name = strings.TrimSpace(copy.Name())
-	if copy.InternalIP() == "" {
-		return nil, fmt.Errorf("status.addresses InternalIP is required")
-	}
-	copy.Kind = "Node"
-	copy.APIVersion = "v1"
-	copy.Spec.Role = node.NodeRoleWorker
-	copy.Status.Phase = node.NodeReady
-	copy.Status.LastHeartbeat = time.Now().UTC()
-	copy.SetReadyCondition(node.ConditionTrue, copy.Status.LastHeartbeat, "Join", "Node joined the cluster")
-	if copy.Status.Allocatable == (node.ResourceList{}) {
-		copy.Status.Allocatable = copy.Spec.Capacity
-	}
-	if err := s.validateRequestedPodCIDR(copy.Name(), copy.Spec.PodCIDR); err != nil {
-		return nil, err
-	}
-	return copy, nil
-}
-
-func (s *Server) ensureNodePodCIDR(name string) (*node.Node, error) {
-	current, err := s.nodes.Get(name)
-	if err != nil {
-		return nil, err
-	}
-	if current.Spec.PodCIDR != "" {
-		if err := s.validateRequestedPodCIDR(name, current.Spec.PodCIDR); err != nil {
-			return nil, err
-		}
-		return current, nil
-	}
-	nodes, err := s.nodes.List()
-	if err != nil {
-		return nil, err
-	}
-	cidr, err := s.cidrAlloc.assign(name, nodes)
-	if err != nil {
-		return nil, err
-	}
-	current.Spec.PodCIDR = cidr
-	if err := s.nodes.Upsert(current); err != nil {
-		return nil, err
-	}
-	return s.nodes.Get(name)
-}
-
-func (s *Server) validateRequestedPodCIDR(name, podCIDR string) error {
-	if podCIDR == "" {
-		return nil
-	}
-	if err := s.cidrAlloc.validate(podCIDR); err != nil {
-		return fmt.Errorf("invalid PodCIDR %q: %w", podCIDR, err)
-	}
-	nodes, err := s.nodes.List()
-	if err != nil {
-		return err
-	}
-	for _, existing := range nodes {
-		if existing.Name() != name && existing.Spec.PodCIDR == podCIDR {
-			return fmt.Errorf("PodCIDR %q conflicts with node %q", podCIDR, existing.Name())
-		}
-	}
-	return nil
 }
 
 func (s *Server) handlePodStatus(w http.ResponseWriter, r *http.Request, namespace, name string) {
@@ -1946,11 +1964,10 @@ func (s *Server) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 }
 
 func (s *Server) refreshNodeLiveness(ctx context.Context) ([]store.NodeTransition, error) {
-	transitions, err := s.nodes.RefreshLiveness(s.nodeTTL)
+	transitions, err := s.heartbeats.Refresh(ctx)
 	if err != nil {
 		return nil, err
 	}
-	updatedPods := 0
 	for _, transition := range transitions {
 		if transition.To != node.NodeUnknown {
 			continue
@@ -1958,42 +1975,8 @@ func (s *Server) refreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 		if n, getErr := s.nodes.Get(transition.Name); getErr == nil {
 			s.nodeWatch.publish("MODIFIED", *n)
 		}
-		count, err := s.markPodsNodeLost(transition.Name)
-		if err != nil {
-			return nil, err
-		}
-		updatedPods += count
-	}
-	if updatedPods > 0 {
-		if err := s.syncServices(ctx); err != nil {
-			return nil, err
-		}
 	}
 	return transitions, nil
-}
-
-func (s *Server) markPodsNodeLost(nodeName string) (int, error) {
-	pods, err := s.pods.List("", nil)
-	if err != nil {
-		return 0, fmt.Errorf("listing pods for node liveness: %w", err)
-	}
-	updated := 0
-	for _, p := range pods {
-		if p.Spec.NodeName != nodeName {
-			continue
-		}
-		if p.Status.Phase != pod.PodPending && p.Status.Phase != pod.PodRunning {
-			continue
-		}
-		p.Status.Phase = pod.PodUnknown
-		p.Status.Reason = pod.PodReasonNodeLost
-		p.Status.Message = fmt.Sprintf("Node %s stopped reporting heartbeat", nodeName)
-		if err := s.pods.Update(p); err != nil {
-			return updated, fmt.Errorf("marking pod %s/%s node lost: %w", p.Namespace, p.Name, err)
-		}
-		updated++
-	}
-	return updated, nil
 }
 
 func (s *Server) shouldLogNodeConnect(nodeName string) (bool, error) {

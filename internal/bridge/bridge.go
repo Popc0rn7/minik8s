@@ -9,8 +9,6 @@ import (
 	"minik8s/internal/bridge/harbor"
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/bridge/navigator"
-	"minik8s/internal/minilog"
-	"minik8s/internal/node"
 )
 
 type Config struct {
@@ -185,22 +183,14 @@ func (k *Bridge) RegisterDefaultControllers(serviceInterval, replicaSetInterval,
 		runner.Register(captain.NewHPAController(k.podStore, k.replicaSetStore, k.hpaStore, k.metricsStore, captain.HPAControllerConfig{}), captain.RunSpec{Interval: hpaInterval, InitialSync: true, SkipIfRunning: true})
 	}
 	if nodeLivenessInterval > 0 {
-		runner.Register(captain.ControllerFunc{
-			ControllerName: captain.NodeLivenessName,
-			SyncFunc: func(ctx context.Context) error {
-				transitions, err := k.RefreshNodeLiveness(ctx)
-				if err != nil {
-					return err
-				}
-				for _, transition := range transitions {
-					if transition.To != node.NodeUnknown {
-						continue
-					}
-					minilog.Warn("node-disconnect", "node=%s lastHeartbeat=%s", transition.Name, shortDuration(time.Since(transition.LastHeartbeat)))
-				}
-				return nil
-			},
-		}, captain.RunSpec{Interval: nodeLivenessInterval, InitialSync: true, SkipIfRunning: true})
+		runner.Register(captain.NewNodeLifecycleController(captain.NodeLifecycleConfig{
+			Pods:        k.podStore,
+			Services:    k.serviceStore,
+			Metrics:     k.metricsStore,
+			Nodes:       k.nodeStore,
+			ReplicaSets: k.replicaSetStore,
+			NodeTTL:     k.nodeTTL,
+		}), captain.RunSpec{Interval: nodeLivenessInterval, InitialSync: true, SkipIfRunning: true})
 	}
 }
 
@@ -265,14 +255,4 @@ func (k *Bridge) WorkflowStore() store.WorkflowStore {
 
 func (k *Bridge) NodeTTL() time.Duration {
 	return k.nodeTTL
-}
-
-func shortDuration(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	if d < time.Second {
-		return d.String()
-	}
-	return d.Round(time.Second).String()
 }
