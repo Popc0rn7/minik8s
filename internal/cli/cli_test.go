@@ -398,6 +398,12 @@ func TestBridgeDependencyEtcdDirIsAbsolute(t *testing.T) {
 
 func TestWaitForBridgeDependenciesReadyUsesEtcdProbe(t *testing.T) {
 	calls := 0
+	originalTCPReady := bridgeDependencyTCPReady
+	bridgeDependencyTCPReady = func(address string) bool {
+		assert.Equal(t, "127.0.0.1:2379", address)
+		return true
+	}
+	defer func() { bridgeDependencyTCPReady = originalTCPReady }()
 	originalProbe := bridgeDependencyEtcdProbe
 	bridgeDependencyEtcdProbe = func(ctx context.Context, endpoints []string) error {
 		calls++
@@ -413,6 +419,30 @@ func TestWaitForBridgeDependenciesReadyUsesEtcdProbe(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, calls)
+}
+
+func TestWaitForBridgeDependenciesReadySkipsEtcdProbeUntilTCPReady(t *testing.T) {
+	tcpCalls := 0
+	probeCalls := 0
+	originalTCPReady := bridgeDependencyTCPReady
+	bridgeDependencyTCPReady = func(address string) bool {
+		tcpCalls++
+		assert.Equal(t, "127.0.0.1:2379", address)
+		return tcpCalls >= 2
+	}
+	defer func() { bridgeDependencyTCPReady = originalTCPReady }()
+	originalProbe := bridgeDependencyEtcdProbe
+	bridgeDependencyEtcdProbe = func(ctx context.Context, endpoints []string) error {
+		probeCalls++
+		return nil
+	}
+	defer func() { bridgeDependencyEtcdProbe = originalProbe }()
+
+	err := waitForBridgeDependenciesReady(context.Background(), make(chan error), bridgeOptions{addons: newAddonSet()}, 2*time.Second)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, tcpCalls)
+	assert.Equal(t, 1, probeCalls)
 }
 
 func TestCLIInitWritesStaticDependencyManifests(t *testing.T) {
@@ -1585,6 +1615,24 @@ func TestCLIGetNodesShowsExpiredHeartbeatNodesUnknown(t *testing.T) {
 	assert.NotContains(t, out.String(), "Ready")
 }
 
+func TestCLIDeleteNode(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	nodeStore := store.NewInMemoryNodeStore()
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{}, node.NodeStatus{Phase: node.NodeReady})))
+	app := newHTTPTestApp(t, harbor.New(harbor.Config{
+		PodStore:  store.NewInMemoryPodStore(),
+		NodeStore: nodeStore,
+	}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"delete", "node", "node-a"}, &out))
+
+	assert.Contains(t, out.String(), "node/node-a deleted")
+	_, err := nodeStore.Get("node-a")
+	assert.ErrorIs(t, err, store.ErrNodeNotFound)
+}
+
 func TestCLIDoctorNetworkShowsCNIPaths(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
@@ -1877,7 +1925,7 @@ func TestParseBridgeOptionsServiceSyncInterval(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid --service-sync-interval")
 }
 
-func TestServiceSyncLoopRunsPeriodically(t *testing.T) {
+func TestBridgeControllerRunnerSyncsServicesPeriodically(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
 	require.NoError(t, podStore.Create(&pod.Pod{
@@ -1899,7 +1947,8 @@ func TestServiceSyncLoopRunsPeriodically(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go app.runServiceSyncLoop(ctx, 10*time.Millisecond)
+	app.controlBridge.RegisterDefaultControllers(10*time.Millisecond, 0, 0, 0)
+	app.controlBridge.StartControllers(ctx)
 
 	require.Eventually(t, func() bool {
 		got, err := serviceStore.Get("nginx-service", "default")

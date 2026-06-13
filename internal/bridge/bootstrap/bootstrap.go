@@ -82,6 +82,11 @@ func (c *PrivatePodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) erro
 	return nil
 }
 
+func (c *PrivatePodClient) UpdateNodeStatus(ctx context.Context, nodeName string, status node.NodeStatus) error {
+	_, _, _ = ctx, nodeName, status
+	return nil
+}
+
 func (c *PrivatePodClient) UpdateNodeMetrics(ctx context.Context, nodeName string, podMetrics []*metrics.PodMetrics) error {
 	_, _, _ = ctx, nodeName, podMetrics
 	return nil

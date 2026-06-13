@@ -25,6 +25,7 @@ type PodClient interface {
 	ListAssignedPods(ctx context.Context, heartbeat NodeHeartbeat) ([]*pod.Pod, error)
 	ListServices(ctx context.Context) ([]*service.Service, error)
 	UpdatePodStatus(ctx context.Context, p *pod.Pod) error
+	UpdateNodeStatus(ctx context.Context, nodeName string, status node.NodeStatus) error
 	UpdateNodeMetrics(ctx context.Context, nodeName string, podMetrics []*metrics.PodMetrics) error
 }
 
@@ -176,6 +177,36 @@ func (c *HTTPPodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("update pod status: %s", responseError(resp))
+	}
+	return nil
+}
+
+func (c *HTTPPodClient) UpdateNodeStatus(ctx context.Context, nodeName string, status node.NodeStatus) error {
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" {
+		return fmt.Errorf("node name is required")
+	}
+	data, err := json.Marshal(status)
+	if err != nil {
+		return err
+	}
+	endpoint, err := c.url(path.Join("/api/v1/nodes", nodeName, "status"))
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("update node status: %s", responseError(resp))
 	}
 	return nil
 }

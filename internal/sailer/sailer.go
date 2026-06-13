@@ -179,6 +179,16 @@ func (k *Sailer) Shutdown(ctx context.Context) error {
 		return err
 	}
 	var firstErr error
+	status := node.NodeStatus{Phase: node.NodeUnknown}
+	status.Conditions = []node.NodeCondition{{
+		Type:    node.NodeConditionReady,
+		Status:  node.ConditionUnknown,
+		Reason:  "SailerStopped",
+		Message: "sailer stopped reporting heartbeat",
+	}}
+	if err := k.client.UpdateNodeStatus(ctx, k.nodeName, status); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("marking node unknown: %w", err)
+	}
 	if k.proxy != nil {
 		if err := k.proxy.SyncAll(ctx, nil); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("clearing service proxy rules: %w", err)

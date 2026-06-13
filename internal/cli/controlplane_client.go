@@ -486,6 +486,14 @@ func (c *controlPlaneClient) GetNode(ctx context.Context, name string) (*node.No
 	return &n, nil
 }
 
+func (c *controlPlaneClient) DeleteNode(ctx context.Context, name string) error {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/nodes", name))
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
+}
+
 func (c *controlPlaneClient) createNode(ctx context.Context, n *node.Node) (*node.Node, error) {
 	endpoint, err := c.resourceURL("/api/v1/nodes")
 	if err != nil {

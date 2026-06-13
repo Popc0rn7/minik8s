@@ -227,8 +227,8 @@ func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete pod|service|dns|replicaset|hpa <name>",
-		Short: "Delete a Pod, Service, DNS, ReplicaSet, or HPA",
+		Use:   "delete pod|service|dns|replicaset|hpa|node <name>",
+		Short: "Delete a Pod, Service, DNS, ReplicaSet, HPA, or Node",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bind()
@@ -257,6 +257,10 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 				if err := app.delete(cmd.Context(), []string{"hpa", ref.name, "-n", app.namespace}, out); err != nil {
 					return err
 				}
+			case resourceNodes:
+				if err := app.delete(cmd.Context(), []string{"node", ref.name}, out); err != nil {
+					return err
+				}
 			case resourceFunctions:
 				if err := app.delete(cmd.Context(), []string{"function", ref.name, "-n", app.namespace}, out); err != nil {
 					return err
@@ -270,7 +274,7 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 					return err
 				}
 			default:
-				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, functions, eventtriggers, and workflows")
+				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, nodes, functions, eventtriggers, and workflows")
 			}
 			return nil
 		},

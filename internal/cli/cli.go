@@ -19,7 +19,6 @@ import (
 	"gopkg.in/yaml.v3"
 	bridge "minik8s/internal/bridge"
 	"minik8s/internal/bridge/bootstrap"
-	bridgeCaptain "minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
 	bridgeServerless "minik8s/internal/bridge/serverless"
 	"minik8s/internal/bridge/tokens"
@@ -434,7 +433,7 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	if len(args) < 2 {
-		return fmt.Errorf("usage: minik8s delete pod|service|dns|replicaset|hpa|function|eventtrigger|workflow <name> [-n namespace]")
+		return fmt.Errorf("usage: minik8s delete pod|service|dns|replicaset|hpa|node|function|eventtrigger|workflow <name> [-n namespace]")
 	}
 	if args[0] == "service" || args[0] == "svc" {
 		name := args[1]
@@ -468,6 +467,13 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return writes(out, cliui.SuccessLine("hpa/%s deleted", name))
 	}
+	if args[0] == "node" || args[0] == "nodes" || args[0] == "no" {
+		name := args[1]
+		if err := client.DeleteNode(ctx, name); err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("node/%s deleted", name))
+	}
 	if args[0] == "function" || args[0] == "functions" || args[0] == "fn" {
 		name := args[1]
 		namespace := namespaceFlag(args[2:])
@@ -493,7 +499,7 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("workflow/%s deleted", name))
 	}
 	if args[0] != "pod" {
-		return fmt.Errorf("usage: minik8s delete pod|service|dns|replicaset|hpa|function|eventtrigger|workflow <name> [-n namespace]")
+		return fmt.Errorf("usage: minik8s delete pod|service|dns|replicaset|hpa|node|function|eventtrigger|workflow <name> [-n namespace]")
 	}
 	name := args[1]
 	namespace := namespaceFlag(args[2:])
@@ -1563,25 +1569,17 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	go func() {
 		errCh <- server.ListenAndServe()
 	}()
-	if options.serviceSyncInterval > 0 {
-		go a.runServiceSyncLoop(ctx, options.serviceSyncInterval)
-	}
 	if options.addons.Enabled(AddonDNS) && options.dnsSyncInterval > 0 {
 		if err := writeDNSGatewayConfigs(DefaultCoreDNSCorefilePath(), DefaultNginxDNSConfigPath()); err != nil {
 			return err
 		}
 		go a.runDNSSyncLoop(ctx, options.dnsSyncInterval, options.gatewayIP)
 	}
-	if options.replicaSetSyncInterval > 0 {
-		go a.runReplicaSetSyncLoop(ctx, options.replicaSetSyncInterval)
-	}
-	if options.hpaSyncInterval > 0 {
-		go a.runHPASyncLoop(ctx, options.hpaSyncInterval)
-	}
+	a.controlBridge.RegisterDefaultControllers(options.serviceSyncInterval, options.replicaSetSyncInterval, options.hpaSyncInterval, 5*time.Second)
+	a.controlBridge.StartControllers(ctx)
 	if natsURL := strings.TrimSpace(os.Getenv("MINIK8S_NATS_URL")); natsURL != "" {
 		go bridgeServerless.NewController(a.controlBridge.FunctionStore(), a.controlBridge.EventTriggerStore(), natsURL).Run(ctx, 5*time.Second)
 	}
-	go a.runNodeLivenessLoop(ctx, 5*time.Second)
 	if err := writes(out, cliui.InfoLine("bridge listening on %s", options.listen)); err != nil {
 		return err
 	}
@@ -1851,6 +1849,7 @@ func ensureBridgeDependencyPortsFree(options bridgeOptions) error {
 }
 
 var bridgeDependencyEtcdProbe = store.Probe
+var bridgeDependencyTCPReady = tcpPortReady
 
 func waitForBridgeDependenciesReady(ctx context.Context, errCh <-chan error, options bridgeOptions, timeout time.Duration) error {
 	deadline := time.NewTimer(timeout)
@@ -1884,6 +1883,9 @@ func waitForBridgeDependenciesReady(ctx context.Context, errCh <-chan error, opt
 }
 
 func etcdDependencyReady(ctx context.Context) bool {
+	if !bridgeDependencyTCPReady("127.0.0.1:2379") {
+		return false
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	return bridgeDependencyEtcdProbe(probeCtx, []string{"http://127.0.0.1:2379"}) == nil
@@ -2037,26 +2039,6 @@ func listenPort(value string) (int32, error) {
 	return int32(port), nil
 }
 
-func (a *App) runServiceSyncLoop(ctx context.Context, interval time.Duration) {
-	syncOnce := func() {
-		ctrl := bridgeCaptain.NewServiceController(a.controlBridge.PodStore(), a.controlBridge.ServiceStore())
-		if err := ctrl.Sync(ctx); err != nil {
-			minilog.Warn("service-periodic-sync", "error=%v", err)
-		}
-	}
-	syncOnce()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			syncOnce()
-		}
-	}
-}
-
 func (a *App) runDNSSyncLoop(ctx context.Context, interval time.Duration, gatewayIP string) {
 	syncOnce := func() {
 		if err := dnssync.Sync(ctx, dnssync.Config{
@@ -2121,73 +2103,6 @@ func writeTextFile(path, value string) error {
 		return err
 	}
 	return os.Rename(tmp, path)
-}
-
-func (a *App) runReplicaSetSyncLoop(ctx context.Context, interval time.Duration) {
-	syncOnce := func() {
-		ctrl := bridgeCaptain.NewReplicaSetController(a.controlBridge.PodStore(), a.controlBridge.ReplicaSetStore())
-		if err := ctrl.Sync(ctx); err != nil {
-			minilog.Warn("replicaset-periodic-sync", "error=%v", err)
-		}
-	}
-	syncOnce()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			syncOnce()
-		}
-	}
-}
-
-func (a *App) runHPASyncLoop(ctx context.Context, interval time.Duration) {
-	syncOnce := func() {
-		ctrl := bridgeCaptain.NewHPAController(a.controlBridge.PodStore(), a.controlBridge.ReplicaSetStore(), a.controlBridge.HPAStore(), a.controlBridge.MetricsStore(), bridgeCaptain.HPAControllerConfig{})
-		if err := ctrl.Sync(ctx); err != nil {
-			minilog.Warn("hpa-periodic-sync", "error=%v", err)
-		}
-	}
-	syncOnce()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			syncOnce()
-		}
-	}
-}
-
-func (a *App) runNodeLivenessLoop(ctx context.Context, interval time.Duration) {
-	refreshOnce := func() {
-		transitions, err := a.controlBridge.RefreshNodeLiveness(ctx)
-		if err != nil {
-			minilog.Warn("node-liveness-sync", "error=%v", err)
-			return
-		}
-		for _, transition := range transitions {
-			if transition.To != node.NodeUnknown {
-				continue
-			}
-			minilog.Warn("node-disconnect", "node=%s lastHeartbeat=%s", transition.Name, shortDuration(time.Since(transition.LastHeartbeat)))
-		}
-	}
-	refreshOnce()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			refreshOnce()
-		}
-	}
 }
 
 type sailerOptions struct {
