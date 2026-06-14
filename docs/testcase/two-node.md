@@ -124,14 +124,17 @@ node-a 测试终端：
 
 ```fish
 ./kubectl get nodes
-curl --noproxy '*' -fsS $HARBOR/nodes
+./kubectl get node node-a -o yaml
+./kubectl get node node-b -o yaml
 ```
 
 期望：
 
 - `sailer join` 显示对应 node joined，并写入本机 `.minik8s/state/sailer.json`。
 - `sailer run` 显示对应 node started。
-- `get nodes` 包含 `node-a` 和 `node-b`，状态均为 `Ready`。
+- 只执行 `sailer join` 后，`get nodes` 可看到对应 Node 和 PodCIDR，但状态通常是
+  `Unknown`；执行并保持 `sailer run` 心跳后，状态应变为 `Ready`。
+- `get nodes` 包含 `node-a` 和 `node-b`。
 - `node-a` 的 PodCIDR 为 `10.244.0.0/24`，`node-b` 为 `10.244.1.0/24`。
 
 失败排查：
@@ -139,6 +142,8 @@ curl --noproxy '*' -fsS $HARBOR/nodes
 - join 被拒绝：确认 token 未过期，Node YAML 的 name 和 InternalIP 正确。
 - run 提示未 join：确认在同一个仓库和同一个 `MINIK8S_STATE_DIR` 下执行。
 - 只看到一个节点：检查另一个 worker 的 Harbor 地址、token 和 sailer 日志。
+- join 成功但节点是 `Unknown`：确认对应节点的 `sailer run` 仍在运行；join 只注册节点和
+  写本地配置，不代表 kubelet 心跳已经开始。
 
 ## NODE-03：网络基线
 

@@ -67,11 +67,17 @@ docker inspect <container> --format '<needed fields>'
 
 ```bash
 curl -fsS <url>
+curl --noproxy '*' -fsS <url>
 ip route | grep <cidr>
 ip link show mk8s-vxlan
 bridge fdb show dev mk8s-vxlan
 ss -ltnp | grep <port>
 ```
+
+如果访问 `127.0.0.1`、Harbor LAN 地址、PodCIDR 或 ServiceCIDR 失败，先用
+`curl --noproxy '*'` 重试，并检查当前 shell 的 `HTTP_PROXY`、`HTTPS_PROXY`、
+`ALL_PROXY`、`NO_PROXY/no_proxy`。只有 no-proxy 复核仍失败，才把它记录为
+Minik8s 网络/API 问题。
 
 对单元测试：
 

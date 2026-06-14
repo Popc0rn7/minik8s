@@ -8,10 +8,7 @@
 | Case | 目标 | 机器 | 恢复要求 |
 | --- | --- | --- | --- |
 | STARTUP-01 | 初始化 static deps pod manifests | node-a | 可删除 `.minik8s` 后重建 |
-| STARTUP-02 | bridge 使用 static deps pod 启动依赖 | node-a | 停止 bridge 后清理 |
-| STARTUP-03 | addon manifest 缺失提示 | node-a | 重新 `init --force` |
-| STARTUP-04 | 只启动核心 storage | node-a | 停止 bridge 后清理 |
-| STARTUP-05 | 只启用 serverless addon | node-a | 停止 bridge 后清理 |
+| STARTUP-02 | bridge 使用核心 storage static pod 启动依赖 | node-a | 停止 bridge 后清理 |
 
 ## STARTUP-01：初始化 static deps pod manifests
 
@@ -38,14 +35,21 @@ sed -n '1,80p' .minik8s/manifests/serverless-nats.yaml
 - `.minik8s/manifests/serverless-nats.yaml` 包含 NATS addon Pod。
 - `.minik8s/state/bridge-deps/etcd` 和 `.minik8s/dns` 已创建。
 
-## STARTUP-02：bridge 使用 static deps pod 启动依赖
+## STARTUP-02：bridge 使用核心 storage 启动依赖
 
-目标：验证 `bridge` 优先读取 `.minik8s/manifests/` 下的 storage 和 addon Pod，并连接本地 etcd。
+目标：验证 `bridge` 优先读取 `.minik8s/manifests/storage-etcd.yaml`，通过私有本地
+`sailer` 启动核心 etcd 依赖，并连接本地 etcd-backed Logbook。Startup testcase 不启用
+addon；DNS、metrics、serverless addon 的启动和 readiness 分别由 `addons.md`、
+`dns.md`、`metrics-server.md`、`serverless-nats.md` 覆盖。
+
+前置：
+
+- 当前用户能访问 Docker daemon。
 
 终端 A：
 
 ```fish
-./minik8s bridge --listen :18080 --addons dns,metrics
+./minik8s bridge --listen :18080 --addons none
 ```
 
 终端 B：
@@ -61,69 +65,14 @@ docker ps --filter label=minik8s.pod.namespace=minik8s-system
 - bridge 日志包含 `bridge dependencies starting via private sailer`。
 - bridge 日志包含 `bridge dependencies ready etcd=http://127.0.0.1:2379`。
 - `version` 能访问 Harbor API。
-- Docker 中能看到 `storage-etcd` 对应 sandbox/容器；启用 `dns` addon 时也能看到 `dns-gateway`。
+- Docker 中能看到 `storage-etcd` 对应 sandbox/容器。
+- Docker 中不应看到 `dns-gateway`、`metrics-server` 或 `serverless-nats`。
 - 控制面使用本地 etcd-backed Logbook。
 
 失败排查：
 
 - 2379/53/80 端口冲突：停止占用进程后重试，或调整 addon/端口参数。
 - Docker 拉取失败：记录镜像和网络错误，不把它误报为业务对象失败。
-
-## STARTUP-03：启用 addon 但 manifest 缺失
-
-目标：验证启用 addon 时不回退到内置模板。
-
-```fish
-rm -rf .minik8s/manifests
-./minik8s bridge --listen :18080 --addons dns
-```
-
-期望：
-
-- bridge 提示 `addon dns manifest ... is missing` 或等价错误。
-- 修复建议包含 `minik8s init --force`。
-
-恢复：
-
-```fish
-./minik8s init --force
-```
-
-## STARTUP-04：只启动核心 storage
-
-目标：验证 `--addons none` 只启动核心 `storage-etcd`，不启动 addon Pod。
-
-```fish
-rm -rf .minik8s
-./minik8s init
-./minik8s bridge --listen :18080 --addons none
-```
-
-期望：
-
-- bridge 启动 `storage-etcd`。
-- bridge 不启动 `dns-gateway`、`metrics-server` 或 `serverless-nats`。
-- 控制面使用本地 etcd-backed Logbook。
-
-## STARTUP-05：只启用 serverless addon
-
-目标：验证 init 生成全部 manifests，但 bridge 只启动 storage + NATS。
-
-```fish
-rm -rf .minik8s
-./minik8s init
-test -f .minik8s/manifests/storage-etcd.yaml
-test -f .minik8s/manifests/serverless-nats.yaml
-test -f .minik8s/manifests/dns-gateway.yaml
-
-./minik8s bridge --listen :18080 --addons serverless
-```
-
-期望：
-
-- `storage-etcd.yaml`、`serverless-nats.yaml` 和 `dns-gateway.yaml` 都存在。
-- bridge 等待 2379 和 4222 端口。
-- bridge 不等待 DNS/ingress 端口。
 
 ## 全量恢复
 

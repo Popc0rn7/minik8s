@@ -132,6 +132,24 @@ bridge fdb show dev mk8s-vxlan
 | `serverless-nats.md` | 需要 serverless addon | Function/EventTrigger/Workflow + NATS publish。 |
 | `testing-agent-prompt.md` | 辅助文档 | 给测试代理的执行、证据和恢复要求。 |
 
+## TODO 验证进度
+
+按推荐执行顺序跟踪人工 testcase 验证状态。只有完成对应文档中的主路径验证、记录证据并
+恢复环境后，才把条目标为已完成。
+
+- [x] `startup.md`：`init`、static deps pod、bridge dependency startup。
+- [x] `two-node.md`：双节点预检、启动、Ready、CNI 基线。
+- [x] `pod.md`：Pod lifecycle、调度、NodeLost 和删除 Node。
+- [x] `cni.md`：mooring CNI、Pod IP、同节点和跨节点通信。
+- [ ] `service.md`：Service endpoints、ClusterIP、NodePort、负载均衡、iptables 清理。
+- [ ] `replicaset.md`：ReplicaSet 创建、补齐、缩容和级联删除。
+- [ ] `logbook.md`：file/etcd Logbook、对象持久化和 bridge 重启恢复。
+- [ ] `addons.md`：addon manifest、`--addons` readiness 和 doctor 状态。
+- [ ] `metrics-server.md`：metrics API 和 `kubectl top`。
+- [ ] `hpa.md`：HPA metrics、扩容和缩容。
+- [ ] `dns.md`：DNS 对象和 gateway host/path routing。
+- [ ] `serverless-nats.md`：Function/EventTrigger/Workflow + NATS publish。
+
 ## 通用清理
 
 清理分两层：API 对象由控制面删除；本机 CNI/iptables/IPAM 残留由每个 worker 的
