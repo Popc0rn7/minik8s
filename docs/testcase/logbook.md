@@ -33,6 +33,8 @@ Docker 可拉取 etcd/NATS 镜像；`etcdctl` 只用于人工检查，不是启�
 export NODE_A_IP=192.168.1.8
 export NODE_B_IP=192.168.1.6
 export HARBOR=http://${NODE_A_IP}:18080
+export MINIK8S_HARBOR=${HARBOR}
+export MINIK8S_TOKEN=minik8s
 ```
 
 node-a 默认不需要手动设置 etcd endpoint；`bridge` 会在内部依赖 Pod ready 后设置进程内默认值。
@@ -90,17 +92,22 @@ curl -fsS ${HARBOR}/nodes
 在 node-a 终端 2 启动 worker：
 
 ```bash
-./minik8s sailer \
-  manifest/node/node_a.yaml \
-  --harbor ${HARBOR}
+./minik8s bridge token set ${MINIK8S_TOKEN} --ttl 24h
+./minik8s sailer join \
+  --apiserver ${HARBOR} \
+  --token ${MINIK8S_TOKEN} \
+  -f manifest/node/node_a.yaml
+./minik8s sailer run
 ```
 
 在 node-b 终端 1 启动 worker：
 
 ```bash
-./minik8s sailer \
-  manifest/node/node_b.yaml \
-  --harbor ${HARBOR}
+./minik8s sailer join \
+  --apiserver ${HARBOR} \
+  --token ${MINIK8S_TOKEN} \
+  -f manifest/node/node_b.yaml
+./minik8s sailer run
 ```
 
 在 node-a 的测试终端确认节点状态和 etcd key：
@@ -244,7 +251,8 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 
 失败排查：
 
-- Node key 不出现：确认两个 sailer 的 `--harbor` 指向 node-a 的 `${HARBOR}`。
+- Node key 不出现：确认两个 worker 已通过 `sailer join --apiserver ${HARBOR}` 写入本地
+  配置，并且 `sailer run` 仍在运行。
 - Pod key 不出现：确认 `apply` 命令连接的是 `${HARBOR}`，不是另一个控制面。
 - Service key 不出现：确认 YAML kind 是 `Service`，并查看 bridge 日志。
 - ReplicaSet key 不出现：确认 YAML kind 是 `ReplicaSet`，并查看 bridge 日志中的 `replicaset-create`。
@@ -313,9 +321,18 @@ export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
 如果 node-a/node-b 的 sailer 已退出，重新启动：
 
 ```bash
-./minik8s sailer manifest/node/node_a.yaml --harbor ${HARBOR}
-./minik8s sailer manifest/node/node_b.yaml --harbor ${HARBOR}
+./minik8s sailer run
 ```
+
+如果本地 `.minik8s/state/sailer.json` 不存在或 node token 已失效，先重新执行：
+
+```bash
+./minik8s bridge token set ${MINIK8S_TOKEN} --ttl 24h
+./minik8s sailer join --apiserver ${HARBOR} --token ${MINIK8S_TOKEN} -f manifest/node/node_a.yaml
+```
+
+node-b 上使用同一个 `${HARBOR}` 和 token，对 `manifest/node/node_b.yaml` 重新 join 后再
+`./minik8s sailer run`。
 
 重新检查：
 

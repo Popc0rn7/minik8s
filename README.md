@@ -121,7 +121,12 @@ addon；启动后会把 Harbor 地址写入 `.minik8s/config.json`，后续 `./k
 在另一个终端启动本机 worker：
 
 ```bash
-./minik8s sailer manifest/node/node_a.yaml
+./minik8s bridge token set minik8s --ttl 24h
+./minik8s sailer join \
+  --apiserver http://127.0.0.1:18080 \
+  --token minik8s \
+  -f manifest/node/node_a.yaml
+./minik8s sailer run
 ```
 
 常用 CLI：

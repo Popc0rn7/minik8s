@@ -4,82 +4,169 @@
 CPU/Memory metrics，调整目标 ReplicaSet 的 `spec.replicas`，再由 ReplicaSet
 controller 创建或删除 Pod。
 
-## 前置条件
+当前实现覆盖 HPA YAML/API/CLI、metrics 读取、按上下限调整 ReplicaSet。它不是完整
+Kubernetes HPA，不包含复杂 stabilization policy 或多 Workload 类型。
 
-- 已完成 `make build`。
-- `bridge` 和至少一个 `sailer` 正常运行。
-- HPA 目标 ReplicaSet 的 Pod template 必须设置 CPU 和 Memory requests；没有
-  requests 时 HPA 会把对应指标标记为缺失并跳过伸缩。
-- 第一次 metrics 上报没有 CPU delta，CPU 指标可能要等第二轮 `sailer` 同步后才
-  可用。
+## 覆盖矩阵
 
-## 启动控制面
+| Case | 目标 | 机器 | 恢复要求 |
+| --- | --- | --- | --- |
+| HPA-00 | metrics/HPA 环境基线 | node-a + worker | 保持 metrics addon |
+| HPA-01 | HPA 创建与展示 | node-a | 删除 HPA/RS |
+| HPA-02 | metrics 缺失时 condition | node-a | 等待或记录缺失原因 |
+| HPA-03 | CPU 压力触发扩容 | Pod 实际运行节点 | 停止压力进程 |
+| HPA-04 | 压力停止后冷却缩容 | node-a | 删除 HPA 不删除 RS |
+| HPA-05 | HPA 单元测试 | 任意开发机 | 不改变集群 |
 
-```bash
-./minik8s bridge --listen :18080 --hpa-sync-interval 15s
+## HPA-00：环境基线
+
+前置：
+
+- bridge 以 `--addons dns,metrics` 或至少 `--addons metrics` 启动。
+- 至少一个 `sailer run` 在线。
+- HPA 目标 ReplicaSet 的 Pod template 必须设置 CPU 和 Memory requests；没有 requests
+  时 HPA 会把对应指标标记为缺失并跳过伸缩。
+- 第一次 metrics 上报没有 CPU delta，CPU 指标通常要等第二轮 `sailer` 同步。
+
+```fish
+./kubectl get nodes
+./kubectl api-resources | grep -E 'hpa|metrics'
+./kubectl top nodes; or true
 ```
 
-在 worker 节点启动 `sailer`，按现有双机或单机流程传入 Node YAML。
+期望：
+
+- Ready Node 至少 1 个。
+- API resources 包含 HPA 和 metrics。
 
 ## HPA-01：创建 ReplicaSet 和 HPA
 
-```bash
+```fish
+./kubectl delete hpa nginx-hpa; or true
+./kubectl delete rs nginx-rs; or true
+sleep 8
+
 ./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
+sleep 10
 ./kubectl apply -f manifest/hpa/hpa_nginx.yaml
+sleep 6
 ./kubectl get hpa
 ./kubectl describe hpa nginx-hpa
+./kubectl get rs nginx-rs
 ```
 
-预期：
+期望：
 
 - `get hpa` 显示 `nginx-hpa`，target 为 `ReplicaSet/nginx-rs`。
-- 如果 Pod 尚未 Running 或 metrics 尚未上报，condition 可显示
-  `MetricsUnavailable`，这是正常的等待状态。
+- min/max replicas 与 YAML 一致。
+- 如果 Pod 尚未 Running 或 metrics 尚未上报，condition 可显示 `MetricsUnavailable`。
 
-## HPA-02：压力触发扩容
+失败排查：
 
-找到一个 nginx Pod 容器后制造 CPU 压力：
+- `MissingRequest`：确认 ReplicaSet template 中 containers 设置了
+  `resources.requests.cpu` 和 `resources.requests.memory`。
+- HPA 不存在：确认 bridge 编译了 HPA routes/store/controller。
 
-```bash
-CID=$(docker ps -q --filter label=minik8s.pod.name=nginx-rs-1 --filter label=minik8s.container.name=nginx)
-docker exec "$CID" sh -c 'while true; do :; done' &
+## HPA-02：metrics 缺失 condition
+
+目标：把等待状态和失败状态分开记录。
+
+```fish
+./kubectl describe hpa nginx-hpa
+./kubectl top pods; or true
+curl --noproxy '*' -fsS $HARBOR/apis/metrics.k8s.io/v1beta1/pods
 ```
 
-等待两到三轮 HPA 同步：
+期望：
 
-```bash
-watch -n 5 './kubectl get hpa && ./kubectl get rs && ./kubectl get pods'
+- Pod 未 Running 或 metrics 未就绪时，HPA condition 指向 `MetricsUnavailable` 或等价原因。
+- `kubectl top pods` 和 metrics API 能解释是否已有样本。
+
+## HPA-03：压力触发扩容
+
+目标：制造业务容器 CPU 压力，验证 replicas 每轮最多增加 1，直到达到 maxReplicas 或压力缓解。
+
+先找一个 `nginx-rs` Pod 的实际运行节点：
+
+```fish
+./kubectl get pods
+./kubectl describe pod nginx-rs-1
 ```
 
-预期：
+到实际运行节点执行：
+
+```fish
+set NGINX_CID (docker ps -q --filter label=minik8s.pod.name=nginx-rs-1 --filter label=minik8s.container.name=nginx)
+docker exec -d "$NGINX_CID" sh -c 'while true; do :; done'
+```
+
+node-a 观察两到三轮 HPA 同步：
+
+```fish
+./kubectl get hpa
+./kubectl get rs nginx-rs
+./kubectl get pods
+sleep 20
+./kubectl get hpa
+./kubectl get rs nginx-rs
+```
+
+期望：
 
 - HPA current metrics 中 CPU utilization 上升。
-- `nginx-rs` desired replicas 每轮最多增加 1，直到压力缓解或达到 `maxReplicas: 3`。
+- `nginx-rs` desired replicas 每轮最多增加 1。
+- replicas 不超过 `maxReplicas: 3`。
 
-## HPA-03：停止压力后缩容
+失败排查：
 
-停止压力进程，等待缩容冷却时间：
+- 没有扩容：确认压力进程在业务容器中，不是 sandbox；确认 metrics API 有 CPU 样本。
 
-```bash
-pkill -f 'while true; do :; done' || true
-./kubectl get hpa
-./kubectl get rs
+## HPA-04：停止压力后缩容
+
+到运行压力的节点停止进程：
+
+```fish
+docker exec "$NGINX_CID" sh -c "pkill -f 'while true' || true"
 ```
 
-预期：
+node-a 等待冷却窗口后检查：
+
+```fish
+sleep 30
+./kubectl get hpa
+./kubectl get rs nginx-rs
+./kubectl delete hpa nginx-hpa
+./kubectl get rs nginx-rs
+```
+
+期望：
 
 - HPA 不会立即剧烈缩容；冷却窗口后每轮最多减少 1 个副本。
-- 删除 HPA 不会删除 ReplicaSet，也不会回滚当前 replicas：
+- 删除 HPA 不删除 ReplicaSet，也不回滚当前 replicas。
 
-```bash
-./kubectl delete hpa nginx-hpa
-./kubectl get rs
+## HPA-05：单元测试
+
+```fish
+go test ./pkg/yaml ./internal/metrics ./internal/bridge/logbook ./internal/bridge/captain ./internal/bridge/harbor ./internal/cli -run 'HPA|Metrics|Utilization' -count=1
 ```
 
-## 排查
+期望：
 
-- `MetricsUnavailable`：确认 `sailer` 仍在运行，Pod 已经 Running，并等待第二轮
-  metrics 上报。
-- `MissingRequest` 或长期不伸缩：确认 ReplicaSet template 中 containers 设置了
-  `resources.requests.cpu` 和 `resources.requests.memory`。
-- 没有扩容：确认压力实际发生在业务容器中，而不是 sandbox 容器中。
+- YAML、metrics quantity/utilization、HPA store/controller/API/CLI 测试通过。
+
+## 全量恢复
+
+```fish
+./kubectl delete hpa nginx-hpa; or true
+./kubectl delete rs nginx-rs; or true
+sleep 10
+./kubectl get hpa; or true
+./kubectl get rs; or true
+./kubectl get pods
+```
+
+如压力进程残留，到实际运行节点检查并停止：
+
+```fish
+docker ps --filter label=minik8s.pod.name=nginx-rs-1
+```
