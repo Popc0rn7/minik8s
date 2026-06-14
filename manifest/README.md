@@ -23,6 +23,8 @@ EventTrigger, Workflow, and the Kubernetes-compatible CNI bootstrap objects.
 | --- | --- |
 | `pod/pod_nginx_node_a.yaml` | nginx Pod constrained to nodes labelled `node=node-a`. |
 | `pod/pod_nginx_node_b.yaml` | nginx Pod constrained to nodes labelled `node=node-b`. |
+| `pod/pod_busybox_node_a.yaml` | Busybox client constrained to `node-a` for deterministic CNI same-node and cross-node tests. |
+| `pod/pod_busybox_node_b.yaml` | Busybox client constrained to `node-b` for deterministic CNI cross-node tests. |
 | `pod/pod_nginx_2.yaml` | Second unpinned nginx Pod for scheduler and multi-endpoint Service demos. |
 | `cni/mooring.yaml` | Namespace, ConfigMap, and DaemonSet-compatible objects that enable the built-in mooring CNI bootstrap. |
 
@@ -48,7 +50,6 @@ EventTrigger, Workflow, and the Kubernetes-compatible CNI bootstrap objects.
 - `replicaset/replicaset_nginx.yaml` uses `app=nginx-rs`, not `app=nginx`.
   This avoids accidental ownership of the hand-written nginx Pods, but it also
   means the nginx Services do not select ReplicaSet-created Pods.
-- `pod/pod_busybox_node_b.yaml` has been removed from the working tree, but
-  `docs/testcase/cni.md` still references it for the bidirectional cross-node
-  PodIP test. Either restore a node-b client manifest with `nodeSelector:
-  node=node-b`, or rewrite that testcase to use a different node-b client.
+- `pod/pod_busybox_client.yaml` intentionally has no `nodeSelector` so scheduler
+  tests can observe placement. CNI tests that require a fixed direction should
+  use `pod/pod_busybox_node_a.yaml` or `pod/pod_busybox_node_b.yaml`.

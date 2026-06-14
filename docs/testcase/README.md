@@ -21,6 +21,12 @@ worker。
 - Service CIDR 默认由代码分配，示例 ClusterIP 通常从 `10.96.0.1` 开始
 - 跨节点 VXLAN 需要两节点之间双向 UDP `4789`
 
+如果 root 的 fish 配置 `/root/.config/fish/config.fish` 设置了
+`HTTP_PROXY`、`HTTPS_PROXY` 或 `all_proxy`，需要确认 `NO_PROXY/no_proxy`
+包含 `192.168.0.0/16`、`10.244.0.0/16` 和 `10.96.0.0/12`。人工测试里访问
+Harbor LAN 地址时可直接使用 `curl --noproxy '*'`，避免代理导致
+`http://<NODE_A_IP>:18080` 返回 502。
+
 两台机器都需要：
 
 - Linux root shell
@@ -97,7 +103,7 @@ node-a 测试终端检查默认环境：
 ```fish
 ./kubectl version
 ./kubectl get nodes
-curl -fsS $HARBOR/nodes
+curl --noproxy '*' -fsS $HARBOR/nodes
 ip route | grep 10.244
 ip link show mk8s-vxlan
 bridge fdb show dev mk8s-vxlan
@@ -152,6 +158,8 @@ for item in \
   "pod nginx-pod-2" \
   "pod nginx-node-a" \
   "pod nginx-node-b" \
+  "pod busybox-node-a" \
+  "pod busybox-node-b" \
   "pod busybox-client" \
   "pod volume-resource-pod -n demo"
     ./kubectl delete (string split ' ' -- $item); or true
@@ -175,6 +183,6 @@ sleep 8
 上的 mooring bridge、VXLAN、iptables 规则、CNI 配置和 IPAM 文件。清理后如果要继续跑
 默认环境 testcase，需要重新启动对应 worker，让 `sailer` 重新写入 CNI 配置并注册网络。
 
-注意：当前工作区已删除 `manifest/pod/pod_busybox_node_b.yaml`，但
-`cni.md` 的双向跨节点 PodIP case 仍引用它。运行该 case 前需要恢复一个 node-b
-busybox client manifest，或先把该 case 改写成不依赖这个文件。
+`manifest/pod/pod_busybox_node_a.yaml` 和 `manifest/pod/pod_busybox_node_b.yaml`
+只用于需要固定调度方向的 CNI 测试；一般调度测试仍使用未指定节点的
+`manifest/pod/pod_busybox_client.yaml`。
