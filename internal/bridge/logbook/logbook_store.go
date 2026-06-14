@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
 
 	"minik8s/internal/dns"
 	"minik8s/internal/hpa"
@@ -32,12 +33,17 @@ const (
 
 // NewClient creates an etcd v3 client for Minik8s stores.
 func NewClient(endpoints []string) (*clientv3.Client, error) {
+	return newClient(endpoints, nil)
+}
+
+func newClient(endpoints []string, logger *zap.Logger) (*clientv3.Client, error) {
 	if len(endpoints) == 0 {
 		return nil, fmt.Errorf("at least one etcd endpoint is required")
 	}
 	return clientv3.New(clientv3.Config{
 		Endpoints:   endpoints,
 		DialTimeout: defaultOpTTL,
+		Logger:      logger,
 	})
 }
 
@@ -56,7 +62,7 @@ func ParseEndpoints(value string) []string {
 
 // Probe verifies etcd connectivity with a status call and a short write/delete.
 func Probe(ctx context.Context, endpoints []string) error {
-	client, err := NewClient(endpoints)
+	client, err := newClient(endpoints, zap.NewNop())
 	if err != nil {
 		return err
 	}

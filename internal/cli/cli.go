@@ -1856,8 +1856,18 @@ func waitForBridgeDependenciesReady(ctx context.Context, errCh <-chan error, opt
 	defer deadline.Stop()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
+	lastEtcdError := ""
 	for {
-		ready := etcdDependencyReady(ctx)
+		ready, err := etcdDependencyReady(ctx)
+		if err != nil {
+			message := err.Error()
+			if message != lastEtcdError {
+				minilog.Warn("bridge-dependency", "etcd=http://127.0.0.1:2379 waiting error=%v", err)
+				lastEtcdError = message
+			}
+		} else if ready {
+			lastEtcdError = ""
+		}
 		if options.addons.Enabled(AddonServerless) {
 			ready = ready && tcpPortReady("127.0.0.1:4222")
 		}
@@ -1882,13 +1892,16 @@ func waitForBridgeDependenciesReady(ctx context.Context, errCh <-chan error, opt
 	}
 }
 
-func etcdDependencyReady(ctx context.Context) bool {
+func etcdDependencyReady(ctx context.Context) (bool, error) {
 	if !bridgeDependencyTCPReady("127.0.0.1:2379") {
-		return false
+		return false, nil
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	return bridgeDependencyEtcdProbe(probeCtx, []string{"http://127.0.0.1:2379"}) == nil
+	if err := bridgeDependencyEtcdProbe(probeCtx, []string{"http://127.0.0.1:2379"}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func tcpPortReady(address string) bool {

@@ -22,6 +22,7 @@ import (
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/k8scompat"
 	"minik8s/internal/metrics"
+	"minik8s/internal/minilog"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
@@ -398,6 +399,9 @@ func TestBridgeDependencyEtcdDirIsAbsolute(t *testing.T) {
 
 func TestWaitForBridgeDependenciesReadyUsesEtcdProbe(t *testing.T) {
 	calls := 0
+	var logs bytes.Buffer
+	restoreLog := minilog.SetOutput(&logs)
+	defer restoreLog()
 	originalTCPReady := bridgeDependencyTCPReady
 	bridgeDependencyTCPReady = func(address string) bool {
 		assert.Equal(t, "127.0.0.1:2379", address)
@@ -419,6 +423,8 @@ func TestWaitForBridgeDependenciesReadyUsesEtcdProbe(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, calls)
+	assert.Contains(t, logs.String(), "bridge-dependency")
+	assert.Contains(t, logs.String(), "etcd=http://127.0.0.1:2379 waiting error=not ready")
 }
 
 func TestWaitForBridgeDependenciesReadySkipsEtcdProbeUntilTCPReady(t *testing.T) {

@@ -6,8 +6,9 @@ metadata:
   labels:
     app: nginx
     tier: frontend
-    node: node-b
 spec:
+  nodeSelector:
+    node: node-b
   containers:
   - name: nginx
     image: nginx
