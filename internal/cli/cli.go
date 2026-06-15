@@ -19,6 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 	bridge "minik8s/internal/bridge"
 	"minik8s/internal/bridge/bootstrap"
+	"minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
 	bridgeServerless "minik8s/internal/bridge/serverless"
 	"minik8s/internal/bridge/tokens"
@@ -533,6 +534,21 @@ func (a *App) invokeFunction(ctx context.Context, name, data string, out io.Writ
 		return writes(out, cliui.WarnLine("function/%s failed: %s", name, resp.Error))
 	}
 	return writes(out, cliui.SuccessLine("function/%s invoked output=%s", name, resp.Output))
+}
+
+func (a *App) invokeWorkflow(ctx context.Context, name, data string, out io.Writer) error {
+	client, err := a.controlPlaneClient()
+	if err != nil {
+		return err
+	}
+	resp, err := client.InvokeWorkflow(ctx, name, a.namespace, data)
+	if err != nil {
+		return err
+	}
+	if resp.Phase == "Failed" {
+		return writes(out, cliui.WarnLine("workflow/%s failed: %s", name, resp.Error))
+	}
+	return writes(out, cliui.SuccessLine("workflow/%s invoked output=%s", name, resp.Output))
 }
 
 func (a *App) publishNATS(ctx context.Context, subject, data string, out io.Writer) error {
@@ -1576,9 +1592,20 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 		go a.runDNSSyncLoop(ctx, options.dnsSyncInterval, options.gatewayIP)
 	}
 	a.controlBridge.RegisterDefaultControllers(options.serviceSyncInterval, options.replicaSetSyncInterval, options.hpaSyncInterval, 5*time.Second)
+	if options.addons.Enabled(AddonServerless) {
+		a.controlBridge.ControllerRunner().Register(
+			bridgeServerless.NewFunctionController(a.controlBridge.FunctionStore(), a.controlBridge.ReplicaSetStore(), a.controlBridge.ServiceStore()),
+			captain.RunSpec{Interval: options.replicaSetSyncInterval, InitialSync: true, SkipIfRunning: true},
+		)
+	}
 	a.controlBridge.StartControllers(ctx)
 	if natsURL := strings.TrimSpace(os.Getenv("MINIK8S_NATS_URL")); natsURL != "" {
-		go bridgeServerless.NewController(a.controlBridge.FunctionStore(), a.controlBridge.EventTriggerStore(), natsURL).Run(ctx, 5*time.Second)
+		activator := bridgeServerless.NewActivator(bridgeServerless.ActivatorConfig{
+			Functions:   a.controlBridge.FunctionStore(),
+			Pods:        a.controlBridge.PodStore(),
+			ReplicaSets: a.controlBridge.ReplicaSetStore(),
+		})
+		go bridgeServerless.NewControllerWithActivator(a.controlBridge.FunctionStore(), a.controlBridge.EventTriggerStore(), natsURL, activator).Run(ctx, 5*time.Second)
 	}
 	if err := writes(out, cliui.InfoLine("bridge listening on %s", options.listen)); err != nil {
 		return err

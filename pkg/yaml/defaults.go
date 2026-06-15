@@ -249,6 +249,33 @@ func DefaultAndValidateFunction(fn *function.Function) error {
 	if strings.TrimSpace(fn.Spec.Code) == "" {
 		return fmt.Errorf("spec.code is required")
 	}
+	if fn.Spec.Port == 0 {
+		fn.Spec.Port = 8080
+	}
+	if fn.Spec.Port < 0 {
+		return fmt.Errorf("spec.port must be positive")
+	}
+	if fn.Spec.MaxReplicas == 0 {
+		fn.Spec.MaxReplicas = 5
+	}
+	if fn.Spec.TargetConcurrency == 0 {
+		fn.Spec.TargetConcurrency = 5
+	}
+	if fn.Spec.IdleTimeoutSeconds == 0 {
+		fn.Spec.IdleTimeoutSeconds = 30
+	}
+	if fn.Spec.MinReplicas < 0 {
+		return fmt.Errorf("spec.minReplicas must be non-negative")
+	}
+	if fn.Spec.MaxReplicas < fn.Spec.MinReplicas {
+		return fmt.Errorf("spec.maxReplicas must be greater than or equal to spec.minReplicas")
+	}
+	if fn.Spec.TargetConcurrency < 0 {
+		return fmt.Errorf("spec.targetConcurrency must be positive")
+	}
+	if fn.Spec.IdleTimeoutSeconds < 0 {
+		return fmt.Errorf("spec.idleTimeoutSeconds must be positive")
+	}
 	return nil
 }
 
@@ -302,6 +329,14 @@ func DefaultAndValidateWorkflow(wf *workflow.Workflow) error {
 		}
 		if strings.TrimSpace(step.FunctionRef.Name) == "" {
 			return fmt.Errorf("spec.steps[%d].functionRef.name is required", i)
+		}
+		for j, branch := range step.Branches {
+			if strings.TrimSpace(branch.Next) == "" {
+				return fmt.Errorf("spec.steps[%d].branches[%d].next is required", i, j)
+			}
+			if strings.TrimSpace(branch.Contains) == "" && strings.TrimSpace(branch.Regex) == "" {
+				return fmt.Errorf("spec.steps[%d].branches[%d] requires contains or regex", i, j)
+			}
 		}
 	}
 	return nil

@@ -20,6 +20,7 @@ import (
 
 	"minik8s/internal/bridge/harbor"
 	store "minik8s/internal/bridge/logbook"
+	bridgeServerless "minik8s/internal/bridge/serverless"
 	"minik8s/internal/k8scompat"
 	"minik8s/internal/metrics"
 	"minik8s/internal/minilog"
@@ -319,12 +320,26 @@ func assertCommandMissing(t *testing.T, cmd *cobra.Command, name string) {
 }
 
 func TestCLIServerlessApplyGetInvokeDelete(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	replicaSetStore := store.NewInMemoryReplicaSetStore()
+	serviceStore := store.NewInMemoryServiceStore()
+	functionStore := store.NewInMemoryFunctionStore()
 	srv := harbor.New(harbor.Config{
-		PodStore:          store.NewInMemoryPodStore(),
+		PodStore:          podStore,
+		ServiceStore:      serviceStore,
+		ReplicaSetStore:   replicaSetStore,
 		NodeStore:         store.NewInMemoryNodeStore(),
-		FunctionStore:     store.NewInMemoryFunctionStore(),
+		FunctionStore:     functionStore,
 		EventTriggerStore: store.NewInMemoryEventTriggerStore(),
 		WorkflowStore:     store.NewInMemoryWorkflowStore(),
+		HTTPClient: &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(req.Body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(string(body))),
+				Header:     make(http.Header),
+			}, nil
+		})},
 	})
 	app := newHTTPTestApp(t, srv, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	path := filepath.Join(t.TempDir(), "function.yaml")
@@ -342,6 +357,19 @@ spec:
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", path}, &out))
 	assert.Contains(t, out.String(), "function/echo created")
+	fn, err := functionStore.Get("echo", "default")
+	require.NoError(t, err)
+	require.NoError(t, podStore.Create(&pod.Pod{
+		ObjectMeta: pod.ObjectMeta{
+			Name:      "fn-echo-1",
+			Namespace: "default",
+			Labels: map[string]string{
+				bridgeServerless.FunctionNameLabel:     "echo",
+				bridgeServerless.FunctionRevisionLabel: bridgeServerless.FunctionRevision(fn),
+			},
+		},
+		Status: pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.0.10"},
+	}))
 
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"get", "functions"}, &out))

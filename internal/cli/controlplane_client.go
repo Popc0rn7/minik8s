@@ -410,6 +410,18 @@ func (c *controlPlaneClient) DeleteWorkflow(ctx context.Context, name, namespace
 	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
 }
 
+func (c *controlPlaneClient) InvokeWorkflow(ctx context.Context, name, namespace, data string) (*function.InvocationResponse, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "workflows", name, "invoke"))
+	if err != nil {
+		return nil, err
+	}
+	var resp function.InvocationResponse
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, function.InvocationRequest{Data: data}, http.StatusOK, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 func (c *controlPlaneClient) ApplyHPA(ctx context.Context, autoscaler *hpa.HorizontalPodAutoscaler) (*hpa.HorizontalPodAutoscaler, error) {
 	created, err := c.createHPA(ctx, autoscaler)
 	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {

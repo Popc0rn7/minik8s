@@ -1,7 +1,7 @@
 kind: Function
 apiVersion: v1
 metadata:
-  name: echo
+  name: answer
   labels:
     app: serverless-demo
 spec:
@@ -14,4 +14,5 @@ spec:
   idleTimeoutSeconds: 30
   code: |
     def handler(event):
-      return event
+      text = event.split(":", 1)[-1]
+      return "answer-result:received " + str(len(text)) + " chars"

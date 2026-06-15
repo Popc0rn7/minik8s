@@ -173,15 +173,19 @@ func newPublishCommand(app *App, out io.Writer) *cobra.Command {
 func newInvokeCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	var data string
 	cmd := &cobra.Command{
-		Use:   "invoke function <name>",
-		Short: "Invoke a serverless function",
+		Use:   "invoke function|workflow <name>",
+		Short: "Invoke a serverless function or workflow",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bind()
-			if args[0] != "function" && args[0] != "fn" {
-				return fmt.Errorf("invoke supports function")
+			switch args[0] {
+			case "function", "fn":
+				return app.invokeFunction(cmd.Context(), args[1], data, out)
+			case "workflow", "wf":
+				return app.invokeWorkflow(cmd.Context(), args[1], data, out)
+			default:
+				return fmt.Errorf("invoke supports function or workflow")
 			}
-			return app.invokeFunction(cmd.Context(), args[1], data, out)
 		},
 	}
 	cmd.Flags().StringVar(&data, "data", "", "Invocation payload")
@@ -1339,10 +1343,12 @@ func writeNodeTable(out io.Writer, nodes []node.Node) error {
 }
 
 func writeFunctionTable(out io.Writer, functions []*function.Function) error {
-	if err := writef(out, "%s %s %s %s %s\n",
+	if err := writef(out, "%s %s %s %s %s %s %s\n",
 		cliui.PadRight("FUNCTION", 31),
 		cliui.PadRight("RUNTIME", 12),
 		cliui.PadRight("STATUS", 12),
+		cliui.PadRight("REPLICAS", 10),
+		cliui.PadRight("REVISION", 14),
 		cliui.PadRight("NAMESPACE", 14),
 		"LABELS",
 	); err != nil {
@@ -1350,10 +1356,12 @@ func writeFunctionTable(out io.Writer, functions []*function.Function) error {
 	}
 	for _, fn := range functions {
 		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[fn]"), fn.Name)
-		if err := writef(out, "%s %s %s %s %s\n",
+		if err := writef(out, "%s %s %s %s %s %s %s\n",
 			cliui.PadRight(name, 31),
 			cliui.PadRight(fn.Spec.Runtime, 12),
 			cliui.PadRight(emptyDash(fn.Status.Phase), 12),
+			cliui.PadRight(fmt.Sprintf("%d/%d", fn.Status.ReadyReplicas, fn.Status.Replicas), 10),
+			cliui.PadRight(emptyDash(fn.Status.Revision), 14),
 			cliui.PadRight(fn.Namespace, 14),
 			formatLabels(fn.Labels),
 		); err != nil {
@@ -1549,7 +1557,15 @@ func describeFunction(out io.Writer, fn *function.Function) error {
 		fmt.Sprintf("Namespace: %s", fn.Namespace),
 		fmt.Sprintf("Runtime: %s", fn.Spec.Runtime),
 		fmt.Sprintf("Handler: %s", fn.Spec.Handler),
+		fmt.Sprintf("Port: %d", fn.Spec.Port),
+		fmt.Sprintf("Scale: min=%d max=%d targetConcurrency=%d idleTimeoutSeconds=%d", fn.Spec.MinReplicas, fn.Spec.MaxReplicas, fn.Spec.TargetConcurrency, fn.Spec.IdleTimeoutSeconds),
+		fmt.Sprintf("Revision: %s", emptyDash(fn.Status.Revision)),
+		fmt.Sprintf("Endpoint: %s", emptyDash(fn.Status.Endpoint)),
+		fmt.Sprintf("Replicas: %d/%d", fn.Status.ReadyReplicas, fn.Status.Replicas),
 		fmt.Sprintf("Status: %s", emptyDash(fn.Status.Phase)),
+		fmt.Sprintf("LastInvocation: %s", formatTime(fn.Status.LastInvocation)),
+		fmt.Sprintf("LastOutput: %s", emptyDash(fn.Status.LastOutput)),
+		fmt.Sprintf("LastError: %s", emptyDash(fn.Status.LastError)),
 		fmt.Sprintf("Labels: %s", formatLabels(fn.Labels)),
 	}
 	for _, line := range lines {
@@ -1566,7 +1582,10 @@ func describeEventTrigger(out io.Writer, trigger *eventtrigger.EventTrigger) err
 		fmt.Sprintf("Namespace: %s", trigger.Namespace),
 		fmt.Sprintf("Subject: %s", trigger.Spec.Subject),
 		fmt.Sprintf("Function: %s", trigger.Spec.FunctionRef.Name),
+		fmt.Sprintf("ReplySubject: %s", emptyDash(trigger.Spec.ReplySubject)),
 		fmt.Sprintf("Active: %t", trigger.Status.Active),
+		fmt.Sprintf("LastEventTime: %s", emptyDash(trigger.Status.LastEventTime)),
+		fmt.Sprintf("LastError: %s", emptyDash(trigger.Status.LastError)),
 		fmt.Sprintf("Labels: %s", formatLabels(trigger.Labels)),
 	}
 	for _, line := range lines {
@@ -1580,13 +1599,16 @@ func describeEventTrigger(out io.Writer, trigger *eventtrigger.EventTrigger) err
 func describeWorkflow(out io.Writer, wf *workflow.Workflow) error {
 	steps := make([]string, 0, len(wf.Spec.Steps))
 	for _, step := range wf.Spec.Steps {
-		steps = append(steps, fmt.Sprintf("%s=%s", step.Name, step.FunctionRef.Name))
+		steps = append(steps, fmt.Sprintf("%s=%s branches=%s", step.Name, step.FunctionRef.Name, formatWorkflowBranches(step.Branches)))
 	}
 	lines := []string{
 		fmt.Sprintf("Name: %s", wf.Name),
 		fmt.Sprintf("Namespace: %s", wf.Namespace),
 		fmt.Sprintf("Steps: %s", strings.Join(steps, ",")),
 		fmt.Sprintf("Status: %s", emptyDash(wf.Status.Phase)),
+		fmt.Sprintf("LastRunTime: %s", formatTime(wf.Status.LastRunTime)),
+		fmt.Sprintf("LastOutput: %s", emptyDash(wf.Status.LastOutput)),
+		fmt.Sprintf("LastError: %s", emptyDash(wf.Status.LastError)),
 		fmt.Sprintf("Labels: %s", formatLabels(wf.Labels)),
 	}
 	for _, line := range lines {
@@ -1646,6 +1668,29 @@ func formatNodeLastHeartbeat(last time.Time) string {
 		return "-"
 	}
 	return last.Format(time.RFC3339)
+}
+
+func formatTime(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.Format(time.RFC3339)
+}
+
+func formatWorkflowBranches(branches []workflow.WorkflowBranch) string {
+	if len(branches) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(branches))
+	for _, branch := range branches {
+		if branch.Contains != "" {
+			parts = append(parts, fmt.Sprintf("contains:%s->%s", branch.Contains, branch.Next))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("regex:%s->%s", branch.Regex, branch.Next))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
 }
 
 func emptyDash(value string) string {

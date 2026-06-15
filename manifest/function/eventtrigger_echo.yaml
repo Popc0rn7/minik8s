@@ -6,5 +6,6 @@ metadata:
     app: serverless-demo
 spec:
   subject: minik8s.echo
+  replySubject: minik8s.echo.reply
   functionRef:
     name: echo

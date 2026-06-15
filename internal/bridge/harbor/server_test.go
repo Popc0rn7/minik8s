@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	store "minik8s/internal/bridge/logbook"
+	bridgeServerless "minik8s/internal/bridge/serverless"
 	"minik8s/internal/function"
 	"minik8s/internal/metrics"
 	"minik8s/internal/minilog"
@@ -119,12 +121,24 @@ func TestHarborDiscoveryIncludesServices(t *testing.T) {
 }
 
 func TestHarborServerlessCRUDAndInvoke(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	replicaSetStore := store.NewInMemoryReplicaSetStore()
+	serviceStore := store.NewInMemoryServiceStore()
 	srv := New(Config{
-		PodStore:          store.NewInMemoryPodStore(),
+		PodStore:          podStore,
+		ServiceStore:      serviceStore,
+		ReplicaSetStore:   replicaSetStore,
 		NodeStore:         store.NewInMemoryNodeStore(),
 		FunctionStore:     store.NewInMemoryFunctionStore(),
 		EventTriggerStore: store.NewInMemoryEventTriggerStore(),
 		WorkflowStore:     store.NewInMemoryWorkflowStore(),
+		HTTPClient: &http.Client{Transport: harborRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("hello")),
+				Header:     make(http.Header),
+			}, nil
+		})},
 	})
 	functionBody := `{
 		"kind":"Function",
@@ -139,6 +153,19 @@ func TestHarborServerlessCRUDAndInvoke(t *testing.T) {
 	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/functions", functionBody)
 	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
 	assert.Contains(t, create.Body.String(), `"name":"echo"`)
+	fn := &function.Function{}
+	require.NoError(t, json.Unmarshal(create.Body.Bytes(), fn))
+	require.NoError(t, podStore.Create(&pod.Pod{
+		ObjectMeta: pod.ObjectMeta{
+			Name:      "fn-echo-1",
+			Namespace: "default",
+			Labels: map[string]string{
+				bridgeServerless.FunctionNameLabel:     "echo",
+				bridgeServerless.FunctionRevisionLabel: bridgeServerless.FunctionRevision(fn),
+			},
+		},
+		Status: pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.0.10"},
+	}))
 
 	invoke := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/functions/echo/invoke", `{"data":"hello"}`)
 	require.Equal(t, http.StatusOK, invoke.Code, invoke.Body.String())
@@ -170,6 +197,12 @@ func TestHarborServerlessCRUDAndInvoke(t *testing.T) {
 
 	del := serve(t, srv, http.MethodDelete, "/api/v1/namespaces/default/functions/echo", "")
 	require.Equal(t, http.StatusOK, del.Code, del.Body.String())
+}
+
+type harborRoundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f harborRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestHarborReplicaSetCRUDReconcilesPods(t *testing.T) {
