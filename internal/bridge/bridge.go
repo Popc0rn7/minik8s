@@ -17,6 +17,7 @@ type Config struct {
 	DNSStore           store.DNSStore
 	ReplicaSetStore    store.ReplicaSetStore
 	HPAStore           store.HPAStore
+	JobStore           store.JobStore
 	MetricsStore       store.MetricsStore
 	NodeStore          store.NodeStore
 	K8sCompatStore     store.K8sCompatStore
@@ -39,6 +40,7 @@ type Bridge struct {
 	dnsStore           store.DNSStore
 	replicaSetStore    store.ReplicaSetStore
 	hpaStore           store.HPAStore
+	jobStore           store.JobStore
 	metricsStore       store.MetricsStore
 	nodeStore          store.NodeStore
 	k8sCompatStore     store.K8sCompatStore
@@ -53,6 +55,7 @@ type Bridge struct {
 	clusterDomain      string
 	dnsEnabled         bool
 	bootstrapTokenPath string
+	harborURL          string
 	controllerRunner   *captain.Runner
 }
 
@@ -76,6 +79,10 @@ func New(config Config) *Bridge {
 	hpaStore := config.HPAStore
 	if hpaStore == nil {
 		hpaStore = store.NewInMemoryHPAStore()
+	}
+	jobStore := config.JobStore
+	if jobStore == nil {
+		jobStore = store.NewInMemoryJobStore()
 	}
 	metricsStore := config.MetricsStore
 	if metricsStore == nil {
@@ -115,6 +122,7 @@ func New(config Config) *Bridge {
 		dnsStore:           dnsStore,
 		replicaSetStore:    replicaSetStore,
 		hpaStore:           hpaStore,
+		jobStore:           jobStore,
 		metricsStore:       metricsStore,
 		nodeStore:          nodeStore,
 		k8sCompatStore:     k8sCompatStore,
@@ -140,6 +148,7 @@ func (k *Bridge) Handler() http.Handler {
 		DNSStore:           k.dnsStore,
 		ReplicaSetStore:    k.replicaSetStore,
 		HPAStore:           k.hpaStore,
+		JobStore:           k.jobStore,
 		MetricsStore:       k.metricsStore,
 		NodeStore:          k.nodeStore,
 		K8sCompatStore:     k.k8sCompatStore,
@@ -154,12 +163,17 @@ func (k *Bridge) Handler() http.Handler {
 		ClusterDomain:      k.clusterDomain,
 		DNSEnabled:         k.dnsEnabled,
 		BootstrapTokenPath: k.bootstrapTokenPath,
+		HarborURL:          k.harborURL,
 	})
 }
 
 func (k *Bridge) SetNodeCIDRConfig(clusterCIDR string, maskSize int) {
 	k.clusterCIDR = clusterCIDR
 	k.nodeCIDRMaskSize = maskSize
+}
+
+func (k *Bridge) SetHarborURL(harborURL string) {
+	k.harborURL = harborURL
 }
 
 func (k *Bridge) SetClusterDNSConfig(enabled bool, clusterDNS, clusterDomain string) {
@@ -175,6 +189,7 @@ func (k *Bridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 		DNSStore:           k.dnsStore,
 		ReplicaSetStore:    k.replicaSetStore,
 		HPAStore:           k.hpaStore,
+		JobStore:           k.jobStore,
 		MetricsStore:       k.metricsStore,
 		NodeStore:          k.nodeStore,
 		K8sCompatStore:     k.k8sCompatStore,
@@ -189,6 +204,7 @@ func (k *Bridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 		ClusterDomain:      k.clusterDomain,
 		DNSEnabled:         k.dnsEnabled,
 		BootstrapTokenPath: k.bootstrapTokenPath,
+		HarborURL:          k.harborURL,
 	}).RefreshNodeLiveness(ctx)
 }
 
@@ -202,6 +218,12 @@ func (k *Bridge) RegisterDefaultControllers(serviceInterval, replicaSetInterval,
 	}
 	if hpaInterval > 0 {
 		runner.Register(captain.NewHPAController(k.podStore, k.replicaSetStore, k.hpaStore, k.metricsStore, captain.HPAControllerConfig{}), captain.RunSpec{Interval: hpaInterval, InitialSync: true, SkipIfRunning: true})
+	}
+	if replicaSetInterval > 0 {
+		runner.Register(captain.NewJobController(k.podStore, k.serviceStore, k.jobStore, captain.JobControllerConfig{
+			HarborURL: k.harborURL,
+			NodeStore: k.nodeStore,
+		}), captain.RunSpec{Interval: replicaSetInterval, InitialSync: true, SkipIfRunning: true})
 	}
 	if nodeLivenessInterval > 0 {
 		runner.Register(captain.NewNodeLifecycleController(captain.NodeLifecycleConfig{
@@ -248,6 +270,10 @@ func (k *Bridge) ReplicaSetStore() store.ReplicaSetStore {
 
 func (k *Bridge) HPAStore() store.HPAStore {
 	return k.hpaStore
+}
+
+func (k *Bridge) JobStore() store.JobStore {
+	return k.jobStore
 }
 
 func (k *Bridge) MetricsStore() store.MetricsStore {

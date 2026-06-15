@@ -12,11 +12,12 @@ PROD_GOARCH ?= amd64
 PROD_GOPROXY ?= https://goproxy.cn,https://proxy.golang.org,direct
 PROD_DOCKER_USER ?= $(shell id -u):$(shell id -g)
 MOORING_CNI_IMAGE ?= ghcr.io/popc0rn7/mooring-cni
+GPU_SUBMITTER_IMAGE ?= ghcr.io/popc0rn7/gpu-submitter
 IMAGE_TAG ?= latest
 PLATFORM ?= linux/amd64
 DEPLOY_ARGS ?=
 
-.PHONY: build prod prod-build prod-push prod-cni mooring-cni-image push-mooring-cni-image deploy-prod prod-deploy test bridge sailer-once sailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
+.PHONY: build prod prod-build prod-push prod-cni mooring-cni-image push-mooring-cni-image gpu-submitter-image push-gpu-submitter-image deploy-prod prod-deploy test bridge sailer-once sailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
 
 build:
 	go build -o $(MINIK8S) ./cmd/minik8s
@@ -39,6 +40,12 @@ mooring-cni-image:
 
 push-mooring-cni-image:
 	MOORING_CNI_IMAGE="$(MOORING_CNI_IMAGE)" IMAGE_TAG="$(IMAGE_TAG)" scripts/push-mooring-cni-image.sh
+
+gpu-submitter-image:
+	GPU_SUBMITTER_IMAGE="$(GPU_SUBMITTER_IMAGE)" IMAGE_TAG="$(IMAGE_TAG)" PLATFORM="$(PLATFORM)" scripts/build-gpu-submitter-image.sh
+
+push-gpu-submitter-image:
+	GPU_SUBMITTER_IMAGE="$(GPU_SUBMITTER_IMAGE)" IMAGE_TAG="$(IMAGE_TAG)" scripts/push-gpu-submitter-image.sh
 
 deploy-prod:
 	MOORING_CNI_IMAGE="$(MOORING_CNI_IMAGE)" IMAGE_TAG="$(IMAGE_TAG)" scripts/deploy-prod.sh $(DEPLOY_ARGS)

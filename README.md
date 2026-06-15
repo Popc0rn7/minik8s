@@ -97,7 +97,11 @@ Sailer的核心责任包括：
 
 ### GPU支持
 
-> Not Implemented Yet
+当前提供 `Job` + Slurm submitter 的最小 GPU 作业后端。它不是原生 GPU device
+plugin，也不把交我算 Slurm 节点加入 Minik8s；用户通过 `kind: Job` 和
+`spec.selector.matchLabels.accelerator: gpu` 提交 CUDA 源码与编译运行命令，控制面为每个
+Job 创建独立 submitter Pod/Service，由 submitter 通过 SSH/SCP 提交到交我算 Slurm
+队列并回收 `.out/.err`。
 
 
 ## 当前能力
@@ -123,6 +127,9 @@ Sailer的核心责任包括：
   副本，并在删除 ReplicaSet 时级联删除 owned Pods。
 - HPA YAML、API、CLI、file/etcd store、控制器和 `sailer` Docker metrics 上报；
   当前只支持基于 ReplicaSet 的 CPU/Memory utilization 扩缩容。
+- Job YAML、API、CLI、file/etcd store、控制器和 GPU/Slurm submitter 最小闭环；
+  当前只支持 `accelerator=gpu` 的 Slurm 后端，真机运行依赖 SSH 凭据、submitter 镜像和
+  Harbor endpoint 配置。
 - DNS YAML、API、CLI、file/etcd store、CoreDNS hosts 配置同步和 HTTP
   host/path gateway；同一 host 下可按 path 转发到不同 Service endpoints。
 - `sailer run --cluster-dns <dns-ip>` 会把 cluster DNS 写入新建 Pod 的 Docker
@@ -135,7 +142,7 @@ Sailer的核心责任包括：
 
 - 完整 Kubernetes Ingress 语义、TLS、外部 DNS controller 和 DNS route 的强一致更新。
 - Serverless 的事件 ack/retry、Workflow 自动执行、scale-to-0。
-- PV/PVC 持久化卷、GPU 应用、Security Context。
+- PV/PVC 持久化卷、Security Context。
 - 完整 Kubernetes API machinery，例如 watch、resourceVersion、admission、
   RBAC、EndpointSlice、probe 执行和资源感知调度。
 

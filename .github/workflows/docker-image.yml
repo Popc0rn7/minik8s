@@ -17,6 +17,7 @@ concurrency:
 env:
   IMAGE_NAME: ghcr.io/popc0rn7/minik8s
   MOORING_CNI_IMAGE_NAME: ghcr.io/popc0rn7/mooring-cni
+  GPU_SUBMITTER_IMAGE_NAME: ghcr.io/popc0rn7/gpu-submitter
 
 jobs:
   publish:
@@ -56,6 +57,16 @@ jobs:
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=sha-,format=short
 
+      - name: Extract GPU submitter Docker metadata
+        id: gpu-submitter-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.GPU_SUBMITTER_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,format=short
+
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
@@ -76,5 +87,17 @@ jobs:
           push: true
           tags: ${{ steps.mooring-cni-meta.outputs.tags }}
           labels: ${{ steps.mooring-cni-meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push GPU submitter image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.gpu-submitter
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.gpu-submitter-meta.outputs.tags }}
+          labels: ${{ steps.gpu-submitter-meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cuda-add-2
+  namespace: default
+  labels:
+    app: cuda-add-2
+spec:
+  selector:
+    matchLabels:
+      accelerator: gpu
+  source:
+    files:
+      - vector_add.cu
+      - Makefile
+    command: make run
+  slurm:
+    partition: debuga100
+    qos: debug
+    nodes: 1
+    ntasksPerNode: 1
+    cpusPerTask: 4
+    gres: gpu:1
+    time: "00:20:00"
+  remote:
+    host: sylogin.hpc.sjtu.edu.cn
+    username: stu1718
+    workdir: /dssg/home/acct-stu/stu1718/minik8s-gpujobs
+  backoffLimit: 0

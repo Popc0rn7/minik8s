@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,6 +28,7 @@ import (
 	"minik8s/internal/dns"
 	"minik8s/internal/dnssync"
 	"minik8s/internal/hpa"
+	"minik8s/internal/job"
 	"minik8s/internal/k8scompat"
 	"minik8s/internal/kubeproxy"
 	"minik8s/internal/minilog"
@@ -51,6 +53,7 @@ type Config struct {
 	DNSStore          store.DNSStore
 	ReplicaSetStore   store.ReplicaSetStore
 	HPAStore          store.HPAStore
+	JobStore          store.JobStore
 	MetricsStore      store.MetricsStore
 	NodeStore         store.NodeStore
 	K8sCompatStore    store.K8sCompatStore
@@ -74,6 +77,7 @@ type App struct {
 	dnsStore          store.DNSStore
 	replicaSetStore   store.ReplicaSetStore
 	hpaStore          store.HPAStore
+	jobStore          store.JobStore
 	metricsStore      store.MetricsStore
 	nodeStore         store.NodeStore
 	k8sCompatStore    store.K8sCompatStore
@@ -112,6 +116,10 @@ func New(config Config) *App {
 	if hpaStore == nil {
 		hpaStore = store.NewInMemoryHPAStore()
 	}
+	jobStore := config.JobStore
+	if jobStore == nil {
+		jobStore = store.NewInMemoryJobStore()
+	}
 	metricsStore := config.MetricsStore
 	if metricsStore == nil {
 		metricsStore = store.NewInMemoryMetricsStore()
@@ -145,6 +153,7 @@ func New(config Config) *App {
 			DNSStore:           dnsStore,
 			ReplicaSetStore:    replicaSetStore,
 			HPAStore:           hpaStore,
+			JobStore:           jobStore,
 			MetricsStore:       metricsStore,
 			NodeStore:          nodeStore,
 			K8sCompatStore:     k8sCompatStore,
@@ -161,6 +170,7 @@ func New(config Config) *App {
 		dnsStore:          dnsStore,
 		replicaSetStore:   replicaSetStore,
 		hpaStore:          hpaStore,
+		jobStore:          jobStore,
 		metricsStore:      metricsStore,
 		nodeStore:         nodeStore,
 		k8sCompatStore:    k8sCompatStore,
@@ -298,6 +308,20 @@ func (a *App) applyObject(ctx context.Context, client *controlPlaneClient, objec
 		}
 		return writes(out, cliui.SuccessLine("hpa/%s created (%d/%d)", updated.Name, updated.Status.DesiredReplicas, updated.Spec.MaxReplicas))
 	}
+	if kind == job.Kind {
+		j, err := podyaml.LoadJobFromYAML(object.Data)
+		if err != nil {
+			return err
+		}
+		if err := attachJobArtifacts(j, object.Source); err != nil {
+			return err
+		}
+		updated, err := client.ApplyJob(ctx, j)
+		if err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("job/%s created (%s)", updated.Name, updated.Status.Phase))
+	}
 	if kind == k8scompat.KindConfigMap {
 		var cm k8scompat.ConfigMap
 		if err := yaml.Unmarshal(object.Data, &cm); err != nil {
@@ -352,6 +376,33 @@ func (a *App) applyObject(ctx context.Context, client *controlPlaneClient, objec
 	}
 	if updated.Status.Phase == pod.PodFailed && updated.Status.Reason != "" {
 		return writes(out, cliui.WarnLine("reason: %s", updated.Status.Reason))
+	}
+	return nil
+}
+
+func attachJobArtifacts(j *job.Job, manifestSource string) error {
+	if j == nil {
+		return fmt.Errorf("job is nil")
+	}
+	parsed, err := url.Parse(manifestSource)
+	if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		return fmt.Errorf("job source files cannot be packaged from remote manifest %q", manifestSource)
+	}
+	baseDir := filepath.Dir(manifestSource)
+	j.Spec.Source.Artifacts = make([]job.JobSourceArtifact, 0, len(j.Spec.Source.Files))
+	for _, rel := range j.Spec.Source.Files {
+		clean := filepath.Clean(rel)
+		if filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) || clean == ".." {
+			return fmt.Errorf("job source file %q must be relative to manifest directory", rel)
+		}
+		data, err := os.ReadFile(filepath.Join(baseDir, clean))
+		if err != nil {
+			return fmt.Errorf("reading job source file %q: %w", rel, err)
+		}
+		j.Spec.Source.Artifacts = append(j.Spec.Source.Artifacts, job.JobSourceArtifact{
+			Path:    clean,
+			Content: base64.StdEncoding.EncodeToString(data),
+		})
 	}
 	return nil
 }
@@ -433,7 +484,7 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	if len(args) < 2 {
-		return fmt.Errorf("usage: minik8s delete pod|service|dns|replicaset|hpa|node|function|eventtrigger|workflow <name> [-n namespace]")
+		return fmt.Errorf("usage: minik8s delete pod|service|dns|replicaset|hpa|job|node|function|eventtrigger|workflow <name> [-n namespace]")
 	}
 	if args[0] == "service" || args[0] == "svc" {
 		name := args[1]
@@ -467,6 +518,14 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return writes(out, cliui.SuccessLine("hpa/%s deleted", name))
 	}
+	if args[0] == "job" || args[0] == "jobs" {
+		name := args[1]
+		namespace := namespaceFlag(args[2:])
+		if err := client.DeleteJob(ctx, name, namespace); err != nil {
+			return err
+		}
+		return writes(out, cliui.SuccessLine("job/%s deleted", name))
+	}
 	if args[0] == "node" || args[0] == "nodes" || args[0] == "no" {
 		name := args[1]
 		if err := client.DeleteNode(ctx, name); err != nil {
@@ -499,7 +558,7 @@ func (a *App) delete(ctx context.Context, args []string, out io.Writer) error {
 		return writes(out, cliui.SuccessLine("workflow/%s deleted", name))
 	}
 	if args[0] != "pod" {
-		return fmt.Errorf("usage: minik8s delete pod|service|dns|replicaset|hpa|node|function|eventtrigger|workflow <name> [-n namespace]")
+		return fmt.Errorf("usage: minik8s delete pod|service|dns|replicaset|hpa|job|node|function|eventtrigger|workflow <name> [-n namespace]")
 	}
 	name := args[1]
 	namespace := namespaceFlag(args[2:])
@@ -1685,6 +1744,7 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	if err := writeLocalConfig(DefaultLocalConfigPath(), localConfig{Harbor: harborURL}); err != nil {
 		return err
 	}
+	a.controlBridge.SetHarborURL(harborURL)
 	a.controlBridge.SetNodeCIDRConfig(options.clusterCIDR, options.nodeCIDRMaskSize)
 	a.controlBridge.SetClusterDNSConfig(options.addons.Enabled(AddonDNS), options.gatewayIP, "cluster.local")
 	server := &http.Server{
@@ -3250,6 +3310,13 @@ func DefaultHPAStatePath() string {
 		return filepath.Join(dir, "hpas.json")
 	}
 	return filepath.Join(".minik8s", "state", "hpas.json")
+}
+
+func DefaultJobStatePath() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "jobs.json")
+	}
+	return filepath.Join(".minik8s", "state", "jobs.json")
 }
 
 func DefaultNodeStatePath() string {

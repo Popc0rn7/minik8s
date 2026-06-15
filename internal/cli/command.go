@@ -17,6 +17,7 @@ import (
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
 	"minik8s/internal/hpa"
+	"minik8s/internal/job"
 	"minik8s/internal/metrics"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
@@ -112,8 +113,37 @@ func addKubectlCommands(root *cobra.Command, app *App, out io.Writer, bind func(
 	root.AddCommand(newTopCommand(app, out, bind))
 	root.AddCommand(newDeleteCommand(app, out, bind))
 	root.AddCommand(newDescribeCommand(app, out, bind))
+	root.AddCommand(newLogsCommand(app, out, bind))
 	root.AddCommand(newAPIResourcesCommand(app, out, bind))
 	root.AddCommand(newVersionCommand(app, out, bind))
+}
+
+func newLogsCommand(app *App, out io.Writer, bind func()) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "logs job <name>",
+		Short: "Print fetched Slurm stdout for a Job",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			bind()
+			ref, err := parseResourceRef(args, false)
+			if err != nil {
+				return err
+			}
+			if ref.resource != resourceJobs {
+				return fmt.Errorf("logs supports job")
+			}
+			client, err := app.controlPlaneClient()
+			if err != nil {
+				return err
+			}
+			logs, err := client.GetJobLogs(cmd.Context(), ref.name, app.namespace)
+			if err != nil {
+				return err
+			}
+			return writes(out, logs)
+		},
+	}
+	return cmd
 }
 
 func addRuntimeCommands(root *cobra.Command, app *App, out io.Writer, bind func()) {
@@ -227,8 +257,8 @@ func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete pod|service|dns|replicaset|hpa|node <name>",
-		Short: "Delete a Pod, Service, DNS, ReplicaSet, HPA, or Node",
+		Use:   "delete pod|service|dns|replicaset|hpa|job|node <name>",
+		Short: "Delete a Pod, Service, DNS, ReplicaSet, HPA, Job, or Node",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bind()
@@ -257,6 +287,10 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 				if err := app.delete(cmd.Context(), []string{"hpa", ref.name, "-n", app.namespace}, out); err != nil {
 					return err
 				}
+			case resourceJobs:
+				if err := app.delete(cmd.Context(), []string{"job", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
 			case resourceNodes:
 				if err := app.delete(cmd.Context(), []string{"node", ref.name}, out); err != nil {
 					return err
@@ -274,7 +308,7 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 					return err
 				}
 			default:
-				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, nodes, functions, eventtriggers, and workflows")
+				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, jobs, nodes, functions, eventtriggers, and workflows")
 			}
 			return nil
 		},
@@ -693,6 +727,7 @@ const (
 	resourceDNS           resourceName = "dns"
 	resourceReplicaSets   resourceName = "replicasets"
 	resourceHPAs          resourceName = "horizontalpodautoscalers"
+	resourceJobs          resourceName = "jobs"
 	resourceNodes         resourceName = "nodes"
 	resourceFunctions     resourceName = "functions"
 	resourceEventTriggers resourceName = "eventtriggers"
@@ -739,6 +774,8 @@ func normalizeResource(resource string) (resourceName, error) {
 		return resourceReplicaSets, nil
 	case "hpa", "hpas", "horizontalpodautoscaler", "horizontalpodautoscalers":
 		return resourceHPAs, nil
+	case "job", "jobs":
+		return resourceJobs, nil
 	case "node", "nodes", "no":
 		return resourceNodes, nil
 	case "function", "functions", "fn":
@@ -858,6 +895,26 @@ func (a *App) getResource(ctx context.Context, ref resourceRef, output string, o
 			return writeObject(out, output, map[string]any{"kind": "HorizontalPodAutoscalerList", "apiVersion": "v1", "items": hpas})
 		}
 		return writeHPATable(out, hpas)
+	case resourceJobs:
+		if ref.name != "" {
+			j, err := client.GetJob(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, j)
+			}
+			return writeJobTable(out, []*job.Job{j})
+		}
+		jobs, err := client.ListJobs(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortJobList(jobs)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "JobList", "apiVersion": job.APIVersion, "items": jobs})
+		}
+		return writeJobTable(out, jobs)
 	case resourceNodes:
 		if ref.name != "" {
 			n, err := client.GetNode(ctx, ref.name)
@@ -1002,6 +1059,13 @@ func metricOrDash(value string) string {
 	return value
 }
 
+func valueOrDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
+}
+
 func (a *App) describeResource(ctx context.Context, ref resourceRef, out io.Writer) error {
 	client, err := a.controlPlaneClient()
 	if err != nil {
@@ -1038,6 +1102,12 @@ func (a *App) describeResource(ctx context.Context, ref resourceRef, out io.Writ
 			return err
 		}
 		return describeHPA(out, autoscaler)
+	case resourceJobs:
+		j, err := client.GetJob(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeJob(out, j)
 	case resourceNodes:
 		n, err := client.GetNode(ctx, ref.name)
 		if err != nil {
@@ -1132,6 +1202,15 @@ func sortHPAList(hpas []*hpa.HorizontalPodAutoscaler) {
 			return hpas[i].Name < hpas[j].Name
 		}
 		return hpas[i].Namespace < hpas[j].Namespace
+	})
+}
+
+func sortJobList(jobs []*job.Job) {
+	sort.Slice(jobs, func(i, k int) bool {
+		if jobs[i].Namespace == jobs[k].Namespace {
+			return jobs[i].Name < jobs[k].Name
+		}
+		return jobs[i].Namespace < jobs[k].Namespace
 	})
 }
 
@@ -1300,6 +1379,32 @@ func writeHPATable(out io.Writer, hpas []*hpa.HorizontalPodAutoscaler) error {
 			cliui.PadRight(replicas, 12),
 			cliui.PadRight(formatHPAMetrics(autoscaler.Status.CurrentMetrics), 22),
 			autoscaler.Namespace,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeJobTable(out io.Writer, jobs []*job.Job) error {
+	if err := writef(out, "%s %s %s %s %s\n",
+		cliui.PadRight("JOB", 31),
+		cliui.PadRight("PHASE", 14),
+		cliui.PadRight("ACCELERATOR", 14),
+		cliui.PadRight("PARTITION", 14),
+		"SLURM-JOB-ID",
+	); err != nil {
+		return err
+	}
+	for _, j := range jobs {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[job]"), j.Name)
+		accelerator := j.Spec.Selector.MatchLabels["accelerator"]
+		if err := writef(out, "%s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(string(j.Status.Phase), 14),
+			cliui.PadRight(accelerator, 14),
+			cliui.PadRight(j.Spec.Slurm.Partition, 14),
+			j.Status.SlurmJobID,
 		); err != nil {
 			return err
 		}
@@ -1510,6 +1615,40 @@ func describeHPA(out io.Writer, autoscaler *hpa.HorizontalPodAutoscaler) error {
 		}
 	}
 	return nil
+}
+
+func describeJob(out io.Writer, j *job.Job) error {
+	if err := writef(out, "Name: %s\n", j.Name); err != nil {
+		return err
+	}
+	if err := writef(out, "Namespace: %s\n", j.Namespace); err != nil {
+		return err
+	}
+	if err := writef(out, "Phase: %s\n", j.Status.Phase); err != nil {
+		return err
+	}
+	if err := writef(out, "Accelerator: %s\n", j.Spec.Selector.MatchLabels["accelerator"]); err != nil {
+		return err
+	}
+	if err := writef(out, "Partition: %s\n", j.Spec.Slurm.Partition); err != nil {
+		return err
+	}
+	if err := writef(out, "Remote Host: %s\n", j.Spec.Remote.Host); err != nil {
+		return err
+	}
+	if err := writef(out, "Remote Dir: %s\n", valueOrDash(j.Status.RemoteDir)); err != nil {
+		return err
+	}
+	if err := writef(out, "Slurm Job ID: %s\n", valueOrDash(j.Status.SlurmJobID)); err != nil {
+		return err
+	}
+	if err := writef(out, "Submitter Pod: %s\n", valueOrDash(j.Status.SubmitterPod)); err != nil {
+		return err
+	}
+	if err := writef(out, "Submitter Service: %s\n", valueOrDash(j.Status.SubmitterService)); err != nil {
+		return err
+	}
+	return writef(out, "Message: %s\n", valueOrDash(j.Status.Message))
 }
 
 func describeNode(out io.Writer, n *node.Node) error {
