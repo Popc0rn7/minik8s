@@ -1726,6 +1726,8 @@ type bridgeOptions struct {
 	hpaSyncInterval        time.Duration
 	clusterCIDR            string
 	nodeCIDRMaskSize       int
+	serviceCIDR            string
+	nodePortRange          string
 	addons                 addonSet
 	gatewayIP              string
 	dnsListenPort          int32
@@ -1746,6 +1748,7 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	}
 	a.controlBridge.SetHarborURL(harborURL)
 	a.controlBridge.SetNodeCIDRConfig(options.clusterCIDR, options.nodeCIDRMaskSize)
+	a.controlBridge.SetServiceAllocationConfig(options.serviceCIDR, options.nodePortRange)
 	a.controlBridge.SetClusterDNSConfig(options.addons.Enabled(AddonDNS), options.gatewayIP, "cluster.local")
 	server := &http.Server{
 		Addr:    options.listen,
@@ -2212,7 +2215,7 @@ func dockerAddonPodRunning(name string) bool {
 }
 
 func parseBridgeOptions(args []string) (bridgeOptions, error) {
-	options := bridgeOptions{listen: ":8080", addons: defaultAddonSet(), serviceSyncInterval: 5 * time.Second, dnsSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24, gatewayIP: "127.0.0.1", dnsListenPort: 53, ingressListenPort: 80}
+	options := bridgeOptions{listen: ":8080", addons: defaultAddonSet(), serviceSyncInterval: 5 * time.Second, dnsSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24, serviceCIDR: service.DefaultServiceCIDR, nodePortRange: service.DefaultNodePortRange, gatewayIP: "127.0.0.1", dnsListenPort: 53, ingressListenPort: 80}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -2309,6 +2312,24 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 				return options, fmt.Errorf("invalid --cluster-cidr %q: %w", args[i], err)
 			}
 			options.clusterCIDR = args[i]
+		case "--service-cidr":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --service-cidr")
+			}
+			if _, _, err := net.ParseCIDR(args[i]); err != nil {
+				return options, fmt.Errorf("invalid --service-cidr %q: %w", args[i], err)
+			}
+			options.serviceCIDR = args[i]
+		case "--node-port-range":
+			i++
+			if i >= len(args) {
+				return options, fmt.Errorf("missing value for --node-port-range")
+			}
+			if _, err := service.NewAllocator(service.AllocatorConfig{NodePortRange: args[i]}); err != nil {
+				return options, fmt.Errorf("invalid --node-port-range %q: %w", args[i], err)
+			}
+			options.nodePortRange = args[i]
 		case "--node-cidr-mask-size":
 			i++
 			if i >= len(args) {
@@ -2333,6 +2354,9 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 	}
 	if options.nodeCIDRMaskSize < ones || options.nodeCIDRMaskSize > bits {
 		return options, fmt.Errorf("--node-cidr-mask-size must be between %d and %d for %s", ones, bits, options.clusterCIDR)
+	}
+	if _, err := service.NewAllocator(service.AllocatorConfig{ServiceCIDR: options.serviceCIDR, NodePortRange: options.nodePortRange}); err != nil {
+		return options, err
 	}
 	return options, nil
 }
@@ -2426,6 +2450,7 @@ type sailerOptions struct {
 	vxlanID       int
 	vxlanPort     int
 	vxlanName     string
+	bridgeName    string
 	proxyDisabled bool
 	once          bool
 	clusterDNS    string
@@ -2572,9 +2597,12 @@ func getNodeWithRetry(ctx context.Context, client *nodeSailer.HTTPPodClient, nod
 }
 
 func (a *App) runAssignedSailer(ctx context.Context, options sailerOptions, podClient *nodeSailer.HTTPPodClient, assignedNode *node.Node, out io.Writer) error {
-	networkMode, err := a.ensureManifestCNIIfApplied(ctx, options.harbor, assignedNode)
+	networkMode, bridgeName, err := a.ensureManifestCNIIfApplied(ctx, options.harbor, assignedNode)
 	if err != nil {
 		return err
+	}
+	if bridgeName != "" {
+		options.bridgeName = bridgeName
 	}
 	if networkMode == sailerNetworkBuiltIn {
 		hasConfig, err := cniConfigExists(DefaultCNIConfDir())
@@ -2586,6 +2614,7 @@ func (a *App) runAssignedSailer(ctx context.Context, options sailerOptions, podC
 			if err != nil {
 				return err
 			}
+			options.bridgeName = cniConfig.Bridge
 			if _, err := writeCNIConfig(cniConfig); err != nil {
 				return err
 			}
@@ -2628,22 +2657,22 @@ func (a *App) runAssignedSailer(ctx context.Context, options sailerOptions, podC
 	return k.Run(ctx)
 }
 
-func (a *App) ensureManifestCNIIfApplied(ctx context.Context, harborURL string, assignedNode *node.Node) (sailerNetworkMode, error) {
+func (a *App) ensureManifestCNIIfApplied(ctx context.Context, harborURL string, assignedNode *node.Node) (sailerNetworkMode, string, error) {
 	flannelActive, err := a.ensureFlannelIfApplied(ctx, harborURL, assignedNode)
 	if err != nil {
-		return sailerNetworkBuiltIn, err
+		return sailerNetworkBuiltIn, "", err
 	}
 	if flannelActive {
-		return sailerNetworkFlannel, nil
+		return sailerNetworkFlannel, "", nil
 	}
-	minik8sActive, err := a.ensureMooringCNIIfApplied(ctx, harborURL, assignedNode)
+	minik8sActive, bridgeName, err := a.ensureMooringCNIIfApplied(ctx, harborURL, assignedNode)
 	if err != nil {
-		return sailerNetworkBuiltIn, err
+		return sailerNetworkBuiltIn, "", err
 	}
 	if minik8sActive {
-		return sailerNetworkMooringCNI, nil
+		return sailerNetworkMooringCNI, bridgeName, nil
 	}
-	return sailerNetworkBuiltIn, nil
+	return sailerNetworkBuiltIn, "", nil
 }
 
 func (a *App) ensureFlannelIfApplied(ctx context.Context, harborURL string, assignedNode *node.Node) (bool, error) {
@@ -2682,21 +2711,25 @@ func (a *App) ensureFlannelIfApplied(ctx context.Context, harborURL string, assi
 	return true, nil
 }
 
-func (a *App) ensureMooringCNIIfApplied(ctx context.Context, harborURL string, assignedNode *node.Node) (bool, error) {
+func (a *App) ensureMooringCNIIfApplied(ctx context.Context, harborURL string, assignedNode *node.Node) (bool, string, error) {
 	client, err := newControlPlaneClient(harborURL, a.httpClient)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	cm, err := client.GetConfigMap(ctx, k8scompat.MooringCNIConfigMap, k8scompat.MooringCNINamespace)
 	if err != nil {
 		if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusNotFound {
-			return false, nil
+			return false, "", nil
 		}
-		return false, err
+		return false, "", err
 	}
 	ds, err := client.GetDaemonSet(ctx, k8scompat.MooringCNIDaemonSet, k8scompat.MooringCNINamespace)
 	if err != nil {
-		return false, err
+		return false, "", err
+	}
+	conf, err := mooringCNIConfigFromConfigMap(cm)
+	if err != nil {
+		return false, "", err
 	}
 	runner := a.mooringCNIRunner
 	if runner == nil {
@@ -2709,9 +2742,9 @@ func (a *App) ensureMooringCNIIfApplied(ctx context.Context, harborURL string, a
 		CNIBinDir:  DefaultCNIBinDir(),
 		CNIConfDir: DefaultCNIConfDir(),
 	}); err != nil {
-		return false, err
+		return false, "", err
 	}
-	return true, nil
+	return true, conf.Bridge, nil
 }
 
 func (a *App) cleanupFlannel(ctx context.Context, assignedNode *node.Node) error {
@@ -2766,14 +2799,15 @@ func (a *App) sailerNetworkAgent(options sailerOptions) (*netagent.Agent, error)
 		return nil, fmt.Errorf("--pod-cidr is required when --node-ip is set")
 	}
 	return netagent.New(netagent.Options{
-		NodeName:  options.nodeName,
-		NodeIP:    options.nodeIP,
-		PodCIDR:   options.podCIDR,
-		VXLANID:   options.vxlanID,
-		VXLANPort: options.vxlanPort,
-		VXLANName: options.vxlanName,
-		Registry:  netregistry.NewClientWithHTTPClient(options.harbor, a.httpClient),
-		Runner:    a.netRunner,
+		NodeName:   options.nodeName,
+		NodeIP:     options.nodeIP,
+		PodCIDR:    options.podCIDR,
+		VXLANID:    options.vxlanID,
+		VXLANPort:  options.vxlanPort,
+		VXLANName:  options.vxlanName,
+		BridgeName: options.bridgeName,
+		Registry:   netregistry.NewClientWithHTTPClient(options.harbor, a.httpClient),
+		Runner:     a.netRunner,
 	}), nil
 }
 

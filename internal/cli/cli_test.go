@@ -1264,7 +1264,7 @@ status:
 		ClusterCIDR:      "10.244.0.0/16",
 		NodeCIDRMaskSize: 24,
 	})
-	var netCalls int
+	var netCommands []string
 	mooring := &fakeMooringCNIRunner{}
 	app := New(Config{
 		Runtime:      mock.NewMockRuntime(),
@@ -1276,7 +1276,7 @@ status:
 			return rec.Result(), nil
 		})},
 		NetRunner: func(name string, args ...string) error {
-			netCalls++
+			netCommands = append(netCommands, name+" "+strings.Join(args, " "))
 			return nil
 		},
 		MooringCNIRunner: mooring,
@@ -1284,7 +1284,8 @@ status:
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"sailer", nodePath, "--harbor", "http://minik8s.test", "--once"}, &out))
-	require.Greater(t, netCalls, 0)
+	require.NotEmpty(t, netCommands)
+	assert.Contains(t, netCommands, "ip link show mk8s1")
 	require.Len(t, mooring.calls, 1)
 	assert.Equal(t, k8scompat.MooringCNIConfigMap, mooring.calls[0].ConfigMap.Name)
 	assert.Equal(t, k8scompat.MooringCNIDaemonSet, mooring.calls[0].DaemonSet.Name)
@@ -2189,6 +2190,8 @@ func TestParseBridgeOptionsServiceSyncInterval(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ":8080", defaults.listen)
 	assert.Equal(t, 5*time.Second, defaults.serviceSyncInterval)
+	assert.Equal(t, "10.96.0.0/12", defaults.serviceCIDR)
+	assert.Equal(t, "30000-32767", defaults.nodePortRange)
 
 	disabled, err := parseBridgeOptions([]string{"--service-sync-interval", "0"})
 	require.NoError(t, err)
@@ -2197,6 +2200,25 @@ func TestParseBridgeOptionsServiceSyncInterval(t *testing.T) {
 	_, err = parseBridgeOptions([]string{"--service-sync-interval", "nope"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid --service-sync-interval")
+}
+
+func TestParseBridgeOptionsServiceAllocationConfig(t *testing.T) {
+	options, err := parseBridgeOptions([]string{
+		"--service-cidr", "10.97.0.0/16",
+		"--node-port-range", "31000-31010",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "10.97.0.0/16", options.serviceCIDR)
+	assert.Equal(t, "31000-31010", options.nodePortRange)
+
+	_, err = parseBridgeOptions([]string{"--service-cidr", "not-a-cidr"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --service-cidr")
+
+	_, err = parseBridgeOptions([]string{"--node-port-range", "31000"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --node-port-range")
 }
 
 func TestBridgeControllerRunnerSyncsServicesPeriodically(t *testing.T) {

@@ -84,9 +84,6 @@ func (c *ServiceController) reconcileService(ctx context.Context, svc *service.S
 		return endpoints[i].PodName < endpoints[j].PodName
 	})
 	svc.Status.Endpoints = endpoints
-	if svc.Status.ClusterIP == "" {
-		svc.Status.ClusterIP = service.DefaultClusterIP
-	}
 	if err := c.serviceStore.Update(svc); err != nil {
 		return fmt.Errorf("updating service status: %w", err)
 	}

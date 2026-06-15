@@ -166,6 +166,20 @@ func TestRunBridgePluginRejectsWrongPluginType(t *testing.T) {
 	assert.Contains(t, err.Error(), "type must be mooring")
 }
 
+func TestRunBridgePluginRequiresAllocatedPodCIDRAndGateway(t *testing.T) {
+	var out bytes.Buffer
+
+	err := RunBridgePlugin(strings.NewReader(`{"cniVersion":"1.0.0","name":"minik8s","type":"mooring"}`), &out, []string{
+		"CNI_COMMAND=ADD",
+		"CNI_CONTAINERID=sandbox-1",
+		"CNI_NETNS=/proc/123/ns/net",
+		"CNI_IFNAME=eth0",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "podCIDR is required")
+}
+
 func TestCNIErrorJSON(t *testing.T) {
 	data, err := cniErrorJSON("1.0.0", 100, "InvalidConfig", "bad config")
 

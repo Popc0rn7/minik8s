@@ -247,12 +247,12 @@ func DefaultAndValidateService(s *service.Service) error {
 		if port.TargetPort <= 0 || port.TargetPort > 65535 {
 			return fmt.Errorf("service port %d targetPort must be between 1 and 65535", i)
 		}
-		if s.Spec.Type == service.ServiceTypeNodePort && (port.NodePort < 30000 || port.NodePort > 32767) {
-			return fmt.Errorf("service port %d nodePort must be between 30000 and 32767", i)
+		if s.Spec.Type == service.ServiceTypeNodePort && port.NodePort < 0 {
+			return fmt.Errorf("service port %d nodePort must be non-negative", i)
 		}
-	}
-	if s.Status.ClusterIP == "" {
-		s.Status.ClusterIP = service.DefaultClusterIP
+		if s.Spec.Type == service.ServiceTypeNodePort && port.NodePort > 65535 {
+			return fmt.Errorf("service port %d nodePort must be between 1 and 65535", i)
+		}
 	}
 	return nil
 }

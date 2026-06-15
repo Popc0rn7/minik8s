@@ -55,6 +55,8 @@ type Config struct {
 	NetRegistry        *netregistry.Store
 	ClusterCIDR        string
 	NodeCIDRMaskSize   int
+	ServiceCIDR        string
+	NodePortRange      string
 	ClusterDNS         string
 	ClusterDomain      string
 	DNSEnabled         bool
@@ -79,6 +81,7 @@ type Server struct {
 	nodeTTL            time.Duration
 	netRegistry        *netregistry.Store
 	cidrAlloc          *nodeCIDRAllocator
+	serviceAlloc       *service.Allocator
 	clusterDNS         string
 	clusterDomain      string
 	dnsEnabled         bool
@@ -154,6 +157,13 @@ func New(config Config) *Server {
 	if err != nil {
 		panic(err)
 	}
+	serviceAlloc, err := service.NewAllocator(service.AllocatorConfig{
+		ServiceCIDR:   config.ServiceCIDR,
+		NodePortRange: config.NodePortRange,
+	})
+	if err != nil {
+		panic(err)
+	}
 	nodeTokens := newNodeTokenRegistry()
 	clusterDomain := strings.TrimSpace(config.ClusterDomain)
 	if clusterDomain == "" {
@@ -176,6 +186,7 @@ func New(config Config) *Server {
 		nodeTTL:            nodeTTL,
 		netRegistry:        netRegistryStore,
 		cidrAlloc:          cidrAlloc,
+		serviceAlloc:       serviceAlloc,
 		clusterDNS:         strings.TrimSpace(config.ClusterDNS),
 		clusterDomain:      clusterDomain,
 		dnsEnabled:         config.DNSEnabled,
@@ -1164,7 +1175,7 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request, namespac
 			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "create must target service collection")
 			return
 		}
-		svc, err := s.readServiceWithClusterIP(r.Body, namespace, "")
+		svc, err := s.readServiceWithAllocation(r.Body, namespace, "")
 		if err != nil {
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
@@ -1210,7 +1221,7 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request, namespac
 			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "update must target a service")
 			return
 		}
-		svc, err := s.readServiceWithClusterIP(r.Body, namespace, name)
+		svc, err := s.readServiceWithAllocation(r.Body, namespace, name)
 		if err != nil {
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return
@@ -2031,7 +2042,7 @@ func readHPA(r io.Reader, namespace, name string) (*hpa.HorizontalPodAutoscaler,
 	return &autoscaler, nil
 }
 
-func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (*service.Service, error) {
+func (s *Server) readServiceWithAllocation(r io.Reader, namespace, name string) (*service.Service, error) {
 	var svc service.Service
 	if err := decodeObject(r, &svc); err != nil {
 		return nil, err
@@ -2049,7 +2060,7 @@ func (s *Server) readServiceWithClusterIP(r io.Reader, namespace, name string) (
 	if err != nil {
 		return nil, err
 	}
-	if err := service.EnsureClusterIP(&svc, existing); err != nil {
+	if err := s.serviceAlloc.Assign(&svc, existing); err != nil {
 		return nil, err
 	}
 	return &svc, nil

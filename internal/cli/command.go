@@ -530,7 +530,7 @@ func newRouteProxyCommand(app *App, out io.Writer) *cobra.Command {
 }
 
 func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
-	var listen, addons, serviceSyncInterval, dnsSyncInterval, replicaSetSyncInterval, hpaSyncInterval, clusterCIDR, gatewayIP, dnsListen, ingressListen string
+	var listen, addons, serviceSyncInterval, dnsSyncInterval, replicaSetSyncInterval, hpaSyncInterval, clusterCIDR, serviceCIDR, nodePortRange, gatewayIP, dnsListen, ingressListen string
 	var nodeCIDRMaskSize int
 	cmd := &cobra.Command{
 		Use:   "bridge",
@@ -567,6 +567,12 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 			if clusterCIDR != "" {
 				legacy = append(legacy, "--cluster-cidr", clusterCIDR)
 			}
+			if serviceCIDR != "" {
+				legacy = append(legacy, "--service-cidr", serviceCIDR)
+			}
+			if nodePortRange != "" {
+				legacy = append(legacy, "--node-port-range", nodePortRange)
+			}
 			if nodeCIDRMaskSize != 0 {
 				legacy = append(legacy, "--node-cidr-mask-size", fmt.Sprintf("%d", nodeCIDRMaskSize))
 			}
@@ -583,6 +589,8 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&replicaSetSyncInterval, "replicaset-sync-interval", "", "ReplicaSet sync interval")
 	cmd.Flags().StringVar(&hpaSyncInterval, "hpa-sync-interval", "", "HPA sync interval")
 	cmd.Flags().StringVar(&clusterCIDR, "cluster-cidr", "", "Cluster CIDR for Node PodCIDR allocation")
+	cmd.Flags().StringVar(&serviceCIDR, "service-cidr", "", "Service ClusterIP CIDR")
+	cmd.Flags().StringVar(&nodePortRange, "node-port-range", "", "NodePort allocation range, min-max")
 	cmd.Flags().IntVar(&nodeCIDRMaskSize, "node-cidr-mask-size", 0, "Per-node PodCIDR mask size")
 	cmd.AddCommand(newBridgeTokenCommand(app, out))
 	return cmd

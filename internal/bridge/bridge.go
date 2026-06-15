@@ -28,6 +28,8 @@ type Config struct {
 	NodeTTL            time.Duration
 	ClusterCIDR        string
 	NodeCIDRMaskSize   int
+	ServiceCIDR        string
+	NodePortRange      string
 	ClusterDNS         string
 	ClusterDomain      string
 	DNSEnabled         bool
@@ -51,6 +53,8 @@ type Bridge struct {
 	nodeTTL            time.Duration
 	clusterCIDR        string
 	nodeCIDRMaskSize   int
+	serviceCIDR        string
+	nodePortRange      string
 	clusterDNS         string
 	clusterDomain      string
 	dnsEnabled         bool
@@ -133,6 +137,8 @@ func New(config Config) *Bridge {
 		nodeTTL:            nodeTTL,
 		clusterCIDR:        config.ClusterCIDR,
 		nodeCIDRMaskSize:   config.NodeCIDRMaskSize,
+		serviceCIDR:        config.ServiceCIDR,
+		nodePortRange:      config.NodePortRange,
 		clusterDNS:         config.ClusterDNS,
 		clusterDomain:      config.ClusterDomain,
 		dnsEnabled:         config.DNSEnabled,
@@ -159,6 +165,8 @@ func (k *Bridge) Handler() http.Handler {
 		NodeTTL:            k.nodeTTL,
 		ClusterCIDR:        k.clusterCIDR,
 		NodeCIDRMaskSize:   k.nodeCIDRMaskSize,
+		ServiceCIDR:        k.serviceCIDR,
+		NodePortRange:      k.nodePortRange,
 		ClusterDNS:         k.clusterDNS,
 		ClusterDomain:      k.clusterDomain,
 		DNSEnabled:         k.dnsEnabled,
@@ -170,6 +178,11 @@ func (k *Bridge) Handler() http.Handler {
 func (k *Bridge) SetNodeCIDRConfig(clusterCIDR string, maskSize int) {
 	k.clusterCIDR = clusterCIDR
 	k.nodeCIDRMaskSize = maskSize
+}
+
+func (k *Bridge) SetServiceAllocationConfig(serviceCIDR, nodePortRange string) {
+	k.serviceCIDR = serviceCIDR
+	k.nodePortRange = nodePortRange
 }
 
 func (k *Bridge) SetHarborURL(harborURL string) {
@@ -200,6 +213,8 @@ func (k *Bridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 		NodeTTL:            k.nodeTTL,
 		ClusterCIDR:        k.clusterCIDR,
 		NodeCIDRMaskSize:   k.nodeCIDRMaskSize,
+		ServiceCIDR:        k.serviceCIDR,
+		NodePortRange:      k.nodePortRange,
 		ClusterDNS:         k.clusterDNS,
 		ClusterDomain:      k.clusterDomain,
 		DNSEnabled:         k.dnsEnabled,

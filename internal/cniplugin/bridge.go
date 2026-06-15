@@ -15,10 +15,8 @@ import (
 )
 
 const (
-	defaultBridge  = "mk8s0"
-	defaultPodCIDR = "10.244.0.0/24"
-	defaultGateway = "10.244.0.1"
-	defaultIfName  = "eth0"
+	defaultBridge = "mk8s0"
+	defaultIfName = "eth0"
 )
 
 // BridgeConfig is the CNI config consumed by mooring.
@@ -99,6 +97,18 @@ func validateConfig(conf BridgeConfig) error {
 	}
 	if conf.Type != "mooring" {
 		return fmt.Errorf("cni config type must be mooring")
+	}
+	if strings.TrimSpace(conf.PodCIDR) == "" {
+		return fmt.Errorf("podCIDR is required")
+	}
+	if strings.TrimSpace(conf.Gateway) == "" {
+		return fmt.Errorf("gateway is required")
+	}
+	if _, _, err := net.ParseCIDR(conf.PodCIDR); err != nil {
+		return fmt.Errorf("invalid podCIDR %q: %w", conf.PodCIDR, err)
+	}
+	if net.ParseIP(conf.Gateway) == nil {
+		return fmt.Errorf("invalid gateway %q", conf.Gateway)
 	}
 	return nil
 }
@@ -317,12 +327,6 @@ func defaultBridgeConfig(conf *BridgeConfig) {
 	}
 	if conf.Bridge == "" {
 		conf.Bridge = defaultBridge
-	}
-	if conf.PodCIDR == "" {
-		conf.PodCIDR = defaultPodCIDR
-	}
-	if conf.Gateway == "" {
-		conf.Gateway = defaultGateway
 	}
 	if conf.IPAM.StatePath == "" {
 		conf.IPAM.StatePath = filepath.Join(".minik8s", "state", "cni-ipam.json")

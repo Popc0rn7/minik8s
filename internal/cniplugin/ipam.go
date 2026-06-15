@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 )
 
 // IPAM persists simple host-local Pod IP allocations for the bridge plugin.
@@ -32,6 +33,12 @@ func NewIPAM(path, cidr, gateway string) *IPAM {
 func (i *IPAM) Allocate(key string) (net.IP, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+
+	unlock, err := i.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 
 	state, err := i.load()
 	if err != nil {
@@ -61,12 +68,37 @@ func (i *IPAM) Release(key string) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
+	unlock, err := i.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	state, err := i.load()
 	if err != nil {
 		return err
 	}
 	delete(state.Allocations, key)
 	return i.save(state)
+}
+
+func (i *IPAM) lock() (func(), error) {
+	dir := filepath.Dir(i.path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	lockFile, err := os.OpenFile(i.path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		_ = lockFile.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}, nil
 }
 
 func (i *IPAM) load() (ipamState, error) {

@@ -406,6 +406,32 @@ func TestHarborServiceCRUD(t *testing.T) {
 	assert.Contains(t, logs.String(), "service-delete: service=default/nginx-service")
 }
 
+func TestHarborServiceAllocatesClusterIPAndNodePortFromConfig(t *testing.T) {
+	srv := New(Config{
+		PodStore:      store.NewInMemoryPodStore(),
+		ServiceStore:  store.NewInMemoryServiceStore(),
+		NodeStore:     store.NewInMemoryNodeStore(),
+		ServiceCIDR:   "10.97.0.0/29",
+		NodePortRange: "31000-31002",
+	})
+	body := `{
+		"kind":"Service",
+		"apiVersion":"v1",
+		"metadata":{"name":"nginx-nodeport","namespace":"default","labels":{"app":"nginx"}},
+		"spec":{"type":"NodePort","selector":{"matchLabels":{"app":"nginx"}},"ports":[{"port":80,"targetPort":80,"protocol":"TCP"}]}
+	}`
+
+	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/services", body)
+	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
+	assert.Contains(t, create.Body.String(), `"clusterIP":"10.97.0.1"`)
+	assert.Contains(t, create.Body.String(), `"nodePort":31000`)
+
+	update := serve(t, srv, http.MethodPut, "/api/v1/namespaces/default/services/nginx-nodeport", body)
+	require.Equal(t, http.StatusOK, update.Code, update.Body.String())
+	assert.Contains(t, update.Body.String(), `"clusterIP":"10.97.0.1"`)
+	assert.Contains(t, update.Body.String(), `"nodePort":31000`)
+}
+
 func TestHarborServiceCRUDUpdatesEndpointsWithoutServiceProxy(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()
