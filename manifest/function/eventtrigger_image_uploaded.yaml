@@ -1,0 +1,10 @@
+kind: EventTrigger
+apiVersion: v1
+metadata:
+  name: image-uploaded
+  labels:
+    app: image-workflow
+spec:
+  subject: minik8s.image.uploaded
+  functionRef:
+    name: extract-metadata

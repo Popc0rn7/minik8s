@@ -111,7 +111,7 @@ bridge fdb show dev mk8s-vxlan
 | 控制面状态持久化和恢复 | `logbook.md`、`startup.md` | 必测 |
 | HPA 和 metrics | `hpa.md`、`metrics-server.md` | 当前已有能力，按 addon 测 |
 | DNS host/path gateway | `dns.md` | 当前已有能力，按 addon 测 |
-| Serverless Function/EventTrigger/Workflow/NATS | `serverless-nats.md` | 当前最小闭环；完整 scale-to-0 未实现 |
+| Serverless Function/EventTrigger/Workflow/NATS | `serverless.md`、`serverless-nats.md`、`serverless-sam.md`、`serverless-image-workflow.md` | 当前教学闭环；复杂 SAM/image workflow demo 依赖预构建镜像和本地数据 |
 | Job GPU/Slurm 提交、状态、日志、隔离 | `job-gpu.md` | 当前最小闭环；真机验证依赖 SSH 凭据、submitter 镜像和 Harbor endpoint 配置 |
 | PV/PVC、Security Context、MicroService mesh | 无可通过 testcase | 未实现或未纳入当前验收 |
 
@@ -131,6 +131,9 @@ bridge fdb show dev mk8s-vxlan
 | `hpa.md` | 需要 metrics 样本 | HPA 根据 Docker metrics 调整 ReplicaSet。 |
 | `dns.md` | 需要 dns addon | DNS 对象和 gateway host/path routing。 |
 | `serverless-nats.md` | 需要 serverless addon | Function/EventTrigger/Workflow + NATS publish。 |
+| `serverless.md` | 需要 serverless addon | Function/EventTrigger/Workflow、冷启动、scale-to-0、并发扩容 + NATS publish。 |
+| `serverless-sam.md` | 需要 serverless addon 和预构建镜像 | SAM CPU 图像分割容器 Function demo。 |
+| `serverless-image-workflow.md` | 需要 serverless addon、预构建镜像和本地数据 | 多 Function 图像处理 Workflow demo。 |
 | `job-gpu.md` | 需要交我算账号和 submitter 镜像 | Job + Slurm GPU 后端，CUDA vector add、日志和隔离演示。 |
 | `testing-agent-prompt.md` | 辅助文档 | 给测试代理的执行、证据和恢复要求。 |
 
@@ -151,6 +154,9 @@ bridge fdb show dev mk8s-vxlan
 - [ ] `hpa.md`：HPA metrics、扩容和缩容。
 - [ ] `dns.md`：DNS 对象和 gateway host/path routing。
 - [ ] `serverless-nats.md`：Function/EventTrigger/Workflow + NATS publish。
+- [ ] `serverless.md`：Function/EventTrigger/Workflow、冷启动、scale-to-0、并发扩容 + NATS publish。
+- [ ] `serverless-sam.md`：SAM CPU 图像分割容器 Function demo。
+- [ ] `serverless-image-workflow.md`：多 Function 图像处理 Workflow demo。
 - [ ] `job-gpu.md`：Job + Slurm GPU 后端、CUDA vector add、日志和隔离演示。
 
 最近人工验证记录：
@@ -195,6 +201,8 @@ for item in \
   "rs nginx-rs" \
   "dns example-routes" \
   "function echo" \
+  "function slow-echo" \
+  "function sam-segment" \
   "eventtrigger echo-events" \
   "workflow echo-chain" \
   "job cuda-add" \

@@ -1,0 +1,16 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: artifact-store
+  namespace: default
+  labels:
+    app: artifact-store
+spec:
+  type: ClusterIP
+  selector:
+    matchLabels:
+      app: artifact-store
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080

@@ -1,0 +1,250 @@
+{
+  "version": 1,
+  "task": {
+    "id": "most-dog-ranking",
+    "title": "最狗的狗排名",
+    "description": "Use Serverless SAM masks and a one-shot mounted Pod to rank the most poster-ready dog."
+  },
+  "cases": [
+    {
+      "id": "01",
+      "image": {
+        "id": "01",
+        "path": "images/01.jpg"
+      },
+      "target": {
+        "kind": "dog",
+        "contest": "most-dog"
+      },
+      "prompt": {
+        "id": "01-box",
+        "type": "box",
+        "box": [
+          20.47,
+          225.53,
+          460.79,
+          512.63
+        ]
+      },
+      "expectedMask": {
+        "path": "masks/01.json"
+      }
+    },
+    {
+      "id": "02",
+      "image": {
+        "id": "02",
+        "path": "images/02.jpg"
+      },
+      "target": {
+        "kind": "dog",
+        "contest": "most-dog"
+      },
+      "prompt": {
+        "id": "02-box",
+        "type": "box",
+        "box": [
+          21.88,
+          53.43,
+          438.29,
+          600.09
+        ]
+      },
+      "expectedMask": {
+        "path": "masks/02.json"
+      }
+    },
+    {
+      "id": "03",
+      "image": {
+        "id": "03",
+        "path": "images/03.jpg"
+      },
+      "target": {
+        "kind": "dog",
+        "contest": "most-dog"
+      },
+      "prompt": {
+        "id": "03-box",
+        "type": "box",
+        "box": [
+          26.13,
+          28.53,
+          512.4,
+          534.25
+        ]
+      },
+      "expectedMask": {
+        "path": "masks/03.json"
+      }
+    },
+    {
+      "id": "04",
+      "image": {
+        "id": "04",
+        "path": "images/04.jpg"
+      },
+      "target": {
+        "kind": "dog",
+        "contest": "most-dog"
+      },
+      "prompt": {
+        "id": "04-box",
+        "type": "box",
+        "box": [
+          215.48,
+          54.09,
+          497.06,
+          365.75
+        ]
+      },
+      "expectedMask": {
+        "path": "masks/04.json"
+      }
+    },
+    {
+      "id": "05",
+      "image": {
+        "id": "05",
+        "path": "images/05.jpg"
+      },
+      "target": {
+        "kind": "dog",
+        "contest": "most-dog"
+      },
+      "prompt": {
+        "id": "05-box",
+        "type": "box",
+        "box": [
+          31.43,
+          65.77,
+          358.85,
+          430.01
+        ]
+      },
+      "expectedMask": {
+        "path": "masks/05.json"
+      }
+    },
+    {
+      "id": "06",
+      "image": {
+        "id": "06",
+        "path": "images/06.jpg"
+      },
+      "target": {
+        "kind": "dog",
+        "contest": "most-dog"
+      },
+      "prompt": {
+        "id": "06-box",
+        "type": "box",
+        "box": [
+          61.04,
+          228.24,
+          354.96,
+          598.14
+        ]
+      },
+      "expectedMask": {
+        "path": "masks/06.json"
+      }
+    },
+    {
+      "id": "07",
+      "image": {
+        "id": "07",
+        "path": "images/07.jpg"
+      },
+      "target": {
+        "kind": "dog",
+        "contest": "most-dog"
+      },
+      "prompt": {
+        "id": "07-box",
+        "type": "box",
+        "box": [
+          73.24,
+          113.97,
+          438.29,
+          581.74
+        ]
+      },
+      "expectedMask": {
+        "path": "masks/07.json"
+      }
+    },
+    {
+      "id": "08",
+      "image": {
+        "id": "08",
+        "path": "images/08.jpg"
+      },
+      "target": {
+        "kind": "dog",
+        "contest": "most-dog"
+      },
+      "prompt": {
+        "id": "08-box",
+        "type": "box",
+        "box": [
+          22.24,
+          33.85,
+          381.43,
+          389.42
+        ]
+      },
+      "expectedMask": {
+        "path": "masks/08.json"
+      }
+    },
+    {
+      "id": "09",
+      "image": {
+        "id": "09",
+        "path": "images/09.jpg"
+      },
+      "target": {
+        "kind": "dog",
+        "contest": "most-dog"
+      },
+      "prompt": {
+        "id": "09-box",
+        "type": "box",
+        "box": [
+          97.2,
+          30.32,
+          407.14,
+          342.51
+        ]
+      },
+      "expectedMask": {
+        "path": "masks/09.json"
+      }
+    },
+    {
+      "id": "10",
+      "image": {
+        "id": "10",
+        "path": "images/10.jpg"
+      },
+      "target": {
+        "kind": "dog",
+        "contest": "most-dog"
+      },
+      "prompt": {
+        "id": "10-box",
+        "type": "box",
+        "box": [
+          167.63,
+          45.09,
+          408.67,
+          354.57
+        ]
+      },
+      "expectedMask": {
+        "path": "masks/10.json"
+      }
+    }
+  ]
+}

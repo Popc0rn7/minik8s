@@ -1,0 +1,22 @@
+kind: Function
+apiVersion: v1
+metadata:
+  name: score-mask
+  labels:
+    app: image-workflow
+spec:
+  runtime: container
+  image: minik8s/sam-cpu
+  imageTag: demo
+  port: 8080
+  minReplicas: 0
+  maxReplicas: 2
+  targetConcurrency: 5
+  idleTimeoutSeconds: 60
+  env:
+  - name: MINIK8S_IMAGE_WORKFLOW_ROLE
+    value: score-mask
+  - name: ARTIFACT_STORE_URL
+    value: http://10.96.0.1:8080
+  - name: MINIK8S_FUNCTION_PORT
+    value: "8080"

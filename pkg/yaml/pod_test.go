@@ -95,3 +95,18 @@ func TestPodVolumeResourceManifestLeavesSchedulingToNavigator(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, p.Spec.NodeName)
 }
+
+func TestMostDogCollagePodManifest(t *testing.T) {
+	path := filepath.Join("..", "..", "manifest", "pod", "pod_most_dog_collage.yaml")
+
+	p, err := LoadPodFromFile(path)
+
+	require.NoError(t, err)
+	assert.Equal(t, "most-dog-collage", p.Name)
+	assert.Equal(t, pod.RestartPolicyNever, p.Spec.RestartPolicy)
+	require.Len(t, p.Spec.Volumes, 1)
+	require.NotNil(t, p.Spec.Volumes[0].HostPath)
+	assert.Equal(t, "/tmp/most-dog", p.Spec.Volumes[0].HostPath.Path)
+	assert.Equal(t, map[string]string{"node": "node-a"}, p.Spec.NodeSelector)
+	assert.Empty(t, p.Spec.NodeName)
+}

@@ -1,0 +1,13 @@
+{
+  "image": {
+    "type": "url",
+    "value": "https://raw.githubusercontent.com/facebookresearch/segment-anything/main/notebooks/images/truck.jpg"
+  },
+  "prompt": {
+    "type": "box",
+    "box": [425, 600, 700, 875]
+  },
+  "output": {
+    "format": "rle"
+  }
+}

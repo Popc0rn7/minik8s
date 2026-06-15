@@ -1,0 +1,31 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  name: artifact-store
+  namespace: default
+  labels:
+    app: artifact-store
+spec:
+  nodeSelector:
+    node: node-a
+  containers:
+  - name: artifact-store
+    image: minik8s/sam-cpu
+    imageTag: demo
+    command: ["python"]
+    args: ["/app/image_workflow.py"]
+    ports:
+    - containerPort: 8080
+    env:
+    - name: MINIK8S_IMAGE_WORKFLOW_ROLE
+      value: artifact-store
+    - name: ARTIFACT_STORE_ROOT
+      value: /data
+    volumeMounts:
+    - name: data
+      mountPath: /data
+  volumes:
+  - name: data
+    hostPath:
+      path: /tmp/minik8s-artifacts
+      type: DirectoryOrCreate

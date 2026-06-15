@@ -4,7 +4,7 @@
 
 ## 工作原则
 
-- 以 `docs/Handout.md` 为课程规格来源，以 `README.md`、`docs/testcase/README.md` 和具体 testcase 文档作为实际执行步骤来源。
+- 以 `docs/Handout.md` 为课程规格来源，以 `docs/testcase/README.md` 和具体 testcase 文档作为实际执行步骤来源。
 - 先确认当前代码、manifest、远端环境和未提交改动，不要假设旧文档完全准确。
 - 不要回滚用户已有改动，不要覆盖正在修改的 testcase 或 manifest。
 - 对每个 case，只在有证据时说通过或失败；证据包括命令输出、状态字段、Docker inspect、curl 结果、日志片段等。
@@ -14,7 +14,6 @@
 ## 启动前检查
 
 1. 读取：
-   - `README.md`
    - `docs/testcase/README.md`
    - 当前要跑的 `docs/testcase/<feature>.md`
    - 相关 `manifest/` YAML

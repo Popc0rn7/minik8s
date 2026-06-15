@@ -1,0 +1,11 @@
+kind: Workflow
+apiVersion: v1
+metadata:
+  name: make-ranking
+  labels:
+    app: image-workflow
+spec:
+  steps:
+  - name: make-collage
+    functionRef:
+      name: make-collage
