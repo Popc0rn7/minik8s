@@ -559,6 +559,15 @@ func (a *App) publishNATS(ctx context.Context, subject, data string, out io.Writ
 	return writes(out, cliui.SuccessLine("published subject=%s bytes=%d", subject, len(data)))
 }
 
+func (a *App) requestNATS(ctx context.Context, subject, data string, timeout time.Duration, out io.Writer) error {
+	natsURL := os.Getenv("MINIK8S_NATS_URL")
+	reply, err := natslite.Request(ctx, natsURL, subject, []byte(data), timeout)
+	if err != nil {
+		return err
+	}
+	return writes(out, cliui.SuccessLine("request subject=%s output=%s", subject, string(reply)))
+}
+
 func (a *App) doctor(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: minik8s doctor docker|network|clean|logbook|serverless|addons|addon <name>")
@@ -1605,7 +1614,14 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 			Pods:        a.controlBridge.PodStore(),
 			ReplicaSets: a.controlBridge.ReplicaSetStore(),
 		})
-		go bridgeServerless.NewControllerWithActivator(a.controlBridge.FunctionStore(), a.controlBridge.EventTriggerStore(), natsURL, activator).Run(ctx, 5*time.Second)
+		go func() {
+			if err := bridgeServerless.NewInvocationWorker(nil, natsURL, activator).Run(ctx); err != nil && ctx.Err() == nil {
+				minilog.Warn("serverless-invocation-worker", "error=%v", err)
+			}
+		}()
+		go activator.RunScaler(ctx, 2*time.Second)
+		invoker := bridgeServerless.NewNATSInvoker(nil, natsURL, 30*time.Second)
+		go bridgeServerless.NewControllerWithInvoker(a.controlBridge.FunctionStore(), a.controlBridge.EventTriggerStore(), natsURL, invoker).Run(ctx, 5*time.Second)
 	}
 	if err := writes(out, cliui.InfoLine("bridge listening on %s", options.listen)); err != nil {
 		return err
@@ -2783,7 +2799,7 @@ func readLocalConfig(path string) (localConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return localConfig{}, fmt.Errorf("Harbor API is not configured; run minik8s bridge on the control-plane node or minik8s sailer join on this worker to create %s", path)
+			return localConfig{}, fmt.Errorf("harbor API is not configured; run minik8s bridge on the control-plane node or minik8s sailer join on this worker to create %s", path)
 		}
 		return localConfig{}, fmt.Errorf("reading minik8s config: %w", err)
 	}

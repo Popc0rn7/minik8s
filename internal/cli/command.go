@@ -119,6 +119,7 @@ func addKubectlCommands(root *cobra.Command, app *App, out io.Writer, bind func(
 func addRuntimeCommands(root *cobra.Command, app *App, out io.Writer, bind func()) {
 	root.AddCommand(newInvokeCommand(app, out, bind))
 	root.AddCommand(newPublishCommand(app, out))
+	root.AddCommand(newRequestCommand(app, out))
 	root.AddCommand(newInitCommand(app, out))
 	root.AddCommand(newDoctorCommand(app, out))
 	root.AddCommand(newCNICommand(app, out))
@@ -167,6 +168,22 @@ func newPublishCommand(app *App, out io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&data, "data", "", "Message payload")
+	return cmd
+}
+
+func newRequestCommand(app *App, out io.Writer) *cobra.Command {
+	var data string
+	var timeout time.Duration
+	cmd := &cobra.Command{
+		Use:   "request <subject>",
+		Short: "Send a NATS request and wait for one reply",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.requestNATS(cmd.Context(), args[0], data, timeout, out)
+		},
+	}
+	cmd.Flags().StringVar(&data, "data", "", "Request payload")
+	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Second, "Reply wait timeout")
 	return cmd
 }
 

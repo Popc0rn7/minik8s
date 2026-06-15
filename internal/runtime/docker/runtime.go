@@ -412,7 +412,7 @@ func (d *DockerRuntime) ContainerStats(ctx context.Context, containerID string) 
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	var stats dockertypes.StatsJSON
+	var stats dockertypes.StatsJSON //nolint:staticcheck // Docker v27 still exposes this stats shape in the current client path.
 	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
 		return nil, fmt.Errorf("decoding container stats: %w", err)
 	}

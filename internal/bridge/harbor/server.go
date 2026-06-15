@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -55,6 +56,8 @@ type Config struct {
 	NodeCIDRMaskSize   int
 	BootstrapTokenPath string
 	HTTPClient         *http.Client
+	NATSURL            string
+	FunctionInvoker    bridgeServerless.FunctionInvoker
 }
 
 type Server struct {
@@ -78,6 +81,7 @@ type Server struct {
 	nodeTokens         *nodeTokenRegistry
 	heartbeats         *heartbeatManager
 	activator          *bridgeServerless.Activator
+	functionInvoker    bridgeServerless.FunctionInvoker
 }
 
 func New(config Config) *Server {
@@ -142,6 +146,16 @@ func New(config Config) *Server {
 		panic(err)
 	}
 	nodeTokens := newNodeTokenRegistry()
+	functionInvoker := config.FunctionInvoker
+	if functionInvoker == nil {
+		natsURL := strings.TrimSpace(config.NATSURL)
+		if natsURL == "" {
+			natsURL = strings.TrimSpace(os.Getenv("MINIK8S_NATS_URL"))
+		}
+		if natsURL != "" {
+			functionInvoker = bridgeServerless.NewNATSInvoker(nil, natsURL, 30*time.Second)
+		}
+	}
 	server := &Server{
 		pods:               podStore,
 		services:           serviceStore,
@@ -167,6 +181,7 @@ func New(config Config) *Server {
 			ReplicaSets: replicaSetStore,
 			HTTPClient:  config.HTTPClient,
 		}),
+		functionInvoker: functionInvoker,
 	}
 	server.heartbeats = newHeartbeatManager(heartbeatManagerConfig{
 		pods:        podStore,
@@ -1491,12 +1506,31 @@ func (s *Server) handleFunctionInvoke(w http.ResponseWriter, r *http.Request, na
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
-	resp, err := s.activator.Invoke(r.Context(), namespace, name, req.Data)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, resp)
+	if s.functionInvoker == nil {
+		writeJSON(w, http.StatusServiceUnavailable, function.InvocationResponse{
+			Function:  name,
+			Namespace: namespace,
+			Phase:     "Failed",
+			Error:     "serverless NATS invocation is disabled",
+		})
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	output, err := s.functionInvoker.InvokeFunction(r.Context(), namespace, name, req.Data)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, function.InvocationResponse{
+			Function:  name,
+			Namespace: namespace,
+			Phase:     "Failed",
+			Error:     err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, function.InvocationResponse{
+		Function:  name,
+		Namespace: namespace,
+		Phase:     "Succeeded",
+		Output:    output,
+	})
 }
 
 func (s *Server) handleEventTriggers(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
@@ -1635,7 +1669,16 @@ func (s *Server) handleWorkflowInvoke(w http.ResponseWriter, r *http.Request, na
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
-	executor := bridgeServerless.NewWorkflowExecutor(s.workflows, s.activator)
+	if s.functionInvoker == nil {
+		writeJSON(w, http.StatusServiceUnavailable, function.InvocationResponse{
+			Function:  name,
+			Namespace: namespace,
+			Phase:     "Failed",
+			Error:     "serverless NATS invocation is disabled",
+		})
+		return
+	}
+	executor := bridgeServerless.NewWorkflowExecutor(s.workflows, s.functionInvoker)
 	resp, err := executor.Invoke(r.Context(), namespace, name, req.Data)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, resp)

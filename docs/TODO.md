@@ -136,6 +136,9 @@
   分支跳转。
 - [x] Serverless scale-to-0 和并发扩容已有最小实现：空闲超时缩到 0，请求到来冷启动，
   inflight 超过 `targetConcurrency` 时扩容到 `maxReplicas` 内。
+- [x] Serverless 调用控制流已统一经 NATS：HTTP invoke、EventTrigger 和 Workflow step
+  都通过 `minik8s.serverless.invoke` request/reply 进入 invocation worker，再由
+  worker 调用 Activator 转发到函数 Pod。
 - [x] `manifest/function/` 和 `docs/testcase/serverless.md` 提供 P0/P1 展示材料。
 - [ ] EventTrigger ack/retry、dead-letter、订阅状态可视化尚未实现。
 - [ ] Workflow 复杂 DAG 自动执行、并行节点、重试策略尚未实现。

@@ -96,7 +96,7 @@ func (e controlPlaneError) Error() string {
 
 func newControlPlaneClient(baseURL string, client *http.Client) (*controlPlaneClient, error) {
 	if strings.TrimSpace(baseURL) == "" {
-		return nil, fmt.Errorf("Harbor API is not configured; run minik8s bridge or minik8s sailer join to create local config")
+		return nil, fmt.Errorf("harbor API is not configured; run minik8s bridge or minik8s sailer join to create local config")
 	}
 	if client == nil {
 		client = http.DefaultClient
