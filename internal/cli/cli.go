@@ -638,36 +638,147 @@ func (a *App) doctorAddons(out io.Writer, names ...AddonName) error {
 }
 
 func addonReadiness(name AddonName) (string, string) {
-	path := addonManifestPath(name)
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return "disabled", "manifest missing; run minik8s init --force"
-		}
+	p, err := readRequiredAddonManifest(name)
+	if err != nil {
 		return "degraded", err.Error()
 	}
-	ports := addonProbePorts(name)
-	if len(ports) == 0 {
-		return "ready", fmt.Sprintf("manifest=%s", path)
+	ports := addonReadinessPorts(p)
+	running := addonPodRunning(p.Name)
+	path := addonManifestPath(name)
+	if len(ports.tcp) == 0 {
+		if running {
+			return "ready", fmt.Sprintf("manifest=%s", path)
+		}
+		return "disabled", fmt.Sprintf("manifest=%s no readiness ports", path)
 	}
-	missing := make([]string, 0, len(ports))
-	for _, port := range ports {
-		if !tcpPortReady("127.0.0.1:" + port) {
-			missing = append(missing, port)
+	missing := make([]string, 0, len(ports.tcp))
+	for _, port := range ports.tcp {
+		if !addonTCPReady(port.address()) {
+			missing = append(missing, port.String())
 		}
 	}
 	if len(missing) == 0 {
-		return "ready", fmt.Sprintf("ports=%s", strings.Join(ports, ","))
+		if running {
+			return "ready", fmt.Sprintf("ports=%s", strings.Join(ports.all(), ","))
+		}
+		return "degraded", fmt.Sprintf("ports=%s in use but addon pod not running", strings.Join(ports.all(), ","))
 	}
-	if len(missing) == len(ports) {
+	if !running {
+		blocked := blockedAddonPorts(ports)
+		if len(blocked) == 0 {
+			return "disabled", fmt.Sprintf("manifest=%s ports available=%s", path, strings.Join(ports.all(), ","))
+		}
+		return "degraded", fmt.Sprintf("ports in use=%s but addon pod not running", strings.Join(blocked, ","))
+	}
+	if len(missing) == len(ports.tcp) {
 		return "starting", fmt.Sprintf("manifest=%s waiting ports=%s", path, strings.Join(missing, ","))
 	}
 	return "degraded", fmt.Sprintf("missing ports=%s", strings.Join(missing, ","))
 }
 
+type addonPorts struct {
+	tcp []addonPort
+	udp []addonPort
+}
+
+func (p addonPorts) all() []string {
+	seen := make(map[string]bool)
+	ports := make([]string, 0, len(p.tcp)+len(p.udp))
+	for _, port := range append(append([]addonPort{}, p.tcp...), p.udp...) {
+		value := port.String()
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		ports = append(ports, value)
+	}
+	sort.Strings(ports)
+	return ports
+}
+
+type addonPort struct {
+	hostIP string
+	port   string
+}
+
+func (p addonPort) address() string {
+	host := p.hostIP
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, p.port)
+}
+
+func (p addonPort) String() string {
+	if p.hostIP == "" || p.hostIP == "127.0.0.1" {
+		return p.port
+	}
+	return p.hostIP + ":" + p.port
+}
+
+func addonReadinessPorts(p *pod.Pod) addonPorts {
+	var ports addonPorts
+	if p == nil {
+		return ports
+	}
+	for _, c := range p.Spec.Containers {
+		for _, port := range c.Ports {
+			if port.HostPort <= 0 {
+				continue
+			}
+			value := addonPort{hostIP: port.HostIP, port: fmt.Sprintf("%d", port.HostPort)}
+			switch strings.ToUpper(port.Protocol) {
+			case "UDP":
+				ports.udp = append(ports.udp, value)
+			default:
+				ports.tcp = append(ports.tcp, value)
+			}
+		}
+	}
+	ports.tcp = uniqueSortedAddonPorts(ports.tcp)
+	ports.udp = uniqueSortedAddonPorts(ports.udp)
+	return ports
+}
+
+func blockedAddonPorts(ports addonPorts) []string {
+	blocked := make([]string, 0)
+	for _, port := range ports.tcp {
+		if !addonTCPAvailable(port.address()) {
+			blocked = append(blocked, port.String()+"/tcp")
+		}
+	}
+	for _, port := range ports.udp {
+		if !addonUDPAvailable(port.address()) {
+			blocked = append(blocked, port.String()+"/udp")
+		}
+	}
+	sort.Strings(blocked)
+	return blocked
+}
+
+func uniqueSortedAddonPorts(values []addonPort) []addonPort {
+	sort.Slice(values, func(i, j int) bool {
+		return values[i].String() < values[j].String()
+	})
+	out := values[:0]
+	for _, value := range values {
+		if len(out) > 0 && out[len(out)-1] == value {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+var addonTCPReady = tcpPortReady
+var addonTCPAvailable = tcpPortAvailable
+var addonUDPAvailable = udpPortAvailable
+var addonPodRunning = dockerAddonPodRunning
+
 func addonProbePorts(name AddonName) []string {
 	switch name {
 	case AddonDNS:
-		return []string{"80"}
+		return []string{"53", "80"}
 	case AddonServerless:
 		return []string{"4222"}
 	default:
@@ -1006,12 +1117,18 @@ func (a *App) initialize(ctx context.Context, args []string, out io.Writer) erro
 	if err := writeTextFile(DefaultDNSRoutesPath(), "{\"hosts\":[]}\n"); err != nil {
 		return fmt.Errorf("initializing dns routes: %w", err)
 	}
+	routeProxyBinaryPath, err := currentExecutablePath()
+	if err != nil {
+		return err
+	}
 	if err := writeBridgeStaticPodManifests(initManifestOptions{
-		Force:             options.force,
-		EtcdDir:           etcdDir,
-		DNSDir:            dnsDir,
-		DNSListenPort:     options.dnsListenPort,
-		IngressListenPort: options.ingressListenPort,
+		Force:                options.force,
+		EtcdDir:              etcdDir,
+		DNSDir:               dnsDir,
+		DNSHostIP:            "127.0.0.1",
+		DNSListenPort:        options.dnsListenPort,
+		IngressListenPort:    options.ingressListenPort,
+		RouteProxyBinaryPath: routeProxyBinaryPath,
 	}); err != nil {
 		return err
 	}
@@ -1056,11 +1173,13 @@ func parseInitOptions(args []string) (initOptions, error) {
 }
 
 type initManifestOptions struct {
-	Force             bool
-	EtcdDir           string
-	DNSDir            string
-	DNSListenPort     int32
-	IngressListenPort int32
+	Force                bool
+	EtcdDir              string
+	DNSDir               string
+	DNSHostIP            string
+	DNSListenPort        int32
+	IngressListenPort    int32
+	RouteProxyBinaryPath string
 }
 
 func writeBridgeStaticPodManifests(options initManifestOptions) error {
@@ -1094,7 +1213,13 @@ func writeBridgeStaticPodManifests(options initManifestOptions) error {
 func addonPodTemplate(addon AddonName, options initManifestOptions) *pod.Pod {
 	switch addon {
 	case AddonDNS:
-		return bootstrap.DNSPod(options.DNSDir, options.DNSListenPort, options.IngressListenPort)
+		return bootstrap.DNSPodWithOptions(bootstrap.DNSPodOptions{
+			ConfigDir:            options.DNSDir,
+			DNSHostIP:            options.DNSHostIP,
+			DNSHostPort:          options.DNSListenPort,
+			IngressHostPort:      options.IngressListenPort,
+			RouteProxyBinaryPath: options.RouteProxyBinaryPath,
+		})
 	case AddonServerless:
 		return bootstrap.ServerlessNATSPod()
 	case AddonMetrics:
@@ -1711,7 +1836,7 @@ func StartBridgeDependencies(ctx context.Context, args []string, out io.Writer) 
 		status += " nats=nats://127.0.0.1:4222"
 	}
 	if options.addons.Enabled(AddonDNS) {
-		status += fmt.Sprintf(" dns=127.0.0.1:%d ingress=127.0.0.1:%d", options.dnsListenPort, options.ingressListenPort)
+		status += fmt.Sprintf(" dns=%s:%d ingress=127.0.0.1:%d", options.gatewayIP, options.dnsListenPort, options.ingressListenPort)
 	}
 	if err := writes(out, cliui.SuccessLine("%s", status)); err != nil {
 		cleanup()
@@ -1731,9 +1856,84 @@ func bridgeDependencyPods(options bridgeOptions, etcdDir, dnsDir string) ([]*pod
 		if err != nil {
 			return nil, err
 		}
+		if err := configureBridgeAddonPod(addon, addonPod, options); err != nil {
+			return nil, err
+		}
+		if addon == AddonDNS {
+			if err := writePodManifestFile(addonManifestPath(addon), addonPod); err != nil {
+				return nil, err
+			}
+		}
 		pods = append(pods, addonPod)
 	}
 	return pods, nil
+}
+
+func configureBridgeAddonPod(addon AddonName, p *pod.Pod, options bridgeOptions) error {
+	if addon != AddonDNS || p == nil {
+		return nil
+	}
+	binaryPath, err := currentExecutablePath()
+	if err != nil {
+		return err
+	}
+	configureDNSPodForBridge(p, options.gatewayIP, options.dnsListenPort, options.ingressListenPort, binaryPath)
+	return nil
+}
+
+func configureDNSPodForBridge(p *pod.Pod, dnsHostIP string, dnsHostPort, ingressHostPort int32, routeProxyBinaryPath string) {
+	upsertHostPathVolume(p, "route-proxy-bin", routeProxyBinaryPath)
+	for i := range p.Spec.Containers {
+		c := &p.Spec.Containers[i]
+		switch c.Name {
+		case "coredns":
+			for j := range c.Ports {
+				if c.Ports[j].ContainerPort != 53 {
+					continue
+				}
+				c.Ports[j].HostIP = dnsHostIP
+				c.Ports[j].HostPort = dnsHostPort
+			}
+		case "nginx":
+			for j := range c.Ports {
+				if c.Ports[j].ContainerPort == 80 {
+					c.Ports[j].HostPort = ingressHostPort
+				}
+			}
+		case "route-proxy":
+			c.Image = "alpine"
+			c.ImageTag = "3.20"
+			c.Command = []string{"/usr/local/bin/minik8s"}
+			c.VolumeMounts = upsertVolumeMount(c.VolumeMounts, pod.VolumeMount{
+				Name:      "route-proxy-bin",
+				MountPath: "/usr/local/bin/minik8s",
+				ReadOnly:  true,
+			})
+		}
+	}
+}
+
+func upsertHostPathVolume(p *pod.Pod, name, path string) {
+	if p == nil {
+		return
+	}
+	for i := range p.Spec.Volumes {
+		if p.Spec.Volumes[i].Name == name {
+			p.Spec.Volumes[i].HostPath = &pod.HostPathVolume{Path: path}
+			return
+		}
+	}
+	p.Spec.Volumes = append(p.Spec.Volumes, pod.VolumeSpec{Name: name, HostPath: &pod.HostPathVolume{Path: path}})
+}
+
+func upsertVolumeMount(mounts []pod.VolumeMount, mount pod.VolumeMount) []pod.VolumeMount {
+	for i := range mounts {
+		if mounts[i].Name == mount.Name {
+			mounts[i] = mount
+			return mounts
+		}
+	}
+	return append(mounts, mount)
 }
 
 func readRequiredAddonManifest(addon AddonName) (*pod.Pod, error) {
@@ -1757,6 +1957,18 @@ func staticPodOrDefault(path string, fallback *pod.Pod) (*pod.Pod, error) {
 		return nil, err
 	}
 	return normalizeStaticDependencyPod(p), nil
+}
+
+func currentExecutablePath() (string, error) {
+	path, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolving current executable: %w", err)
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolving current executable path: %w", err)
+	}
+	return path, nil
 }
 
 func readStaticPodManifest(path string) (*pod.Pod, error) {
@@ -1820,29 +2032,22 @@ func bridgeDependencyEtcdDir() (string, error) {
 }
 
 func ensureBridgeDependencyPortsFree(options bridgeOptions) error {
-	ports := []string{"2379"}
+	ports := []string{"127.0.0.1:2379"}
 	if options.addons.Enabled(AddonServerless) {
-		ports = append(ports, "4222")
+		ports = append(ports, "127.0.0.1:4222")
 	}
 	if options.addons.Enabled(AddonDNS) {
-		ports = append(ports, fmt.Sprintf("%d", options.dnsListenPort), fmt.Sprintf("%d", options.ingressListenPort))
+		ports = append(ports, net.JoinHostPort(options.gatewayIP, fmt.Sprintf("%d", options.dnsListenPort)))
+		ports = append(ports, fmt.Sprintf("127.0.0.1:%d", options.ingressListenPort))
 	}
-	for _, port := range ports {
-		ln, err := net.Listen("tcp", "127.0.0.1:"+port)
-		if err != nil {
-			return fmt.Errorf("bridge dependency port %s is already in use", port)
-		}
-		if err := ln.Close(); err != nil {
-			return fmt.Errorf("closing bridge dependency port probe %s: %w", port, err)
+	for _, address := range ports {
+		if !tcpPortAvailable(address) {
+			return fmt.Errorf("bridge dependency port %s is already in use", address)
 		}
 	}
 	if options.addons.Enabled(AddonDNS) {
-		ln, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", options.dnsListenPort))
-		if err != nil {
+		if !udpPortAvailable(net.JoinHostPort(options.gatewayIP, fmt.Sprintf("%d", options.dnsListenPort))) {
 			return fmt.Errorf("bridge dependency udp port %d is already in use", options.dnsListenPort)
-		}
-		if err := ln.Close(); err != nil {
-			return fmt.Errorf("closing bridge dependency udp port probe %d: %w", options.dnsListenPort, err)
 		}
 	}
 	return nil
@@ -1869,10 +2074,11 @@ func waitForBridgeDependenciesReady(ctx context.Context, errCh <-chan error, opt
 			lastEtcdError = ""
 		}
 		if options.addons.Enabled(AddonServerless) {
-			ready = ready && tcpPortReady("127.0.0.1:4222")
+			ready = ready && bridgeDependencyTCPReady("127.0.0.1:4222")
 		}
 		if options.addons.Enabled(AddonDNS) {
-			ready = ready && tcpPortReady(fmt.Sprintf("127.0.0.1:%d", options.ingressListenPort))
+			ready = ready && bridgeDependencyTCPReady(net.JoinHostPort(options.gatewayIP, fmt.Sprintf("%d", options.dnsListenPort)))
+			ready = ready && bridgeDependencyTCPReady(fmt.Sprintf("127.0.0.1:%d", options.ingressListenPort))
 		}
 		if ready {
 			return nil
@@ -1911,6 +2117,37 @@ func tcpPortReady(address string) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+func tcpPortAvailable(address string) bool {
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
+}
+
+func udpPortAvailable(address string) bool {
+	ln, err := net.ListenPacket("udp", address)
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
+}
+
+func dockerAddonPodRunning(name string) bool {
+	if strings.TrimSpace(name) == "" {
+		return false
+	}
+	cmd := exec.Command("docker", "ps",
+		"--filter", "label=minik8s.pod.namespace=minik8s-system",
+		"--filter", "label=minik8s.pod.name="+name,
+		"--format", "{{.ID}}",
+	)
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
 func parseBridgeOptions(args []string) (bridgeOptions, error) {

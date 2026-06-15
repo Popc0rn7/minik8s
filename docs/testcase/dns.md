@@ -24,11 +24,13 @@ Handout 要求的“集群内 Pod 通过域名访问 Service”需要 worker 配
 ```fish
 make prod-deploy
 ./minik8s init --force
+set NODE_A_DNS_IP <node-a-pod-reachable-ip>
 ./minik8s bridge \
   --listen :18080 \
   --cluster-cidr $CLUSTER_CIDR \
   --node-cidr-mask-size 24 \
-  --addons dns,metrics
+  --addons dns,metrics \
+  --gateway-ip $NODE_A_DNS_IP
 ```
 
 另一个 node-a 终端：
@@ -39,10 +41,13 @@ make prod-deploy
 curl --noproxy '*' -fsS $HARBOR/version
 ```
 
-启动 worker 时，如果要验证 Pod 内 DNS，`sailer run` 需要带 cluster DNS：
+如果只验证宿主机 gateway，可以省略 `--gateway-ip` 并使用默认 `127.0.0.1`。如果要
+验证 Pod 内 DNS，`--gateway-ip` 应设置为 Pod 可达的 node-a 地址；启动 worker 时，
+`sailer run` 的 `--cluster-dns` 也应指向同一个 node-a DNS addon 地址。不要为 Pod
+内验证使用 `127.0.0.1`，因为它会指向容器自身。
 
 ```fish
-./minik8s sailer run --cluster-dns 127.0.0.1
+./minik8s sailer run --cluster-dns $NODE_A_DNS_IP
 ```
 
 期望：
@@ -124,7 +129,8 @@ curl --resolve example.com:80:127.0.0.1 --noproxy '*' -i http://example.com/path
 
 目标：在 worker 配置 cluster DNS 后，验证 Pod 内可以通过域名访问 Service gateway。
 
-前置：至少一个 worker 用 `./minik8s sailer run --cluster-dns 127.0.0.1` 启动。
+前置：至少一个 worker 用 `./minik8s sailer run --cluster-dns $NODE_A_DNS_IP` 启动；
+`NODE_A_DNS_IP` 必须是 Pod 可达的 node-a DNS addon 地址，而不是 `127.0.0.1`。
 
 ```fish
 ./kubectl apply -f manifest/pod/pod_busybox_client.yaml

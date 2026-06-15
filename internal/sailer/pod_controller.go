@@ -517,6 +517,7 @@ func podPorts(p *pod.Pod) []runtime.ContainerPort {
 			ports = append(ports, runtime.ContainerPort{
 				Name:          port.Name,
 				ContainerPort: port.ContainerPort,
+				HostIP:        port.HostIP,
 				HostPort:      port.HostPort,
 				Protocol:      port.Protocol,
 			})

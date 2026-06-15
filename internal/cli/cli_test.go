@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
+	"minik8s/internal/bridge/bootstrap"
 	"minik8s/internal/bridge/harbor"
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/k8scompat"
@@ -386,6 +387,93 @@ func TestBridgeOptionsDefaultToNoAddons(t *testing.T) {
 	assert.Equal(t, "none", options.addons.String())
 }
 
+func TestAddonProbePortsForDNSIncludesDNSAndIngress(t *testing.T) {
+	assert.Equal(t, []string{"53", "80"}, addonProbePorts(AddonDNS))
+}
+
+func TestAddonReadinessDisabledWhenManifestExistsAndPortsAreFree(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
+	require.NoError(t, os.MkdirAll(DefaultStaticPodDir(), 0o755))
+	writePodManifest(t, DefaultServerlessNATSManifestPath(), bootstrap.ServerlessNATSPod())
+	restore := stubAddonReadinessProbes(
+		func(address string) bool { return false },
+		func(address string) bool { return true },
+		func(address string) bool { return true },
+		func(name string) bool { return false },
+	)
+	defer restore()
+
+	state, detail := addonReadiness(AddonServerless)
+
+	assert.Equal(t, "disabled", state)
+	assert.Contains(t, detail, "ports available")
+}
+
+func TestAddonReadinessDegradedWhenPortIsInUseWithoutAddonPod(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
+	require.NoError(t, os.MkdirAll(DefaultStaticPodDir(), 0o755))
+	writePodManifest(t, DefaultServerlessNATSManifestPath(), bootstrap.ServerlessNATSPod())
+	restore := stubAddonReadinessProbes(
+		func(address string) bool { return false },
+		func(address string) bool { return false },
+		func(address string) bool { return true },
+		func(name string) bool { return false },
+	)
+	defer restore()
+
+	state, detail := addonReadiness(AddonServerless)
+
+	assert.Equal(t, "degraded", state)
+	assert.Contains(t, detail, "ports in use")
+	assert.Contains(t, detail, "addon pod not running")
+}
+
+func TestAddonReadinessStartingWhenAddonPodRunsButPortsAreNotReady(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
+	require.NoError(t, os.MkdirAll(DefaultStaticPodDir(), 0o755))
+	writePodManifest(t, DefaultDNSGatewayManifestPath(), bootstrap.DNSPod("/dns", 8053, 8080))
+	restore := stubAddonReadinessProbes(
+		func(address string) bool { return false },
+		func(address string) bool { return true },
+		func(address string) bool { return true },
+		func(name string) bool { return name == "dns-gateway" },
+	)
+	defer restore()
+
+	state, detail := addonReadiness(AddonDNS)
+
+	assert.Equal(t, "starting", state)
+	assert.Contains(t, detail, "waiting ports=8053,8080")
+}
+
+func TestAddonReadinessReadyUsesManifestHostPorts(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
+	require.NoError(t, os.MkdirAll(DefaultStaticPodDir(), 0o755))
+	writePodManifest(t, DefaultDNSGatewayManifestPath(), bootstrap.DNSPod("/dns", 8053, 8080))
+	var probes []string
+	restore := stubAddonReadinessProbes(
+		func(address string) bool {
+			probes = append(probes, address)
+			return true
+		},
+		func(address string) bool { return false },
+		func(address string) bool { return false },
+		func(name string) bool { return name == "dns-gateway" },
+	)
+	defer restore()
+
+	state, detail := addonReadiness(AddonDNS)
+
+	assert.Equal(t, "ready", state)
+	assert.Contains(t, detail, "ports=8053,8080")
+	assert.Contains(t, probes, "127.0.0.1:8053")
+	assert.Contains(t, probes, "127.0.0.1:8080")
+}
+
 func TestBridgeDependencyEtcdDirIsAbsolute(t *testing.T) {
 	t.Setenv("MINIK8S_STATE_DIR", "")
 	cwd, err := os.Getwd()
@@ -449,6 +537,32 @@ func TestWaitForBridgeDependenciesReadySkipsEtcdProbeUntilTCPReady(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, 2, tcpCalls)
 	assert.Equal(t, 1, probeCalls)
+}
+
+func TestWaitForBridgeDependenciesReadyWaitsForDNSAndIngressPorts(t *testing.T) {
+	var probes []string
+	originalTCPReady := bridgeDependencyTCPReady
+	bridgeDependencyTCPReady = func(address string) bool {
+		probes = append(probes, address)
+		return address == "127.0.0.1:2379" || address == "127.0.0.1:8053" || address == "127.0.0.1:8080"
+	}
+	defer func() { bridgeDependencyTCPReady = originalTCPReady }()
+	originalProbe := bridgeDependencyEtcdProbe
+	bridgeDependencyEtcdProbe = func(ctx context.Context, endpoints []string) error {
+		return nil
+	}
+	defer func() { bridgeDependencyEtcdProbe = originalProbe }()
+
+	err := waitForBridgeDependenciesReady(context.Background(), make(chan error), bridgeOptions{
+		addons:            newAddonSet(AddonDNS),
+		gatewayIP:         "127.0.0.1",
+		dnsListenPort:     8053,
+		ingressListenPort: 8080,
+	}, 2*time.Second)
+
+	require.NoError(t, err)
+	assert.Contains(t, probes, "127.0.0.1:8053")
+	assert.Contains(t, probes, "127.0.0.1:8080")
 }
 
 func TestCLIInitWritesStaticDependencyManifests(t *testing.T) {
@@ -562,6 +676,33 @@ func TestBridgeDependencyPodsRequireEnabledAddonManifest(t *testing.T) {
 	assert.Contains(t, err.Error(), "minik8s init --force")
 }
 
+func TestBridgeDependencyPodsConfiguresDNSAddonFromBridgeOptions(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
+	require.NoError(t, os.MkdirAll(DefaultStaticPodDir(), 0o755))
+	writePodManifest(t, DefaultStorageManifestPath(), bootstrap.StoragePod("/var/lib/minik8s/etcd"))
+	writePodManifest(t, DefaultDNSGatewayManifestPath(), bootstrap.DNSPod("/dns", 53, 80))
+
+	pods, err := bridgeDependencyPods(bridgeOptions{
+		addons:            newAddonSet(AddonDNS),
+		gatewayIP:         "192.168.1.8",
+		dnsListenPort:     53,
+		ingressListenPort: 80,
+	}, "/var/lib/minik8s/etcd", "/dns")
+
+	require.NoError(t, err)
+	require.Len(t, pods, 2)
+	dnsPod := pods[1]
+	coredns := dnsPod.Spec.Containers[0]
+	require.Len(t, coredns.Ports, 2)
+	assert.Equal(t, "192.168.1.8", coredns.Ports[0].HostIP)
+	assert.Equal(t, "192.168.1.8", coredns.Ports[1].HostIP)
+	routeProxy := dnsPod.Spec.Containers[2]
+	assert.Equal(t, "alpine", routeProxy.Image)
+	assert.Equal(t, []string{"/usr/local/bin/minik8s"}, routeProxy.Command)
+	assert.NotEmpty(t, findVolume(dnsPod, "route-proxy-bin").HostPath.Path)
+}
+
 func TestBridgeDependencyPodsRejectInvalidStaticManifest(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
@@ -639,6 +780,37 @@ func writePodManifest(t *testing.T, path string, p *pod.Pod) {
 	data, err := yaml.Marshal(p)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0o644))
+}
+
+func findVolume(p *pod.Pod, name string) pod.VolumeSpec {
+	for _, volume := range p.Spec.Volumes {
+		if volume.Name == name {
+			return volume
+		}
+	}
+	return pod.VolumeSpec{}
+}
+
+func stubAddonReadinessProbes(
+	tcpReady func(string) bool,
+	tcpAvailable func(string) bool,
+	udpAvailable func(string) bool,
+	podRunning func(string) bool,
+) func() {
+	originalTCPReady := addonTCPReady
+	originalTCPAvailable := addonTCPAvailable
+	originalUDPAvailable := addonUDPAvailable
+	originalPodRunning := addonPodRunning
+	addonTCPReady = tcpReady
+	addonTCPAvailable = tcpAvailable
+	addonUDPAvailable = udpAvailable
+	addonPodRunning = podRunning
+	return func() {
+		addonTCPReady = originalTCPReady
+		addonTCPAvailable = originalTCPAvailable
+		addonUDPAvailable = originalUDPAvailable
+		addonPodRunning = originalPodRunning
+	}
 }
 
 func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
@@ -1832,6 +2004,57 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"delete", "service", "nginx-service"}, &out))
 	assert.Contains(t, out.String(), "service/nginx-service deleted")
+}
+
+func TestCLIApplyGetDescribeDeleteDNS(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	dnsStore := store.NewInMemoryDNSStore()
+	server := harbor.New(harbor.Config{DNSStore: dnsStore, NodeStore: store.NewInMemoryNodeStore()})
+	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	manifest := writeTempManifest(t, `
+kind: DNS
+metadata:
+  name: example-routes
+  labels:
+    app: web
+spec:
+  host: example.com
+  paths:
+    - path: /path1
+      pathType: Prefix
+      serviceName: nginx-service
+      servicePort: 80
+    - path: /path2
+      pathType: Exact
+      serviceName: nginx-nodeport
+      servicePort: 8080
+`)
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
+	assert.Contains(t, out.String(), "dns/example-routes created (example.com)")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"get", "dns"}, &out))
+	assert.Contains(t, out.String(), "DNS")
+	assert.Contains(t, out.String(), "example-routes")
+	assert.Contains(t, out.String(), "example.com")
+	assert.Contains(t, out.String(), "/path1(Prefix)->nginx-service:80")
+	assert.Contains(t, out.String(), "default")
+	assert.Contains(t, out.String(), "app=web")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"describe", "dns", "example-routes"}, &out))
+	assert.Contains(t, out.String(), "Host: example.com")
+	assert.Contains(t, out.String(), "/path2(Exact)->nginx-nodeport:8080")
+	assert.Contains(t, out.String(), "Labels: app=web")
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"delete", "dns", "example-routes"}, &out))
+	assert.Contains(t, out.String(), "dns/example-routes deleted")
+	_, err := dnsStore.Get("example-routes", "default")
+	assert.ErrorIs(t, err, store.ErrDNSNotFound)
 }
 
 func TestCLIApplyGetDescribeDeleteReplicaSet(t *testing.T) {

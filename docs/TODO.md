@@ -99,9 +99,14 @@
 
 ### DNS 与转发
 
-- [ ] 未实现 DNS 配置对象。
-- [ ] 未实现集群内域名解析。
-- [ ] 未实现同一 host 下多个 path 转发到不同 Service 的 HTTP gateway。
+- [x] DNS 配置对象、YAML loader、Harbor API、CLI 和 file/etcd store 已实现。
+- [x] CoreDNS hosts 文件与 route snapshot 可由 DNS + Service endpoints 周期同步。
+- [x] HTTP gateway 支持 Host header + longest path match，将同一 host 下多个 path
+  转发到不同 Service endpoints。
+- [ ] Pod 内域名访问依赖 worker 使用 `sailer run --cluster-dns <node-a-dns-ip>`，
+  且 bridge `--gateway-ip` 需要设置为 Pod 可达地址；仍需保留真实双机验收记录。
+- [ ] 当前是简化实现：没有 Kubernetes Ingress 完整语义、TLS、外部 DNS controller
+  或强一致 route 更新。
 
 ### 多机部署
 

@@ -470,7 +470,7 @@ func parsePortBindings(ports []runtime.ContainerPort) (nat.PortMap, nat.PortSet,
 
 		if port.HostPort != 0 {
 			portBindings[containerPort] = []nat.PortBinding{
-				{HostPort: fmt.Sprintf("%d", port.HostPort)},
+				{HostIP: port.HostIP, HostPort: fmt.Sprintf("%d", port.HostPort)},
 			}
 		}
 	}

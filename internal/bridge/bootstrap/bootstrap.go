@@ -192,7 +192,27 @@ func StoragePod(etcdDataDir string) *pod.Pod {
 	}
 }
 
+type DNSPodOptions struct {
+	ConfigDir            string
+	DNSHostIP            string
+	DNSHostPort          int32
+	IngressHostPort      int32
+	RouteProxyBinaryPath string
+}
+
 func DNSPod(configDir string, dnsHostPort, ingressHostPort int32) *pod.Pod {
+	return DNSPodWithOptions(DNSPodOptions{
+		ConfigDir:            configDir,
+		DNSHostPort:          dnsHostPort,
+		IngressHostPort:      ingressHostPort,
+		RouteProxyBinaryPath: "/opt/minik8s/minik8s",
+	})
+}
+
+func DNSPodWithOptions(options DNSPodOptions) *pod.Pod {
+	if options.RouteProxyBinaryPath == "" {
+		options.RouteProxyBinaryPath = "/opt/minik8s/minik8s"
+	}
 	return &pod.Pod{
 		TypeMeta: pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},
 		ObjectMeta: pod.ObjectMeta{
@@ -211,7 +231,10 @@ func DNSPod(configDir string, dnsHostPort, ingressHostPort int32) *pod.Pod {
 			RestartPolicy: pod.RestartPolicyAlways,
 			Volumes: []pod.VolumeSpec{{
 				Name:     "dns-config",
-				HostPath: &pod.HostPathVolume{Path: configDir},
+				HostPath: &pod.HostPathVolume{Path: options.ConfigDir},
+			}, {
+				Name:     "route-proxy-bin",
+				HostPath: &pod.HostPathVolume{Path: options.RouteProxyBinaryPath},
 			}},
 			Containers: []pod.ContainerSpec{
 				{
@@ -221,11 +244,13 @@ func DNSPod(configDir string, dnsHostPort, ingressHostPort int32) *pod.Pod {
 					Args:     []string{"-conf", "/minik8s-dns/Corefile"},
 					Ports: []pod.ContainerPort{{
 						ContainerPort: 53,
-						HostPort:      dnsHostPort,
+						HostIP:        options.DNSHostIP,
+						HostPort:      options.DNSHostPort,
 						Protocol:      "UDP",
 					}, {
 						ContainerPort: 53,
-						HostPort:      dnsHostPort,
+						HostIP:        options.DNSHostIP,
+						HostPort:      options.DNSHostPort,
 						Protocol:      "TCP",
 					}},
 					VolumeMounts: []pod.VolumeMount{{
@@ -237,10 +262,11 @@ func DNSPod(configDir string, dnsHostPort, ingressHostPort int32) *pod.Pod {
 					Name:     "nginx",
 					Image:    "nginx",
 					ImageTag: "1.27-alpine",
+					Command:  []string{"nginx"},
 					Args:     []string{"-c", "/minik8s-dns/nginx.conf", "-g", "daemon off;"},
 					Ports: []pod.ContainerPort{{
 						ContainerPort: 80,
-						HostPort:      ingressHostPort,
+						HostPort:      options.IngressHostPort,
 						Protocol:      "TCP",
 					}},
 					VolumeMounts: []pod.VolumeMount{{
@@ -249,13 +275,18 @@ func DNSPod(configDir string, dnsHostPort, ingressHostPort int32) *pod.Pod {
 					}},
 				},
 				{
-					Name:    "route-proxy",
-					Image:   "minik8s",
-					Command: []string{"/usr/local/bin/minik8s"},
-					Args:    []string{"route-proxy", "--listen", "127.0.0.1:18081", "--routes", "/minik8s-dns/routes.json"},
+					Name:     "route-proxy",
+					Image:    "alpine",
+					ImageTag: "3.20",
+					Command:  []string{"/usr/local/bin/minik8s"},
+					Args:     []string{"route-proxy", "--listen", "127.0.0.1:18081", "--routes", "/minik8s-dns/routes.json"},
 					VolumeMounts: []pod.VolumeMount{{
 						Name:      "dns-config",
 						MountPath: "/minik8s-dns",
+					}, {
+						Name:      "route-proxy-bin",
+						MountPath: "/usr/local/bin/minik8s",
+						ReadOnly:  true,
 					}},
 				},
 			},
