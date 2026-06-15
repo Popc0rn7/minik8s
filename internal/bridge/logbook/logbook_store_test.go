@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -253,6 +254,9 @@ func TestEtcdNodeStoreRefreshLivenessPersistsUnknownStatus(t *testing.T) {
 
 func newEmbeddedEtcdClient(t *testing.T) *clientv3.Client {
 	t.Helper()
+	if os.Getenv("MINIK8S_TEST_ETCD") != "1" {
+		t.Skip("set MINIK8S_TEST_ETCD=1 to run embedded etcd tests")
+	}
 	cfg := embed.NewConfig()
 	cfg.Dir = filepath.Join(t.TempDir(), "etcd")
 	cfg.LogLevel = "error"

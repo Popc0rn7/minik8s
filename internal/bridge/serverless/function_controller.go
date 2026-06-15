@@ -8,16 +8,22 @@ import (
 
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/function"
+	"minik8s/internal/replicaset"
 )
 
 type FunctionController struct {
 	functions   store.FunctionStore
+	pods        store.PodStore
 	replicaSets store.ReplicaSetStore
 	services    store.ServiceStore
 }
 
-func NewFunctionController(functions store.FunctionStore, replicaSets store.ReplicaSetStore, services store.ServiceStore) *FunctionController {
-	return &FunctionController{functions: functions, replicaSets: replicaSets, services: services}
+func NewFunctionController(functions store.FunctionStore, replicaSets store.ReplicaSetStore, services store.ServiceStore, podStores ...store.PodStore) *FunctionController {
+	var pods store.PodStore
+	if len(podStores) > 0 {
+		pods = podStores[0]
+	}
+	return &FunctionController{functions: functions, pods: pods, replicaSets: replicaSets, services: services}
 }
 
 func (c *FunctionController) Name() string { return "serverless-function-controller" }
@@ -81,7 +87,11 @@ func shouldScaleFunctionToZero(fn *function.Function, replicas int32) bool {
 	if replicas == 0 || fn.Spec.MinReplicas > 0 || fn.Spec.IdleTimeoutSeconds <= 0 || fn.Status.LastInvocation.IsZero() {
 		return false
 	}
-	return time.Since(fn.Status.LastInvocation) >= time.Duration(fn.Spec.IdleTimeoutSeconds)*time.Second
+	lastActivity := fn.Status.LastInvocation
+	if fn.Status.LastScaleTime.After(lastActivity) {
+		lastActivity = fn.Status.LastScaleTime
+	}
+	return time.Since(lastActivity) >= time.Duration(fn.Spec.IdleTimeoutSeconds)*time.Second
 }
 
 func (c *FunctionController) upsertService(fn *function.Function) error {
@@ -111,6 +121,20 @@ func (c *FunctionController) deleteStaleReplicaSets(seen map[string]struct{}) er
 		}
 		if _, ok := seen[rs.Namespace+"/"+rs.Name]; ok {
 			continue
+		}
+		if c.pods != nil {
+			pods, err := c.pods.List(rs.Namespace, nil)
+			if err != nil {
+				return fmt.Errorf("listing stale function pods for replicaset %s/%s: %w", rs.Namespace, rs.Name, err)
+			}
+			for _, p := range pods {
+				if p.Labels[FunctionManagedLabel] != "true" || p.Labels[replicaset.OwnerLabel] != rs.Name {
+					continue
+				}
+				if err := c.pods.Delete(p.Name, p.Namespace); err != nil && !errors.Is(err, store.ErrPodNotFound) {
+					return fmt.Errorf("deleting stale function pod %s/%s: %w", p.Namespace, p.Name, err)
+				}
+			}
 		}
 		if err := c.replicaSets.Delete(rs.Name, rs.Namespace); err != nil && !errors.Is(err, store.ErrReplicaSetNotFound) {
 			return fmt.Errorf("deleting stale function replicaset %s/%s: %w", rs.Namespace, rs.Name, err)

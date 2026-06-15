@@ -1,17 +1,18 @@
 package logbook
 
 import (
-	"testing"
-
 	"context"
+	"net"
+	"net/url"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
-	"net"
-	"net/url"
-	"path/filepath"
-	"time"
 
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
@@ -94,6 +95,9 @@ func testReplicaSet(name, namespace string, replicas int32) *replicaset.ReplicaS
 
 func newReplicaSetStoreEtcdEndpoint(t *testing.T) string {
 	t.Helper()
+	if os.Getenv("MINIK8S_TEST_ETCD") != "1" {
+		t.Skip("set MINIK8S_TEST_ETCD=1 to run embedded etcd tests")
+	}
 	cfg := embed.NewConfig()
 	cfg.Dir = filepath.Join(t.TempDir(), "etcd")
 	cfg.LogLevel = "error"

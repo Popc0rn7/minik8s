@@ -316,14 +316,19 @@ func DefaultAndValidateFunction(fn *function.Function) error {
 	if strings.TrimSpace(fn.Spec.Runtime) == "" {
 		fn.Spec.Runtime = "python"
 	}
-	if fn.Spec.Runtime != "python" {
+	if fn.Spec.Runtime != "python" && fn.Spec.Runtime != "container" {
 		return fmt.Errorf("spec.runtime %q is not supported", fn.Spec.Runtime)
 	}
-	if strings.TrimSpace(fn.Spec.Handler) == "" {
-		return fmt.Errorf("spec.handler is required")
+	if fn.Spec.Runtime == "python" {
+		if strings.TrimSpace(fn.Spec.Handler) == "" {
+			return fmt.Errorf("spec.handler is required")
+		}
+		if strings.TrimSpace(fn.Spec.Code) == "" {
+			return fmt.Errorf("spec.code is required")
+		}
 	}
-	if strings.TrimSpace(fn.Spec.Code) == "" {
-		return fmt.Errorf("spec.code is required")
+	if fn.Spec.Runtime == "container" && strings.TrimSpace(fn.Spec.Image) == "" {
+		return fmt.Errorf("spec.image is required")
 	}
 	if fn.Spec.Port == 0 {
 		fn.Spec.Port = 8080
@@ -351,6 +356,11 @@ func DefaultAndValidateFunction(fn *function.Function) error {
 	}
 	if fn.Spec.IdleTimeoutSeconds < 0 {
 		return fmt.Errorf("spec.idleTimeoutSeconds must be positive")
+	}
+	for i, env := range fn.Spec.Env {
+		if strings.TrimSpace(env.Name) == "" {
+			return fmt.Errorf("spec.env[%d].name is required", i)
+		}
 	}
 	return nil
 }

@@ -14,14 +14,17 @@ type Function struct {
 }
 
 type FunctionSpec struct {
-	Runtime            string `json:"runtime" yaml:"runtime"`
-	Handler            string `json:"handler" yaml:"handler"`
-	Code               string `json:"code" yaml:"code"`
-	Port               int32  `json:"port,omitempty" yaml:"port,omitempty"`
-	MinReplicas        int32  `json:"minReplicas,omitempty" yaml:"minReplicas,omitempty"`
-	MaxReplicas        int32  `json:"maxReplicas,omitempty" yaml:"maxReplicas,omitempty"`
-	TargetConcurrency  int32  `json:"targetConcurrency,omitempty" yaml:"targetConcurrency,omitempty"`
-	IdleTimeoutSeconds int32  `json:"idleTimeoutSeconds,omitempty" yaml:"idleTimeoutSeconds,omitempty"`
+	Runtime            string       `json:"runtime" yaml:"runtime"`
+	Handler            string       `json:"handler" yaml:"handler"`
+	Code               string       `json:"code" yaml:"code"`
+	Image              string       `json:"image,omitempty" yaml:"image,omitempty"`
+	ImageTag           string       `json:"imageTag,omitempty" yaml:"imageTag,omitempty"`
+	Port               int32        `json:"port,omitempty" yaml:"port,omitempty"`
+	MinReplicas        int32        `json:"minReplicas,omitempty" yaml:"minReplicas,omitempty"`
+	MaxReplicas        int32        `json:"maxReplicas,omitempty" yaml:"maxReplicas,omitempty"`
+	TargetConcurrency  int32        `json:"targetConcurrency,omitempty" yaml:"targetConcurrency,omitempty"`
+	IdleTimeoutSeconds int32        `json:"idleTimeoutSeconds,omitempty" yaml:"idleTimeoutSeconds,omitempty"`
+	Env                []pod.EnvVar `json:"env,omitempty" yaml:"env,omitempty"`
 }
 
 type FunctionStatus struct {
@@ -53,5 +56,7 @@ func (f Function) DeepCopy() *Function {
 	*out = f
 	out.TypeMeta = f.TypeMeta
 	out.ObjectMeta = f.ObjectMeta.DeepCopy()
+	out.Spec.Env = make([]pod.EnvVar, len(f.Spec.Env))
+	copy(out.Spec.Env, f.Spec.Env)
 	return out
 }

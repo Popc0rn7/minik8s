@@ -85,12 +85,17 @@ func (c *ReplicaSetController) reconcileReplicaSet(ctx context.Context, rs *repl
 	desired := rs.Spec.Replicas
 
 	if current < desired {
+		allPods, err := c.podStore.List(rs.Namespace, nil)
+		if err != nil {
+			return fmt.Errorf("listing pods for replicaset %s/%s: %w", rs.Namespace, rs.Name, err)
+		}
 		for i := current; i < desired; i++ {
-			p := replicaPod(rs, selected)
+			p := replicaPod(rs, allPods)
 			if err := c.podStore.Create(p); err != nil {
 				return fmt.Errorf("creating pod for replicaset %s/%s: %w", rs.Namespace, rs.Name, err)
 			}
 			selected = append(selected, p.DeepCopy())
+			allPods = append(allPods, p.DeepCopy())
 			sortPodsByName(selected)
 		}
 	} else if current > desired {

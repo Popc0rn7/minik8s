@@ -1740,6 +1740,7 @@ func describeFunction(out io.Writer, fn *function.Function) error {
 		fmt.Sprintf("Namespace: %s", fn.Namespace),
 		fmt.Sprintf("Runtime: %s", fn.Spec.Runtime),
 		fmt.Sprintf("Handler: %s", fn.Spec.Handler),
+		fmt.Sprintf("Image: %s", emptyDash(functionImage(fn))),
 		fmt.Sprintf("Port: %d", fn.Spec.Port),
 		fmt.Sprintf("Scale: min=%d max=%d targetConcurrency=%d idleTimeoutSeconds=%d", fn.Spec.MinReplicas, fn.Spec.MaxReplicas, fn.Spec.TargetConcurrency, fn.Spec.IdleTimeoutSeconds),
 		fmt.Sprintf("Revision: %s", emptyDash(fn.Status.Revision)),
@@ -1757,6 +1758,16 @@ func describeFunction(out io.Writer, fn *function.Function) error {
 		}
 	}
 	return nil
+}
+
+func functionImage(fn *function.Function) string {
+	if fn.Spec.Image == "" {
+		return ""
+	}
+	if fn.Spec.ImageTag == "" {
+		return fn.Spec.Image
+	}
+	return fn.Spec.Image + ":" + fn.Spec.ImageTag
 }
 
 func describeEventTrigger(out io.Writer, trigger *eventtrigger.EventTrigger) error {

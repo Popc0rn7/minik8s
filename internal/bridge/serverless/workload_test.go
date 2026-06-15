@@ -44,6 +44,54 @@ func TestBuildFunctionReplicaSetCreatesRuntimePod(t *testing.T) {
 	assert.Equal(t, "handler", envValue(container.Env, "MINIK8S_FUNCTION_HANDLER"))
 }
 
+func TestBuildFunctionReplicaSetUsesContainerRuntimeImage(t *testing.T) {
+	fn := testFunction("sam-segment", "")
+	fn.Spec.Runtime = "container"
+	fn.Spec.Image = "minik8s/sam-cpu"
+	fn.Spec.ImageTag = "demo"
+	fn.Spec.Port = 9090
+	fn.Spec.Env = []pod.EnvVar{{Name: "ARTIFACT_STORE_URL", Value: "http://artifact-store:8080"}}
+
+	rs := BuildFunctionReplicaSet(fn)
+
+	require.Len(t, rs.Spec.Template.Spec.Containers, 1)
+	container := rs.Spec.Template.Spec.Containers[0]
+	assert.Equal(t, "function-runtime", container.Name)
+	assert.Equal(t, "minik8s/sam-cpu", container.Image)
+	assert.Equal(t, "demo", container.ImageTag)
+	assert.Empty(t, container.Command)
+	require.Len(t, container.Env, 1)
+	assert.Equal(t, "ARTIFACT_STORE_URL", container.Env[0].Name)
+	assert.Equal(t, "http://artifact-store:8080", container.Env[0].Value)
+	require.Len(t, container.Ports, 1)
+	assert.Equal(t, int32(9090), container.Ports[0].ContainerPort)
+}
+
+func TestFunctionRevisionIncludesContainerImage(t *testing.T) {
+	fn := testFunction("sam-segment", "")
+	fn.Spec.Runtime = "container"
+	fn.Spec.Image = "minik8s/sam-cpu"
+	fn.Spec.ImageTag = "v1"
+	first := FunctionRevision(fn)
+
+	fn.Spec.ImageTag = "v2"
+
+	assert.NotEqual(t, first, FunctionRevision(fn))
+}
+
+func TestFunctionRevisionIncludesEnv(t *testing.T) {
+	fn := testFunction("sam-segment", "")
+	fn.Spec.Runtime = "container"
+	fn.Spec.Image = "minik8s/sam-cpu"
+	fn.Spec.ImageTag = "demo"
+	fn.Spec.Env = []pod.EnvVar{{Name: "ARTIFACT_STORE_URL", Value: "http://artifact-store:8080"}}
+	first := FunctionRevision(fn)
+
+	fn.Spec.Env[0].Value = "http://artifact-store.demo:8080"
+
+	assert.NotEqual(t, first, FunctionRevision(fn))
+}
+
 func TestBuildFunctionServiceTargetsCurrentRevision(t *testing.T) {
 	fn := &function.Function{}
 	fn.Namespace = "default"

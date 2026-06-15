@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/function"
 	"minik8s/internal/pod"
+	"minik8s/internal/replicaset"
 )
 
 type ActivatorConfig struct {
@@ -34,6 +36,7 @@ type Activator struct {
 	mu           sync.Mutex
 	next         map[string]int
 	stats        map[string]*functionStats
+	podInflight  map[string]map[string]int32
 }
 
 type functionStats struct {
@@ -63,6 +66,7 @@ func NewActivator(config ActivatorConfig) *Activator {
 		waitTimeout:  waitTimeout,
 		next:         make(map[string]int),
 		stats:        make(map[string]*functionStats),
+		podInflight:  make(map[string]map[string]int32),
 	}
 }
 
@@ -80,6 +84,11 @@ func (a *Activator) Invoke(ctx context.Context, namespace, name, data string) (*
 		a.recordFunctionResult(fn, resp)
 		return resp, err
 	}
+	if err := a.scaleForInflight(fn, time.Now()); err != nil {
+		resp := failedInvocation(fn, err)
+		a.recordFunctionResult(fn, resp)
+		return resp, err
+	}
 	ready, err := a.waitReadyPod(ctx, fn)
 	if err != nil {
 		resp := failedInvocation(fn, err)
@@ -87,6 +96,8 @@ func (a *Activator) Invoke(ctx context.Context, namespace, name, data string) (*
 		return resp, err
 	}
 	target := a.pickPod(key, ready)
+	a.markPodStart(key, target.Name)
+	defer a.markPodDone(key, target.Name)
 	output, err := a.forward(ctx, fn, target, data)
 	if err != nil {
 		resp := failedInvocation(fn, err)
@@ -125,8 +136,11 @@ func (a *Activator) waitReadyPod(ctx context.Context, fn *function.Function) ([]
 		if err != nil {
 			return nil, err
 		}
-		if len(ready) > 0 {
-			return ready, nil
+		reachable := a.reachablePods(fn, ready)
+		if len(reachable) > 0 {
+			if a.hasPodCapacity(fn, reachable) || a.readyReplicaTargetReached(fn, len(reachable)) {
+				return reachable, nil
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -156,12 +170,47 @@ func (a *Activator) readyPods(fn *function.Function) ([]*pod.Pod, error) {
 	return ready, nil
 }
 
+func (a *Activator) reachablePods(fn *function.Function, pods []*pod.Pod) []*pod.Pod {
+	reachable := make([]*pod.Pod, 0, len(pods))
+	for _, p := range pods {
+		if functionPodReachable(p.Status.PodIP, fn.Spec.Port) {
+			reachable = append(reachable, p)
+		}
+	}
+	return reachable
+}
+
+func functionPodReachable(ip string, port int32) bool {
+	if ip == "" || port <= 0 {
+		return false
+	}
+	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
+	conn, err := dialer.Dial("tcp", fmt.Sprintf("%s:%d", ip, port))
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 func (a *Activator) pickPod(key string, pods []*pod.Pod) *pod.Pod {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	i := a.next[key] % len(pods)
-	a.next[key]++
-	return pods[i]
+	loads := a.podInflight[key]
+	if len(loads) == 0 {
+		i := a.next[key] % len(pods)
+		a.next[key]++
+		return pods[i]
+	}
+	selected := pods[0]
+	selectedLoad := loads[selected.Name]
+	for _, p := range pods[1:] {
+		if loads[p.Name] < selectedLoad {
+			selected = p
+			selectedLoad = loads[p.Name]
+		}
+	}
+	return selected
 }
 
 func (a *Activator) forward(ctx context.Context, fn *function.Function, p *pod.Pod, data string) (string, error) {
@@ -199,6 +248,27 @@ func (a *Activator) markDone(key string) {
 	if stats := a.stats[key]; stats != nil && stats.inflight > 0 {
 		stats.inflight--
 	}
+}
+
+func (a *Activator) markPodStart(key, podName string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	loads := a.podInflight[key]
+	if loads == nil {
+		loads = make(map[string]int32)
+		a.podInflight[key] = loads
+	}
+	loads[podName]++
+}
+
+func (a *Activator) markPodDone(key, podName string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	loads := a.podInflight[key]
+	if loads == nil || loads[podName] <= 0 {
+		return
+	}
+	loads[podName]--
 }
 
 func (a *Activator) recordFunctionResult(fn *function.Function, resp *function.InvocationResponse) {
@@ -239,14 +309,10 @@ func (a *Activator) Scale(now time.Time) error {
 		if err != nil {
 			return err
 		}
-		if stats.inflight > rs.Spec.Replicas*fn.Spec.TargetConcurrency && rs.Spec.Replicas < fn.Spec.MaxReplicas {
-			rs.Spec.Replicas++
-			if err := a.replicaSets.Update(rs); err != nil {
+		if stats.inflight > 0 {
+			if err := a.scaleReplicaSet(fn, rs, desiredReplicasForInflight(fn, stats.inflight), now); err != nil {
 				return err
 			}
-			fn.Status.Replicas = rs.Spec.Replicas
-			fn.Status.LastScaleTime = now.UTC()
-			_ = a.functions.Update(fn)
 			continue
 		}
 		if stats.inflight > 0 || fn.Spec.MinReplicas > 0 {
@@ -266,6 +332,81 @@ func (a *Activator) Scale(now time.Time) error {
 		}
 	}
 	return nil
+}
+
+func (a *Activator) scaleForInflight(fn *function.Function, now time.Time) error {
+	key := fn.Namespace + "/" + fn.Name
+	a.mu.Lock()
+	stats := a.stats[key]
+	a.mu.Unlock()
+	if stats == nil || stats.inflight <= 0 {
+		return nil
+	}
+	rs, err := a.replicaSets.Get(FunctionReplicaSetName(fn), fn.Namespace)
+	if err != nil {
+		return fmt.Errorf("getting function replicaset: %w", err)
+	}
+	return a.scaleReplicaSet(fn, rs, desiredReplicasForInflight(fn, stats.inflight), now)
+}
+
+func (a *Activator) scaleReplicaSet(fn *function.Function, rs *replicaset.ReplicaSet, desired int32, now time.Time) error {
+	if desired <= rs.Spec.Replicas {
+		return nil
+	}
+	rs.Spec.Replicas = desired
+	if err := a.replicaSets.Update(rs); err != nil {
+		return err
+	}
+	fn.Status.Replicas = rs.Spec.Replicas
+	fn.Status.LastScaleTime = now.UTC()
+	_ = a.functions.Update(fn)
+	return nil
+}
+
+func desiredReplicasForInflight(fn *function.Function, inflight int32) int32 {
+	target := fn.Spec.TargetConcurrency
+	if target <= 0 {
+		target = 1
+	}
+	desired := (inflight + target - 1) / target
+	if desired < 1 {
+		desired = 1
+	}
+	if desired < fn.Spec.MinReplicas {
+		desired = fn.Spec.MinReplicas
+	}
+	if fn.Spec.MaxReplicas > 0 && desired > fn.Spec.MaxReplicas {
+		desired = fn.Spec.MaxReplicas
+	}
+	return desired
+}
+
+func (a *Activator) hasPodCapacity(fn *function.Function, pods []*pod.Pod) bool {
+	target := fn.Spec.TargetConcurrency
+	if target <= 0 {
+		target = 1
+	}
+	key := fn.Namespace + "/" + fn.Name
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	loads := a.podInflight[key]
+	for _, p := range pods {
+		if loads == nil || loads[p.Name] < target {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Activator) readyReplicaTargetReached(fn *function.Function, ready int) bool {
+	key := fn.Namespace + "/" + fn.Name
+	a.mu.Lock()
+	stats := a.stats[key]
+	a.mu.Unlock()
+	if stats == nil || stats.inflight <= 0 {
+		return true
+	}
+	return int32(ready) >= desiredReplicasForInflight(fn, stats.inflight)
 }
 
 func (a *Activator) ScaleIdle(now time.Time) error {

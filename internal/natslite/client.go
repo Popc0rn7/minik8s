@@ -192,7 +192,8 @@ func subscribe(ctx context.Context, rawURL, subject, queue string, handler func(
 		if _, err := io.ReadFull(reader, payload); err != nil {
 			return fmt.Errorf("reading NATS payload: %w", err)
 		}
-		handler(Message{Subject: msg.Subject, Reply: msg.Reply, Payload: payload[:msg.Size]})
+		message := Message{Subject: msg.Subject, Reply: msg.Reply, Payload: payload[:msg.Size]}
+		go handler(message)
 	}
 }
 

@@ -1792,7 +1792,7 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	a.controlBridge.RegisterDefaultControllers(options.serviceSyncInterval, options.replicaSetSyncInterval, options.hpaSyncInterval, 5*time.Second)
 	if options.addons.Enabled(AddonServerless) {
 		a.controlBridge.ControllerRunner().Register(
-			bridgeServerless.NewFunctionController(a.controlBridge.FunctionStore(), a.controlBridge.ReplicaSetStore(), a.controlBridge.ServiceStore()),
+			bridgeServerless.NewFunctionController(a.controlBridge.FunctionStore(), a.controlBridge.ReplicaSetStore(), a.controlBridge.ServiceStore(), a.controlBridge.PodStore()),
 			captain.RunSpec{Interval: options.replicaSetSyncInterval, InitialSync: true, SkipIfRunning: true},
 		)
 	}
@@ -1804,8 +1804,15 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 			ReplicaSets: a.controlBridge.ReplicaSetStore(),
 		})
 		go func() {
-			if err := bridgeServerless.NewInvocationWorker(nil, natsURL, activator).Run(ctx); err != nil && ctx.Err() == nil {
-				minilog.Warn("serverless-invocation-worker", "error=%v", err)
+			for ctx.Err() == nil {
+				if err := bridgeServerless.NewInvocationWorker(nil, natsURL, activator).Run(ctx); err != nil && ctx.Err() == nil {
+					minilog.Warn("serverless-invocation-worker", "error=%v", err)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(2 * time.Second):
+				}
 			}
 		}()
 		go activator.RunScaler(ctx, 2*time.Second)

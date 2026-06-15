@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"minik8s/internal/function"
 	"minik8s/internal/pod"
@@ -26,7 +27,7 @@ func FunctionServiceName(fn *function.Function) string {
 }
 
 func FunctionRevision(fn *function.Function) string {
-	sum := sha256.Sum256([]byte(fn.Spec.Runtime + "\x00" + fn.Spec.Handler + "\x00" + fn.Spec.Code + "\x00" + fmt.Sprint(fn.Spec.Port)))
+	sum := sha256.Sum256([]byte(fn.Spec.Runtime + "\x00" + fn.Spec.Handler + "\x00" + fn.Spec.Code + "\x00" + fn.Spec.Image + "\x00" + fn.Spec.ImageTag + "\x00" + fmt.Sprint(fn.Spec.Port) + "\x00" + revisionEnv(fn.Spec.Env)))
 	return hex.EncodeToString(sum[:])[:12]
 }
 
@@ -51,25 +52,41 @@ func BuildFunctionReplicaSet(fn *function.Function) *replicaset.ReplicaSet {
 				},
 				Spec: pod.PodSpec{
 					RestartPolicy: pod.RestartPolicyAlways,
-					Containers: []pod.ContainerSpec{{
-						Name:     "python-runtime",
-						Image:    "python",
-						ImageTag: "3.11-slim",
-						Command:  []string{"python3", "-c", pythonRuntimeServer},
-						Ports: []pod.ContainerPort{{
-							Name:          "http",
-							ContainerPort: fn.Spec.Port,
-							Protocol:      "TCP",
-						}},
-						Env: []pod.EnvVar{
-							{Name: "MINIK8S_FUNCTION_CODE", Value: fn.Spec.Code},
-							{Name: "MINIK8S_FUNCTION_HANDLER", Value: fn.Spec.Handler},
-							{Name: "MINIK8S_FUNCTION_PORT", Value: fmt.Sprint(fn.Spec.Port)},
-						},
-					}},
+					Containers:    []pod.ContainerSpec{functionContainer(fn)},
 				},
 			},
 		},
+	}
+}
+
+func functionContainer(fn *function.Function) pod.ContainerSpec {
+	ports := []pod.ContainerPort{{
+		Name:          "http",
+		ContainerPort: fn.Spec.Port,
+		Protocol:      "TCP",
+	}}
+	if fn.Spec.Runtime == "container" {
+		return pod.ContainerSpec{
+			Name:     "function-runtime",
+			Image:    fn.Spec.Image,
+			ImageTag: fn.Spec.ImageTag,
+			Ports:    ports,
+			Env:      copyEnv(fn.Spec.Env),
+		}
+	}
+	env := []pod.EnvVar{
+		{Name: "MINIK8S_FUNCTION_CODE", Value: fn.Spec.Code},
+		{Name: "MINIK8S_FUNCTION_HANDLER", Value: fn.Spec.Handler},
+		{Name: "MINIK8S_FUNCTION_PORT", Value: fmt.Sprint(fn.Spec.Port)},
+	}
+	env = append(env, fn.Spec.Env...)
+	return pod.ContainerSpec{
+		Name:     "python-runtime",
+		Image:    "python",
+		ImageTag: "3.11-slim",
+		Command:  []string{"python3", "-c", pythonRuntimeServer},
+		Ports:    ports,
+		Env:      env,
 	}
 }
 
@@ -110,6 +127,20 @@ func copyLabels(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func copyEnv(in []pod.EnvVar) []pod.EnvVar {
+	out := make([]pod.EnvVar, len(in))
+	copy(out, in)
+	return out
+}
+
+func revisionEnv(env []pod.EnvVar) string {
+	parts := make([]string, 0, len(env))
+	for _, item := range env {
+		parts = append(parts, item.Name+"="+item.Value)
+	}
+	return strings.Join(parts, "\x00")
 }
 
 const pythonRuntimeServer = `import importlib.util, json, os, sys, tempfile

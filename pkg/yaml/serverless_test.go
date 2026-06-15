@@ -38,6 +38,36 @@ spec:
 	assert.Equal(t, int32(30), fn.Spec.IdleTimeoutSeconds)
 }
 
+func TestLoadContainerFunctionFromYAMLDefaultsAndValidates(t *testing.T) {
+	data := []byte(`
+kind: Function
+metadata:
+  name: sam-segment
+spec:
+  runtime: container
+  image: minik8s/sam-cpu
+  imageTag: demo
+  port: 8080
+  env:
+  - name: ARTIFACT_STORE_URL
+    value: http://artifact-store:8080
+`)
+
+	fn, err := LoadFunctionFromYAML(data)
+
+	require.NoError(t, err)
+	assert.Equal(t, "container", fn.Spec.Runtime)
+	assert.Equal(t, "minik8s/sam-cpu", fn.Spec.Image)
+	assert.Equal(t, "demo", fn.Spec.ImageTag)
+	assert.Empty(t, fn.Spec.Code)
+	assert.Equal(t, int32(8080), fn.Spec.Port)
+	assert.Equal(t, int32(5), fn.Spec.MaxReplicas)
+	assert.Equal(t, int32(5), fn.Spec.TargetConcurrency)
+	require.Len(t, fn.Spec.Env, 1)
+	assert.Equal(t, "ARTIFACT_STORE_URL", fn.Spec.Env[0].Name)
+	assert.Equal(t, "http://artifact-store:8080", fn.Spec.Env[0].Value)
+}
+
 func TestLoadEventTriggerFromYAMLDefaultsAndValidates(t *testing.T) {
 	data := []byte(`
 kind: EventTrigger
@@ -145,4 +175,19 @@ spec:
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "spec.code is required")
+}
+
+func TestLoadContainerFunctionFromYAMLRejectsMissingImage(t *testing.T) {
+	data := []byte(`
+kind: Function
+metadata:
+  name: sam-segment
+spec:
+  runtime: container
+`)
+
+	_, err := LoadFunctionFromYAML(data)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spec.image is required")
 }

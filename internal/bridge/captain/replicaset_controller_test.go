@@ -114,6 +114,42 @@ func TestReplicaSetControllerGeneratedPodNamesDoNotReuseDeletedNames(t *testing.
 	assert.NotEqual(t, firstName, pods[0].Name)
 }
 
+func TestReplicaSetControllerAvoidsNameCollisionWhenSelectorChanges(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	rsStore := store.NewInMemoryReplicaSetStore()
+	rs := testControllerReplicaSet("nginx-rs", 1)
+	rs.Spec.Selector.MatchLabels["revision"] = "v2"
+	rs.Spec.Template.Labels = map[string]string{"app": "nginx", "revision": "v2"}
+	require.NoError(t, rsStore.Create(rs))
+	old := ownedControllerPod("nginx-rs-1", "nginx-rs")
+	old.Labels["revision"] = "v1"
+	require.NoError(t, podStore.Create(old))
+
+	ctrl := NewReplicaSetController(podStore, rsStore)
+	require.NoError(t, ctrl.Sync(context.Background()))
+
+	pods, err := podStore.List("default", nil)
+	require.NoError(t, err)
+	require.Len(t, pods, 2)
+	var oldPod, newPod *pod.Pod
+	for _, p := range pods {
+		switch p.Labels["revision"] {
+		case "v1":
+			oldPod = p
+		case "v2":
+			newPod = p
+		}
+	}
+	require.NotNil(t, oldPod)
+	require.NotNil(t, newPod)
+	assert.Equal(t, "nginx-rs-1", oldPod.Name)
+	assert.True(t, strings.HasPrefix(newPod.Name, "nginx-rs-"))
+	assert.NotEqual(t, oldPod.Name, newPod.Name)
+	updated, err := rsStore.Get("nginx-rs", "default")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), updated.Status.Replicas)
+}
+
 func TestReplicaSetControllerDeletesAllOwnedPodsWhenReplicasZero(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	rsStore := store.NewInMemoryReplicaSetStore()

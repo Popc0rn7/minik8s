@@ -3,7 +3,9 @@ package serverless
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,14 @@ func TestActivatorInvokesReadyPod(t *testing.T) {
 	pods := store.NewInMemoryPodStore()
 	replicaSets := store.NewInMemoryReplicaSetStore()
 	fn := testFunction("echo", "def handler(event):\n  return event\n")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = listener.Close() }()
+	_, portString, err := net.SplitHostPort(listener.Addr().String())
+	require.NoError(t, err)
+	port, err := strconv.Atoi(portString)
+	require.NoError(t, err)
+	fn.Spec.Port = int32(port)
 	require.NoError(t, functions.Create(fn))
 	require.NoError(t, replicaSets.Create(BuildFunctionReplicaSet(fn)))
 	require.NoError(t, pods.Create(&pod.Pod{
@@ -31,7 +41,7 @@ func TestActivatorInvokesReadyPod(t *testing.T) {
 				FunctionRevisionLabel: FunctionRevision(fn),
 			},
 		},
-		Status: pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.0.10"},
+		Status: pod.PodStatus{Phase: pod.PodRunning, PodIP: "127.0.0.1"},
 	}))
 
 	activator := NewActivator(ActivatorConfig{
@@ -106,6 +116,43 @@ func TestActivatorScalerExpandsAndScalesIdleToZero(t *testing.T) {
 	scaled, err = replicaSets.Get("fn-echo", "default")
 	require.NoError(t, err)
 	assert.Equal(t, int32(0), scaled.Spec.Replicas)
+}
+
+func TestActivatorScalesToTargetReplicasForInflightRequests(t *testing.T) {
+	functions := store.NewInMemoryFunctionStore()
+	pods := store.NewInMemoryPodStore()
+	replicaSets := store.NewInMemoryReplicaSetStore()
+	fn := testFunction("slow-echo", "def handler(event):\n  return event\n")
+	fn.Spec.TargetConcurrency = 1
+	fn.Spec.MaxReplicas = 3
+	require.NoError(t, functions.Create(fn))
+	rs := BuildFunctionReplicaSet(fn)
+	rs.Spec.Replicas = 1
+	require.NoError(t, replicaSets.Create(rs))
+	activator := NewActivator(ActivatorConfig{Functions: functions, Pods: pods, ReplicaSets: replicaSets})
+	key := "default/slow-echo"
+	activator.stats[key] = &functionStats{inflight: 20, lastRequest: time.Now()}
+
+	require.NoError(t, activator.Scale(time.Now()))
+
+	scaled, err := replicaSets.Get("fn-slow-echo", "default")
+	require.NoError(t, err)
+	assert.Equal(t, int32(3), scaled.Spec.Replicas)
+}
+
+func TestActivatorPickPodChoosesLeastInflightPod(t *testing.T) {
+	activator := NewActivator(ActivatorConfig{})
+	key := "default/slow-echo"
+	busy := &pod.Pod{ObjectMeta: pod.ObjectMeta{Name: "fn-slow-echo-1"}}
+	idle := &pod.Pod{ObjectMeta: pod.ObjectMeta{Name: "fn-slow-echo-2"}}
+	activator.podInflight[key] = map[string]int32{
+		"fn-slow-echo-1": 3,
+		"fn-slow-echo-2": 0,
+	}
+
+	selected := activator.pickPod(key, []*pod.Pod{busy, idle})
+
+	assert.Equal(t, "fn-slow-echo-2", selected.Name)
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

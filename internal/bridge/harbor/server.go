@@ -1511,7 +1511,7 @@ func (s *Server) handleFunctions(w http.ResponseWriter, r *http.Request, namespa
 			writeStoreError(w, err, "functions", fn.Name)
 			return
 		}
-		_ = bridgeServerless.NewFunctionController(s.functions, s.replicaSets, s.services).Sync(r.Context())
+		_ = bridgeServerless.NewFunctionController(s.functions, s.replicaSets, s.services, s.pods).Sync(r.Context())
 		writeJSON(w, http.StatusCreated, fn)
 	case http.MethodGet:
 		if name == "" {
@@ -1550,7 +1550,7 @@ func (s *Server) handleFunctions(w http.ResponseWriter, r *http.Request, namespa
 			writeStoreError(w, err, "functions", name)
 			return
 		}
-		_ = bridgeServerless.NewFunctionController(s.functions, s.replicaSets, s.services).Sync(r.Context())
+		_ = bridgeServerless.NewFunctionController(s.functions, s.replicaSets, s.services, s.pods).Sync(r.Context())
 		writeJSON(w, http.StatusOK, fn)
 	case http.MethodDelete:
 		if name == "" {
@@ -1561,7 +1561,7 @@ func (s *Server) handleFunctions(w http.ResponseWriter, r *http.Request, namespa
 			writeStoreError(w, err, "functions", name)
 			return
 		}
-		_ = bridgeServerless.NewFunctionController(s.functions, s.replicaSets, s.services).Sync(r.Context())
+		_ = bridgeServerless.NewFunctionController(s.functions, s.replicaSets, s.services, s.pods).Sync(r.Context())
 		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("function %q deleted", name))
 	default:
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
