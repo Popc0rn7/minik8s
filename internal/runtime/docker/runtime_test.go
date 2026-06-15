@@ -71,6 +71,12 @@ func TestSandboxHostConfigSetsClusterDNS(t *testing.T) {
 	assert.Equal(t, []string{"10.244.0.1"}, hostConfig.DNS)
 }
 
+func TestSandboxHostConfigSetsDNSSearchDomains(t *testing.T) {
+	hostConfig := sandboxHostConfig(nil, "", []string{"10.244.0.1"}, []string{"default.svc.cluster.local", "svc.cluster.local", "cluster.local"})
+
+	assert.Equal(t, []string{"default.svc.cluster.local", "svc.cluster.local", "cluster.local"}, hostConfig.DNSSearch)
+}
+
 func TestResolveDockerEndpointUsesDockerHostFirst(t *testing.T) {
 	t.Setenv("DOCKER_HOST", "unix:///explicit.sock")
 	t.Setenv("DOCKER_CONTEXT", "desktop-linux")

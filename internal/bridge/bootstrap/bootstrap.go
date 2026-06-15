@@ -67,6 +67,11 @@ func (c *PrivatePodClient) ListServices(ctx context.Context) ([]*service.Service
 	return nil, nil
 }
 
+func (c *PrivatePodClient) GetClusterConfig(ctx context.Context) (*sailer.ClusterConfig, error) {
+	_ = ctx
+	return &sailer.ClusterConfig{ClusterDomain: "cluster.local"}, nil
+}
+
 func (c *PrivatePodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {
 	_ = ctx
 	if p == nil {

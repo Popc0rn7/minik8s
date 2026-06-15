@@ -118,6 +118,36 @@ func TestHarborDiscoveryIncludesServices(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"name":"workflows"`)
 }
 
+func TestHarborClusterConfigReflectsDNSEnabled(t *testing.T) {
+	srv := New(Config{DNSEnabled: true, ClusterDNS: "192.168.1.8"})
+
+	rec := serve(t, srv, http.MethodGet, "/api/v1/cluster/config", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{
+		"kind":"ClusterConfig",
+		"apiVersion":"v1",
+		"clusterDNS":"192.168.1.8",
+		"clusterDomain":"cluster.local",
+		"dnsEnabled":true
+	}`, rec.Body.String())
+}
+
+func TestHarborClusterConfigDisablesDNSWhenAddonOff(t *testing.T) {
+	srv := New(Config{DNSEnabled: false, ClusterDNS: "192.168.1.8"})
+
+	rec := serve(t, srv, http.MethodGet, "/api/v1/cluster/config", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{
+		"kind":"ClusterConfig",
+		"apiVersion":"v1",
+		"clusterDNS":"",
+		"clusterDomain":"cluster.local",
+		"dnsEnabled":false
+	}`, rec.Body.String())
+}
+
 func TestHarborServerlessCRUDAndInvoke(t *testing.T) {
 	srv := New(Config{
 		PodStore:          store.NewInMemoryPodStore(),
