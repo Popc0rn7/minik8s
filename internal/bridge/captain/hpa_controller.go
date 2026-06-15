@@ -137,10 +137,10 @@ func (c *HPAController) reconcileHPA(ctx context.Context, autoscaler *hpa.Horizo
 		return c.hpaStore.Update(autoscaler)
 	}
 
-	desired := rs.Spec.Replicas
-	for _, evaluation := range evaluations {
+	var desired int32
+	for i, evaluation := range evaluations {
 		candidate := int32(math.Ceil(float64(rs.Spec.Replicas) * float64(evaluation.averageUtilization) / float64(evaluation.targetUtilization)))
-		if candidate > desired {
+		if i == 0 || candidate > desired {
 			desired = candidate
 		}
 	}
