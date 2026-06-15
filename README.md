@@ -1,14 +1,87 @@
 # Minik8s
 
-Minik8s 是一个面向云操作系统课程 Lab 的轻量容器编排系统。项目目标参考
-Kubernetes，但当前实现更适合描述为“教学版 Kubernetes 核心闭环”：一个
-`bridge` 控制面加多个节点本地 `sailer` agent，用户通过单独的 `kubectl`
-二进制用 Kubernetes 风格命令管理 Pod、
-Service、ReplicaSet、HorizontalPodAutoscaler 和 Node，并在 Linux + Docker 环境中演示 Pod 网络、
+Minik8s 是一个面向云OS Lab 的轻量容器编排系统。项目目标参考Kubernetes。
+
+使用Go语言实现。一个舰桥 `bridge` 控制面加多个节点本地 `sailer` agent，用户通过单独的 `kubectl` 二进制用 Kubernetes 风格命令管理 Pod、Service、ReplicaSet、HorizontalPodAutoscaler 和 Node，并在 Linux + Docker 环境中演示 Pod 网络、
 Service 转发和控制面状态恢复。
 
-课程规格以 [docs/Handout.md](docs/Handout.md) 为准。本 README 只描述仓库
-当前已经实现或可以演示的能力，不把开题蓝图写成已完成能力。
+课程规格以 [docs/Handout.md](docs/Handout.md) 为准。在个人时间和能力的取舍下实现到当前的功能版本，并在答辩中演示核心功能和架构设计。
+
+## 系统架构
+
+系统的整体架构基本参照Kubernetes的经典组件划分，但重新设计了组件名称和边界，以适应个人实现思路。
+
+### 控制面 与 Bridge
+
+整个Minik8s的编排都要依赖控制面Bridge，Bridge本身只是一个平台，组合控制面组件，保证协同以及组件启停的一致性。
+
+**Bridge的核心组件包括：**
+- Harbor: 提供Kubernetes-like API，服务资源的CRUD接口，以及节点心跳和节点metrics接口。
+- Logbook: 控制面状态存储，可选提供in-memory、file和etcd后端。
+- Navigator: 轻量调度器。
+- Captain：控制器集群，当前包括Service endpoint controller、ReplicaSet controller和HPA controller。
+
+> Image: Bridge
+
+### Harbor港湾
+
+> TODO: API设计
+
+### Logbook日志簿
+
+> TODO
+
+### Navigator导航
+
+> TODO
+
+### Captain船长
+
+> TODO
+
+### Worker Node 与 Sailer
+
+Worker Node是Minik8s的工作节点，负责运行用户的Pod和Service的单元。每个Worker Node上运行一个Sailer agent，负责管理Docker容器、CNI网络、Pod状态和kube-proxy规则。
+
+Sailer的核心责任包括：
+> TODO
+
+> Image: Sailer
+
+### kube-proxy
+
+
+### CNI网络插件 Mooring
+
+由于题目理解问题，最初自己实现了一个CNI插件Mooring，提供单节点和跨节点的网络能力。
+
+同时，为兼容性考虑，Minik8s也改造了CNI插件接口，把编译好的Mooring插件上传到DockerHub上，使得用户可以凭借常规的`apply xxx.yaml`的CNI配置模式来接入使用CNI插件。
+
+### Addons
+
+万物皆对象，塞进Bridge里的拓展能力也可以以Addon的形式声明和管理。当前很多强大的功能都是通过实现了DNS、metrics和serverless三个Addon，分别提供域名解析、资源监控和Serverless能力，用户可以按需启用。
+
+
+## Feature介绍
+
+### Bridge BootStrap & Node Join
+
+### CICD
+
+### HPA
+
+### Serverless
+
+### Watch & Hearbeat
+
+### Controller Parallel
+
+### LoadBalancer
+
+### GPU支持
+
+> Not Implemented Yet
+
 
 ## 当前能力
 
