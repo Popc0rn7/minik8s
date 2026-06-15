@@ -171,20 +171,21 @@ test -f /tmp/minik8s-rs-one.yaml; or begin
   echo '        imageTag: alpine'
 end > /tmp/minik8s-rs-one.yaml
 
-./kubectl delete pod nginx-node-a; or true
-./kubectl apply -f manifest/pod/pod_nginx_node_a.yaml
+./kubectl delete pod nginx-rs-manual; or true
+./kubectl apply -f manifest/replicaset/pod_nginx_rs_manual.yaml
 ./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
 sleep 10
 ./kubectl apply -f /tmp/minik8s-rs-one.yaml
 sleep 10
 ./kubectl get pods
-./kubectl get pod nginx-node-a -o yaml
+./kubectl get pod nginx-rs-manual -o yaml
 ```
 
 期望：
 
 - ReplicaSet current 为 1。
-- 手工创建的 `nginx-node-a` 仍存在；它不是 `nginx-rs` 的 owned Pod。
+- 手工创建的 `nginx-rs-manual` 仍存在；它带有 `app=nginx-rs`，但没有
+  `minik8s.io/replicaset=nginx-rs` owner 标记。
 
 失败排查：
 
@@ -247,7 +248,7 @@ node-a：
 ./kubectl delete rs nginx-rs; or true
 ./kubectl delete pod nginx-rs-1; or true
 ./kubectl delete pod nginx-rs-2; or true
-./kubectl delete pod nginx-node-a; or true
+./kubectl delete pod nginx-rs-manual; or true
 rm -f /tmp/minik8s-rs-one.yaml
 sleep 8
 ./kubectl get rs; or true

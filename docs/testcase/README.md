@@ -141,14 +141,26 @@ bridge fdb show dev mk8s-vxlan
 - [x] `two-node.md`：双节点预检、启动、Ready、CNI 基线。
 - [x] `pod.md`：Pod lifecycle、调度、NodeLost 和删除 Node。
 - [x] `cni.md`：mooring CNI、Pod IP、同节点和跨节点通信。
-- [ ] `service.md`：Service endpoints、ClusterIP、NodePort、负载均衡、iptables 清理。
+- [x] `service.md`：Service endpoints、ClusterIP、NodePort、负载均衡、iptables 清理。
 - [ ] `replicaset.md`：ReplicaSet 创建、补齐、缩容和级联删除。
-- [ ] `logbook.md`：file/etcd Logbook、对象持久化和 bridge 重启恢复。
+- [x] `logbook.md`：file/etcd Logbook、对象持久化和 bridge 重启恢复。
 - [ ] `addons.md`：addon manifest、`--addons` readiness 和 doctor 状态。
 - [ ] `metrics-server.md`：metrics API 和 `kubectl top`。
 - [ ] `hpa.md`：HPA metrics、扩容和缩容。
 - [ ] `dns.md`：DNS 对象和 gateway host/path routing。
 - [ ] `serverless-nats.md`：Function/EventTrigger/Workflow + NATS publish。
+
+最近人工验证记录：
+
+- 2026-06-15 `service.md`：SVC-01 到 SVC-06 通过。此前 SVC-03 的 NodePort 失败根因是
+  宿主机残留同 PodCIDR 的旧 `cni0` route，导致 `10.244.0.0/24` 流量没有走 `mk8s0`；
+  当前 mooring/netagent 会刷新本地 PodCIDR route 到 `mk8s0`。此前 SVC-06 的
+  `MK8S-SVC-*` 残留通过 kube-proxy 删除入口规则时循环删除重复规则修复。
+- 2026-06-14 `logbook.md`：LOGBOOK-01 到 LOGBOOK-05 通过。当前 bridge 重启语义是
+  私有 dependency sailer/etcd 会随 bridge 重启，etcd 数据依赖
+  `.minik8s/state/bridge-deps/etcd` 持久化目录恢复；公开 `sailer run` 在 Harbor 短暂
+  不可用期间应保持运行，通过 `sailer-sync`、`netagent-sync` warning 重试，并在 bridge
+  恢复后自动恢复 Node Ready、Pod、ReplicaSet 和 Service endpoints。
 
 ## 通用清理
 

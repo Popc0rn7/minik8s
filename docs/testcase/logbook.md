@@ -311,28 +311,33 @@ sleep 10
 ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /registry
 ```
 
-停止 bridge 进程，但保持 etcd 运行。重新启动 bridge，仍带同样环境变量：
+记录两个公开 worker 的 `sailer run` PID，然后停止并重新启动 bridge。默认 bridge 会同时
+重启私有 dependency sailer/etcd；etcd 数据目录会保留，所以不需要保持旧 etcd 进程运行：
+
+```bash
+pgrep -af '^\./minik8s sailer run'
+```
+
+重新启动 bridge，仍带同样环境变量：
 
 ```bash
 export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
 ./minik8s bridge --listen :18080
 ```
 
-如果 node-a/node-b 的 sailer 已退出，重新启动：
+重新检查前，先确认 node-a/node-b 的公开 `sailer run` PID 仍与重启前一致。如果任一公开
+worker 在 Harbor 短暂不可用期间退出，本 case 视为失败；可以为了恢复环境手动重启，但不能把
+手动重启后的结果记录为 LOGBOOK-05 通过。
 
-```bash
-./minik8s sailer run
-```
-
-如果本地 `.minik8s/state/sailer.json` 不存在或 node token 已失效，先重新执行：
+如果本地 `.minik8s/state/sailer.json` 不存在或 node token 已失效，先重新执行 join 再从头
+重跑本 case：
 
 ```bash
 ./minik8s bridge token set ${MINIK8S_TOKEN} --ttl 24h
 ./minik8s sailer join --apiserver ${HARBOR} --token ${MINIK8S_TOKEN} -f manifest/node/node_a.yaml
 ```
 
-node-b 上使用同一个 `${HARBOR}` 和 token，对 `manifest/node/node_b.yaml` 重新 join 后再
-`./minik8s sailer run`。
+node-b 上使用同一个 `${HARBOR}` 和 token，对 `manifest/node/node_b.yaml` 重新 join。
 
 重新检查：
 
@@ -351,10 +356,13 @@ ETCDCTL_API=3 etcdctl --endpoints=${MINIK8S_LOGBOOK_ENDPOINTS} get --prefix /reg
 - ReplicaSet 列表仍包含 `nginx-rs`，且 current 会在同步后恢复为 desired。
 - Node 列表仍包含 `node-a`、`node-b`；worker 心跳后状态为 `Ready`。
 - etcd 中的 `/registry/pods`、`/registry/services`、`/registry/replicasets`、`/registry/nodes` 仍存在。
+- node-a/node-b 的公开 `sailer run` PID 与 bridge 重启前一致。
 
 失败排查：
 
 - Pod/Service 消失：检查重启后的 bridge 是否带了 `MINIK8S_LOGBOOK_ENDPOINTS`。
+- 公开 `sailer run` 退出：检查 worker 日志中的 `sailer-sync`、`netagent-sync` 是否只记录重试
+  warning；bridge 短暂不可用不应导致 worker 进程退出。
 - Node 状态变 Unknown：确认 sailer 正在运行并持续访问 `${HARBOR}`。
 - CLI get 失败：确认重启后的 bridge 已刷新 `.minik8s/config.json`，或临时设置 `MINIK8S_HARBOR=${HARBOR}`。
 

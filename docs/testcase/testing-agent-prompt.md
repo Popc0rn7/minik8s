@@ -30,8 +30,18 @@
 ## 执行策略
 
 - 优先使用当前 README/testcase 的主路径，例如 `sailer join`/`sailer run`，不要混用旧文档中的过时启动方式，除非是为了验证兼容路径。
+- 验证本地代码改动时，必须使用项目发布路径构建和同步产物：带上可用代理环境执行
+  `make prod-build`，再执行 `make prod-push`。不要手工 `scp`/`rsync` 临时二进制覆盖
+  `/opt/minik8s/minik8s` 或 `/opt/minik8s/kubectl`；如果代理、Docker 构建或同步失败，
+  先报告阻塞原因，不要改用绕过发布流程的手工替换。
 - 远端命令尽量统一用 `sh -lc` 包裹，避免 fish/bash 语法差异导致测试命令没执行。
 - 长时间运行的 `bridge`、`sailer run` 要作为独立会话处理；结束前不要留下依赖当前 agent 会话的前台进程。
+- 重启长时间进程时不要用宽泛 `pgrep -f` 匹配整段测试命令；使用能匹配真实进程
+  argv 开头的模式，例如 `pgrep -af '^\\./minik8s bridge --listen :18080'`。
+- bridge 重启会同时重启私有 dependency sailer/etcd，但 etcd 数据目录会保留；公开
+  `sailer run` 不应在 Harbor 短暂不可用时退出。LOGBOOK-05 必须记录重启前后的 worker
+  PID，只有 node-a/node-b 原公开 `sailer run` 仍保持运行，且 Node Ready、Pod 状态和
+  Service endpoints 自动恢复，才算通过；人工重启 worker 只能作为恢复环境动作记录为异常。
 - 对双节点测试，凡是 Pod 不固定 nodeName，就按“可能调度到任一节点”处理：
   - hostPath 目录要两台都准备。
   - Docker inspect 要到实际调度节点执行。
@@ -68,6 +78,7 @@ docker inspect <container> --format '<needed fields>'
 ```bash
 curl -fsS <url>
 curl --noproxy '*' -fsS <url>
+curl --noproxy '*' --max-time 5 -fsS <url>
 ip route | grep <cidr>
 ip link show mk8s-vxlan
 bridge fdb show dev mk8s-vxlan
@@ -78,6 +89,8 @@ ss -ltnp | grep <port>
 `curl --noproxy '*'` 重试，并检查当前 shell 的 `HTTP_PROXY`、`HTTPS_PROXY`、
 `ALL_PROXY`、`NO_PROXY/no_proxy`。只有 no-proxy 复核仍失败，才把它记录为
 Minik8s 网络/API 问题。
+对 NodePort、ServiceCIDR 或跨节点网络探测必须加 `--max-time`，避免失败路径导致
+测试会话挂住。
 
 对单元测试：
 
@@ -87,19 +100,19 @@ GOCACHE=/tmp/minik8s-go-build GOMODCACHE=/tmp/minik8s-go-mod go test <package> -
 
 如果失败原因是沙箱不能下载依赖，再请求非沙箱网络执行；不要把依赖下载失败误报成业务测试失败。
 
-## 问题报告格式
+## 异常报告格式
 
-每个偏差按下面格式报告：
+最终报告中的异常必须使用 Markdown 表格，把异常和建议解决方案直接对齐。每个异常一行；
+如果没有异常，写“无异常”，不要编造表格。
 
-```text
-问题：<一句话说明>
-影响：<影响哪个 testcase 或能力>
-预期：<文档里的预期>
-实际：<关键输出或状态>
-证据：<命令和关键字段>
-判断：<根因或当前最可信解释；如果还不能确定，明确说未确定>
-建议：<下次测试如何规避，或文档/代码应如何修正>
+```markdown
+| 异常 | 影响 | 证据 | 当前判断 | 建议解决方案 |
+| --- | --- | --- | --- | --- |
+| <一句话说明偏差> | <影响哪个 testcase 或能力> | <关键命令输出、状态字段、日志片段> | <根因或当前最可信解释；未确定就写未确定> | <下一步规避、文档修正或代码修复建议> |
 ```
+
+表格要保留预期和实际的差异信息，但不要拆成冗长段落；优先把最关键的命令、字段和值写进
+“证据”列。
 
 ## 提效要求
 
@@ -123,7 +136,10 @@ GOCACHE=/tmp/minik8s-go-build GOMODCACHE=/tmp/minik8s-go-mod go test <package> -
 测试范围：<跑了哪些 testcase/case>
 环境：<node IP、状态目录、启动方式>
 通过项：<逐项列出>
-问题：<只列与预期不同的问题，附证据>
+异常/建议解决方案：
+| 异常 | 影响 | 证据 | 当前判断 | 建议解决方案 |
+| --- | --- | --- | --- | --- |
+| ... | ... | ... | ... | ... |
 恢复状态：<API 对象、Docker 残留、节点 Ready、后台进程>
 未完成/未验证：<如有，说明原因>
 ```

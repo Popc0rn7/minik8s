@@ -128,6 +128,9 @@ curl --noproxy '*' -fsS "http://$NODE_B_IP:30080" >/tmp/minik8s-service-nodeport
 失败排查：
 
 - node-a curl 失败：检查宿主机防火墙、iptables 规则、backend endpoint。
+- node-a 直连 PodIP 或 NodePort 失败且 `ip route get <pod-ip>` 没有走 `mk8s0`：检查是否有
+  旧 `cni0` 或其他同 PodCIDR route 抢路由；重启当前 `sailer run` 后 netagent 应刷新本地
+  PodCIDR route 到 `mk8s0`。
 - node-b curl 失败：先记录为观察项，不影响 node-a 必测结论。
 
 ## SVC-04：双节点多 endpoint 与负载均衡
@@ -218,7 +221,8 @@ iptables-save -t nat | grep MK8S-SVC; or true
 
 失败排查：
 
-- chain 残留：确认删除的是对应 Service，必要时重跑 delete 并检查 kube-proxy 日志。
+- chain 残留：确认删除的是对应 Service，等待一个 kube-proxy sync 周期后复查；如果仍残留，
+  检查是否存在重复入口规则或旧版本 `sailer run` 进程。
 
 ## SVC-07：kubeproxy 单元测试
 
