@@ -23,6 +23,8 @@ type MockRuntime struct {
 	CleanupNodePodsCalls []string
 	PullImageCalls       []string
 	ContainerStatsByID   map[string]*runtime.ContainerStats
+	ExecResultsByID      map[string]*runtime.ExecResult
+	ExecContainerCalls   []ExecContainerCall
 
 	ShouldFailCreateSandbox   bool
 	ShouldFailStartSandbox    bool
@@ -42,6 +44,12 @@ type MockRuntime struct {
 	nextContainer int
 }
 
+type ExecContainerCall struct {
+	ContainerID string
+	Command     []string
+	Timeout     time.Duration
+}
+
 type CreateContainerCall struct {
 	SandboxID string
 	Config    *runtime.ContainerConfig
@@ -54,6 +62,7 @@ func NewMockRuntime() *MockRuntime {
 		sandboxes:          make(map[string]*runtime.SandboxInfo),
 		containers:         make(map[string]*runtime.ContainerInfo),
 		ContainerStatsByID: make(map[string]*runtime.ContainerStats),
+		ExecResultsByID:    make(map[string]*runtime.ExecResult),
 		nextSandbox:        1,
 		nextContainer:      1,
 	}
@@ -216,6 +225,24 @@ func (m *MockRuntime) ListContainers(ctx context.Context, sandboxID string) ([]*
 		}
 	}
 	return containers, nil
+}
+
+func (m *MockRuntime) ExecContainer(ctx context.Context, containerID string, command []string, timeout time.Duration) (*runtime.ExecResult, error) {
+	_ = ctx
+	m.ExecContainerCalls = append(m.ExecContainerCalls, ExecContainerCall{
+		ContainerID: containerID,
+		Command:     append([]string(nil), command...),
+		Timeout:     timeout,
+	})
+	if result, ok := m.ExecResultsByID[containerID]; ok {
+		copy := *result
+		return &copy, nil
+	}
+	return &runtime.ExecResult{ExitCode: 0}, nil
+}
+
+func (m *MockRuntime) SetExecResult(containerID string, exitCode int, output string) {
+	m.ExecResultsByID[containerID] = &runtime.ExecResult{ExitCode: exitCode, Output: output}
 }
 
 func (m *MockRuntime) PullImage(ctx context.Context, imageName string) error {

@@ -77,6 +77,11 @@ type ContainerStats struct {
 	Timestamp         time.Time
 }
 
+type ExecResult struct {
+	ExitCode int
+	Output   string
+}
+
 // ContainerStateInfo contains container state information
 type ContainerStateInfo struct {
 	Status       string
@@ -128,6 +133,7 @@ type ContainerRuntime interface {
 	RemoveContainer(ctx context.Context, containerID string) error
 	InspectContainer(ctx context.Context, containerID string) (*ContainerInfo, error)
 	ListContainers(ctx context.Context, sandboxID string) ([]*ContainerInfo, error)
+	ExecContainer(ctx context.Context, containerID string, command []string, timeout time.Duration) (*ExecResult, error)
 	ContainerStats(ctx context.Context, containerID string) (*ContainerStats, error)
 	CleanupPod(ctx context.Context, namespace, name string) error
 	CleanupNodePods(ctx context.Context, nodeName string) error

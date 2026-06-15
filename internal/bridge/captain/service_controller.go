@@ -64,7 +64,7 @@ func (c *ServiceController) reconcileService(ctx context.Context, svc *service.S
 	}
 	endpoints := make([]service.Endpoint, 0)
 	for _, p := range pods {
-		if p.Status.Phase != pod.PodRunning || p.Status.PodIP == "" {
+		if p.Status.Phase != pod.PodRunning || p.Status.PodIP == "" || !podReadyForService(p) {
 			continue
 		}
 		for _, port := range svc.Spec.Ports {
@@ -90,6 +90,21 @@ func (c *ServiceController) reconcileService(ctx context.Context, svc *service.S
 	_ = ctx
 	minilog.Info("service-sync", "service=%s/%s endpoints=%s", svc.Namespace, svc.Name, endpointSummary(endpoints))
 	return nil
+}
+
+func podReadyForService(p *pod.Pod) bool {
+	if p == nil {
+		return false
+	}
+	if len(p.Status.Containers) == 0 {
+		return true
+	}
+	for _, status := range p.Status.Containers {
+		if !status.Ready {
+			return false
+		}
+	}
+	return true
 }
 
 func endpointSummary(endpoints []service.Endpoint) string {

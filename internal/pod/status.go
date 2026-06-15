@@ -33,14 +33,17 @@ const (
 
 // ContainerStatus represents the status of a container
 type ContainerStatus struct {
-	Name         string         `json:"name" yaml:"name"`
-	State        ContainerState `json:"state" yaml:"state"`
-	Ready        bool           `json:"ready" yaml:"ready"`
-	RestartCount int32          `json:"restartCount" yaml:"restartCount"`
-	Image        string         `json:"image" yaml:"image"`
-	ImageID      string         `json:"imageID" yaml:"imageID"`
-	ContainerID  string         `json:"containerID" yaml:"containerID"`
-	Started      *bool          `json:"started,omitempty" yaml:"started"`
+	Name                  string         `json:"name" yaml:"name"`
+	State                 ContainerState `json:"state" yaml:"state"`
+	Ready                 bool           `json:"ready" yaml:"ready"`
+	RestartCount          int32          `json:"restartCount" yaml:"restartCount"`
+	Image                 string         `json:"image" yaml:"image"`
+	ImageID               string         `json:"imageID" yaml:"imageID"`
+	ContainerID           string         `json:"containerID" yaml:"containerID"`
+	Started               *bool          `json:"started,omitempty" yaml:"started"`
+	LivenessFailureCount  int32          `json:"livenessFailureCount,omitempty" yaml:"livenessFailureCount,omitempty"`
+	ReadinessFailureCount int32          `json:"readinessFailureCount,omitempty" yaml:"readinessFailureCount,omitempty"`
+	LastProbeTime         int64          `json:"lastProbeTime,omitempty" yaml:"lastProbeTime,omitempty"`
 }
 
 // ContainerState represents the state of a container
@@ -121,13 +124,16 @@ func (c *ContainerStatus) DeepCopy() ContainerStatus {
 		return ContainerStatus{}
 	}
 	out := ContainerStatus{
-		Name:         c.Name,
-		Ready:        c.Ready,
-		RestartCount: c.RestartCount,
-		Image:        c.Image,
-		ImageID:      c.ImageID,
-		ContainerID:  c.ContainerID,
-		State:        c.State,
+		Name:                  c.Name,
+		Ready:                 c.Ready,
+		RestartCount:          c.RestartCount,
+		Image:                 c.Image,
+		ImageID:               c.ImageID,
+		ContainerID:           c.ContainerID,
+		State:                 c.State,
+		LivenessFailureCount:  c.LivenessFailureCount,
+		ReadinessFailureCount: c.ReadinessFailureCount,
+		LastProbeTime:         c.LastProbeTime,
 	}
 	if c.Started != nil {
 		started := *c.Started

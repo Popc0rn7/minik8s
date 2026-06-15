@@ -130,6 +130,14 @@ func newTestPod(name, namespace string, restartPolicy pod.RestartPolicy) *pod.Po
 	}
 }
 
+func podConditionSummary(conditions []pod.PodCondition) string {
+	parts := make([]string, 0, len(conditions))
+	for _, condition := range conditions {
+		parts = append(parts, string(condition.Type)+"="+string(condition.Status))
+	}
+	return strings.Join(parts, ",")
+}
+
 func TestPodController_StartStop(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	mockRuntime.NetNSPath = "/proc/101/ns/net"
@@ -372,6 +380,71 @@ func TestPodController_ReconcileRunningPod_ContainerRestart(t *testing.T) {
 
 	// With RestartPolicyAlways, container should be restarted
 	assert.Contains(t, mockRuntime.StartContainerCalls, "container-1")
+}
+
+func TestPodController_ReconcileRunningPod_LivenessExecFailureRestartsContainer(t *testing.T) {
+	mockRuntime := mock.NewMockRuntime()
+	podStore := NewMockPodStore()
+	controller := NewPodController(mockRuntime, podStore)
+	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
+	testPod.Spec.Containers[0].LivenessProbe = &pod.Probe{
+		Exec:             &pod.ExecAction{Command: []string{"cat", "/tmp/healthy"}},
+		FailureThreshold: 1,
+	}
+	testPod.Status.Phase = pod.PodRunning
+	testPod.Status.StartTime = time.Now().Add(-time.Minute).Unix()
+	testPod.Status.Containers = []pod.ContainerStatus{{
+		Name:        "test-pod-container",
+		ContainerID: "container-1",
+		Ready:       true,
+		State:       pod.ContainerState{Running: &pod.ContainerStateRunning{StartedAt: time.Now().Add(-time.Minute).Unix()}},
+	}}
+	mockRuntime.SetContainerState("container-1", "running", 0)
+	mockRuntime.SetExecResult("container-1", 1, "missing")
+	require.NoError(t, podStore.Create(testPod))
+
+	require.NoError(t, controller.reconcilePod(context.Background(), testPod))
+
+	updatedPod, err := podStore.Get("test-pod", "default")
+	require.NoError(t, err)
+	assert.Contains(t, mockRuntime.StopContainerCalls, "container-1")
+	assert.Contains(t, mockRuntime.StartContainerCalls, "container-1")
+	require.Len(t, updatedPod.Status.Containers, 1)
+	assert.Equal(t, int32(1), updatedPod.Status.Containers[0].RestartCount)
+	assert.Equal(t, int32(0), updatedPod.Status.Containers[0].LivenessFailureCount)
+	assert.Equal(t, "LivenessProbeFailed", updatedPod.Status.Reason)
+}
+
+func TestPodController_ReconcileRunningPod_ReadinessExecFailureMarksContainerNotReady(t *testing.T) {
+	mockRuntime := mock.NewMockRuntime()
+	podStore := NewMockPodStore()
+	controller := NewPodController(mockRuntime, podStore)
+	testPod := newTestPod("test-pod", "default", pod.RestartPolicyAlways)
+	testPod.Spec.Containers[0].ReadinessProbe = &pod.Probe{
+		Exec:             &pod.ExecAction{Command: []string{"cat", "/tmp/ready"}},
+		FailureThreshold: 1,
+	}
+	testPod.Status.Phase = pod.PodRunning
+	testPod.Status.StartTime = time.Now().Add(-time.Minute).Unix()
+	testPod.Status.Containers = []pod.ContainerStatus{{
+		Name:        "test-pod-container",
+		ContainerID: "container-1",
+		Ready:       true,
+		State:       pod.ContainerState{Running: &pod.ContainerStateRunning{StartedAt: time.Now().Add(-time.Minute).Unix()}},
+	}}
+	mockRuntime.SetContainerState("container-1", "running", 0)
+	mockRuntime.SetExecResult("container-1", 1, "not-ready")
+	require.NoError(t, podStore.Create(testPod))
+
+	require.NoError(t, controller.reconcilePod(context.Background(), testPod))
+
+	updatedPod, err := podStore.Get("test-pod", "default")
+	require.NoError(t, err)
+	require.Len(t, updatedPod.Status.Containers, 1)
+	assert.False(t, updatedPod.Status.Containers[0].Ready)
+	assert.Equal(t, int32(1), updatedPod.Status.Containers[0].ReadinessFailureCount)
+	assert.Contains(t, podConditionSummary(updatedPod.Status.Conditions), "Ready=False")
+	assert.Contains(t, podConditionSummary(updatedPod.Status.Conditions), "ContainersReady=False")
 }
 
 func TestPodController_ReconcileRunningPod_NoRestartOnNever(t *testing.T) {

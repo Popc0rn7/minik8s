@@ -3,6 +3,9 @@ package sailer
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -319,6 +322,7 @@ func (pc *PodController) sandboxDNSSearch(p *pod.Pod) []string {
 func (pc *PodController) handleRunningPod(ctx context.Context, p *pod.Pod) error {
 	allRunning := true
 	allStopped := true
+	containerSpecs := containerSpecsByName(p)
 
 	for i, containerStatus := range p.Status.Containers {
 		info, err := pc.runtime.InspectContainer(ctx, containerStatus.ContainerID)
@@ -334,6 +338,9 @@ func (pc *PodController) handleRunningPod(ctx context.Context, p *pod.Pod) error
 					Running: &pod.ContainerStateRunning{StartedAt: info.State.StartedAt},
 				}
 				p.Status.Containers[i].Ready = true
+				if spec, ok := containerSpecs[containerStatus.Name]; ok {
+					pc.reconcileContainerProbes(ctx, p, &p.Status.Containers[i], spec)
+				}
 			case "stopped", "exited":
 				allRunning = false
 				p.Status.Containers[i].Ready = false
@@ -390,8 +397,203 @@ func (pc *PodController) handleRunningPod(ctx context.Context, p *pod.Pod) error
 	if allRunning {
 		p.Status.Phase = pod.PodRunning
 	}
+	p.Status.Conditions = podReadyConditions(p)
 
 	return pc.store.Update(p)
+}
+
+func (pc *PodController) reconcileContainerProbes(ctx context.Context, p *pod.Pod, status *pod.ContainerStatus, spec pod.ContainerSpec) {
+	if status == nil {
+		return
+	}
+	if spec.LivenessProbe != nil && probeDue(p, status, spec.LivenessProbe) {
+		status.LastProbeTime = time.Now().Unix()
+		result := pc.runProbe(ctx, p, status, spec.LivenessProbe)
+		if result.ok {
+			status.LivenessFailureCount = 0
+		} else {
+			status.LivenessFailureCount++
+			if status.LivenessFailureCount >= defaultFailureThreshold(spec.LivenessProbe) {
+				pc.restartAfterLivenessFailure(ctx, p, status, result.message)
+			}
+		}
+	}
+	if spec.ReadinessProbe == nil {
+		return
+	}
+	if !probeDue(p, status, spec.ReadinessProbe) {
+		status.Ready = false
+		return
+	}
+	status.LastProbeTime = time.Now().Unix()
+	result := pc.runProbe(ctx, p, status, spec.ReadinessProbe)
+	if result.ok {
+		status.ReadinessFailureCount = 0
+		status.Ready = true
+		return
+	}
+	status.ReadinessFailureCount++
+	if status.ReadinessFailureCount >= defaultFailureThreshold(spec.ReadinessProbe) {
+		status.Ready = false
+	}
+}
+
+func (pc *PodController) restartAfterLivenessFailure(ctx context.Context, p *pod.Pod, status *pod.ContainerStatus, message string) {
+	status.Ready = false
+	status.State = pod.ContainerState{Terminated: &pod.ContainerStateTerminated{Reason: "LivenessProbeFailed", Message: message, FinishedAt: time.Now().Unix()}}
+	p.Status.Reason = "LivenessProbeFailed"
+	p.Status.Message = fmt.Sprintf("container %s failed liveness probe: %s", status.Name, message)
+	if err := pc.runtime.StopContainer(ctx, status.ContainerID, DefaultTimeout); err != nil {
+		minilog.Warn("container-liveness", "container=%s stop failed error=%v", status.Name, err)
+		return
+	}
+	if !pc.shouldRestart(p, 1) {
+		return
+	}
+	if err := pc.runtime.StartContainer(ctx, status.ContainerID); err != nil {
+		minilog.Warn("container-liveness", "container=%s restart failed error=%v", status.Name, err)
+		return
+	}
+	status.State = pod.ContainerState{Running: &pod.ContainerStateRunning{StartedAt: time.Now().Unix()}}
+	status.RestartCount++
+	status.LivenessFailureCount = 0
+	if status.ReadinessFailureCount == 0 {
+		status.Ready = true
+	}
+}
+
+type probeResult struct {
+	ok      bool
+	message string
+}
+
+func (pc *PodController) runProbe(ctx context.Context, p *pod.Pod, status *pod.ContainerStatus, probe *pod.Probe) probeResult {
+	timeout := time.Duration(defaultTimeoutSeconds(probe)) * time.Second
+	switch {
+	case probe.Exec != nil:
+		result, err := pc.runtime.ExecContainer(ctx, status.ContainerID, probe.Exec.Command, timeout)
+		if err != nil {
+			return probeResult{message: err.Error()}
+		}
+		if result != nil && result.ExitCode == 0 {
+			return probeResult{ok: true}
+		}
+		if result != nil && result.Output != "" {
+			return probeResult{message: result.Output}
+		}
+		return probeResult{message: "exec probe exited non-zero"}
+	case probe.HTTPGet != nil:
+		return runHTTPProbe(ctx, p.Status.PodIP, probe.HTTPGet, timeout)
+	case probe.TCPSocket != nil:
+		return runTCPProbe(ctx, p.Status.PodIP, probe.TCPSocket.Port, timeout)
+	default:
+		return probeResult{ok: true}
+	}
+}
+
+func runHTTPProbe(ctx context.Context, podIP string, action *pod.HTTPGetAction, timeout time.Duration) probeResult {
+	if strings.TrimSpace(podIP) == "" {
+		return probeResult{message: "pod IP is empty"}
+	}
+	scheme := strings.ToLower(strings.TrimSpace(action.Scheme))
+	if scheme == "" {
+		scheme = "http"
+	}
+	path := action.Path
+	if path == "" {
+		path = "/"
+	}
+	client := http.Client{Timeout: timeout}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s://%s%s", scheme, net.JoinHostPort(podIP, strconv.Itoa(int(action.Port))), path), nil)
+	if err != nil {
+		return probeResult{message: err.Error()}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return probeResult{message: err.Error()}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		return probeResult{ok: true}
+	}
+	return probeResult{message: fmt.Sprintf("http status %d", resp.StatusCode)}
+}
+
+func runTCPProbe(ctx context.Context, podIP string, port int32, timeout time.Duration) probeResult {
+	_ = ctx
+	if strings.TrimSpace(podIP) == "" {
+		return probeResult{message: "pod IP is empty"}
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(podIP, strconv.Itoa(int(port))), timeout)
+	if err != nil {
+		return probeResult{message: err.Error()}
+	}
+	_ = conn.Close()
+	return probeResult{ok: true}
+}
+
+func probeDue(p *pod.Pod, status *pod.ContainerStatus, probe *pod.Probe) bool {
+	if probe == nil {
+		return true
+	}
+	startedAt := int64(0)
+	if status != nil && status.State.Running != nil {
+		startedAt = status.State.Running.StartedAt
+	}
+	if startedAt == 0 && p != nil {
+		startedAt = p.Status.StartTime
+	}
+	if startedAt == 0 {
+		return true
+	}
+	return time.Since(time.Unix(startedAt, 0)) >= time.Duration(probe.InitialDelaySeconds)*time.Second
+}
+
+func defaultTimeoutSeconds(probe *pod.Probe) int32 {
+	if probe != nil && probe.TimeoutSeconds > 0 {
+		return probe.TimeoutSeconds
+	}
+	return 1
+}
+
+func defaultFailureThreshold(probe *pod.Probe) int32 {
+	if probe != nil && probe.FailureThreshold > 0 {
+		return probe.FailureThreshold
+	}
+	return 3
+}
+
+func containerSpecsByName(p *pod.Pod) map[string]pod.ContainerSpec {
+	result := make(map[string]pod.ContainerSpec, len(p.Spec.Containers))
+	for _, c := range p.Spec.Containers {
+		result[c.Name] = c
+	}
+	return result
+}
+
+func podReadyConditions(p *pod.Pod) []pod.PodCondition {
+	ready, total := readyContainerCount(p.Status.Containers)
+	status := pod.ConditionFalse
+	reason := "ContainersNotReady"
+	if total > 0 && ready == total {
+		status = pod.ConditionTrue
+		reason = "ContainersReady"
+	}
+	now := time.Now().Unix()
+	return []pod.PodCondition{
+		{Type: pod.PodConditionType("ContainersReady"), Status: status, LastTransition: now, Reason: reason},
+		{Type: pod.PodConditionType("Ready"), Status: status, LastTransition: now, Reason: reason},
+	}
+}
+
+func readyContainerCount(statuses []pod.ContainerStatus) (int, int) {
+	ready := 0
+	for _, status := range statuses {
+		if status.Ready {
+			ready++
+		}
+	}
+	return ready, len(statuses)
 }
 
 // handleTerminalPod cleans up resources for terminal Pods

@@ -411,6 +411,34 @@ func (d *DockerRuntime) ListContainers(ctx context.Context, sandboxID string) ([
 	return result, nil
 }
 
+func (d *DockerRuntime) ExecContainer(ctx context.Context, containerID string, command []string, timeout time.Duration) (*runtime.ExecResult, error) {
+	if len(command) == 0 {
+		return nil, fmt.Errorf("exec command is required")
+	}
+	execCtx := ctx
+	cancel := func() {}
+	if timeout > 0 {
+		execCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+	resp, err := d.client.ContainerExecCreate(execCtx, containerID, container.ExecOptions{
+		Cmd:          command,
+		AttachStdout: false,
+		AttachStderr: false,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating exec: %w", err)
+	}
+	if err := d.client.ContainerExecStart(execCtx, resp.ID, container.ExecStartOptions{}); err != nil {
+		return nil, fmt.Errorf("starting exec: %w", err)
+	}
+	inspect, err := d.client.ContainerExecInspect(execCtx, resp.ID)
+	if err != nil {
+		return nil, fmt.Errorf("inspecting exec: %w", err)
+	}
+	return &runtime.ExecResult{ExitCode: inspect.ExitCode}, nil
+}
+
 func (d *DockerRuntime) ContainerStats(ctx context.Context, containerID string) (*runtime.ContainerStats, error) {
 	resp, err := d.client.ContainerStatsOneShot(ctx, containerID)
 	if err != nil {

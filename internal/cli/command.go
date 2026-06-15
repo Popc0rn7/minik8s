@@ -1256,9 +1256,11 @@ func sortWorkflowList(workflows []*workflow.Workflow) {
 }
 
 func writePodTable(out io.Writer, pods []*pod.Pod) error {
-	if err := writef(out, "%s %s %s %s %s %s\n",
+	if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 		cliui.PadRight("POD", 31),
 		cliui.PadRight("STATUS", 18),
+		cliui.PadRight("READY", 8),
+		cliui.PadRight("RESTARTS", 10),
 		cliui.PadRight("IP", 15),
 		cliui.PadRight("UPTIME", 10),
 		cliui.PadRight("NAMESPACE", 14),
@@ -1269,9 +1271,11 @@ func writePodTable(out io.Writer, pods []*pod.Pod) error {
 	for _, p := range pods {
 		podName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconPod, "[pod]"), p.Name)
 		status := fmt.Sprintf("%s %s", cliui.StatusIcon(p.Status.Phase), p.Status.Phase)
-		if err := writef(out, "%s %s %s %s %s %s\n",
+		if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 			cliui.PadRight(podName, 31),
 			cliui.PadRight(status, 18),
+			cliui.PadRight(formatPodReady(p.Status.Containers), 8),
+			cliui.PadRight(fmt.Sprintf("%d", totalRestarts(p.Status.Containers)), 10),
 			formatPodIP(p.Status.PodIP),
 			cliui.PadRight(formatUptime(p.Status), 10),
 			cliui.PadRight(p.Namespace, 14),
@@ -1532,6 +1536,21 @@ func describePod(out io.Writer, p *pod.Pod) error {
 		fmt.Sprintf("IP: %s", formatPodIP(p.Status.PodIP)),
 		fmt.Sprintf("Node: %s", emptyDash(p.Spec.NodeName)),
 		fmt.Sprintf("Labels: %s", formatLabels(p.Labels)),
+	}
+	if p.Status.Reason != "" {
+		lines = append(lines, fmt.Sprintf("Reason: %s", p.Status.Reason))
+	}
+	if p.Status.Message != "" {
+		lines = append(lines, fmt.Sprintf("Message: %s", p.Status.Message))
+	}
+	if len(p.Status.Conditions) > 0 {
+		lines = append(lines, fmt.Sprintf("Conditions: %s", formatPodConditions(p.Status.Conditions)))
+	}
+	if len(p.Status.Containers) > 0 {
+		lines = append(lines, "Containers:")
+		for _, c := range p.Status.Containers {
+			lines = append(lines, fmt.Sprintf("  %s ready=%t restarts=%d state=%s", c.Name, c.Ready, c.RestartCount, formatContainerState(c.State)))
+		}
 	}
 	for _, line := range lines {
 		if err := writef(out, "%s\n", line); err != nil {

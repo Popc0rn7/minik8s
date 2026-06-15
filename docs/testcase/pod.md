@@ -10,7 +10,9 @@
 | POD-01 | 无 CNI 基础 Pod、hostPort、delete 清理 | node-a | 删除 Pod，恢复 node-a 的 `sailer run` |
 | POD-02 | hostPath volume 与 CPU/memory limit | node-a，必要时 node-b 辅助检查 | 删除 Pod，删除 marker 文件 |
 | POD-02B | 多容器 localhost 通信与共享 volume | node-a，必要时实际运行节点辅助检查 | 删除 Pod，删除 marker 文件 |
-| POD-03 | restartPolicy 崩溃重启 | node-a | 删除 Pod |
+| POD-03 | restartPolicy 崩溃重启与 restart count 展示 | node-a | 删除 Pod |
+| POD-03A | livenessProbe 失败后重启容器 | node-a | 删除 Pod |
+| POD-03B | readinessProbe 控制 Service endpoints | node-a | 删除 Pod 和 Service |
 | POD-04 | 双 worker 心跳与未指定 nodeName 的调度 | node-a + node-b | 删除 Pod，保持两个节点 Ready |
 | POD-05 | NodeLost 后 Pod Unknown 与 Service endpoint 移除 | node-a + node-b | 重启 node-b 的 `sailer run`，删除 Pod 和 Service |
 | POD-05B | 删除 Node 后级联删除 assigned Pods | node-a + node-b | node-b 重新 join 并启动 worker |
@@ -310,17 +312,19 @@ set CLIENT_CID (docker ps -q --filter label=minik8s.pod.name=busybox-client --fi
 docker kill "$CLIENT_CID"
 docker inspect "$CLIENT_CID" --format '{{.State.Status}}'
 
-# 等待 sailer 下一轮同步后确认容器恢复运行
+# 等待 sailer 下一轮同步后确认容器恢复运行，并观察重启计数
 sleep 6
 docker inspect "$CLIENT_CID" --format '{{.State.Status}}'
 ./kubectl get pods
+./kubectl describe pod busybox-client
 ```
 
 期望：
 
 - kill 后第一次 inspect 显示 `exited`。
 - 等待 sailer 同步后 inspect 显示 `running`。
-- `get pods` 中 `busybox-client` 仍为 `Running`。
+- `get pods` 中 `busybox-client` 仍为 `Running`，`READY` 为 `1/1`，`RESTARTS` 至少为 `1`。
+- `describe pod busybox-client` 的 `Containers` 段显示 `client ready=true restarts=... state=Running`。
 
 恢复状态：
 
@@ -336,6 +340,186 @@ docker ps -a --filter label=minik8s.pod.name=busybox-client --format '{{.Names}}
 
 - 容器没有重启：确认实际运行节点上的 sailer 没退出，并检查 Pod 的 `restartPolicy`。
 - `CLIENT_CID` 为空：先通过 `describe pod busybox-client` 确认 Pod 被调度到哪个节点，再到该节点执行 Docker 命令。
+
+## POD-03A：livenessProbe 失败后重启
+
+目标：验证 `livenessProbe` 不是只解析字段；当探针连续失败达到阈值后，sailer 在实际运行节点重启该容器，并把原因写回 Pod status。
+
+机器：node-a 执行 CLI。Pod 可能被调度到 node-a 或 node-b；Docker 检查需要在实际运行节点执行。
+
+前置：node-a/node-b 均运行默认 `sailer run`，`./kubectl get nodes` 能看到两个节点为 `Ready`。
+
+```fish
+./kubectl delete pod liveness-demo; or true
+```
+
+创建临时 YAML：
+
+```fish
+begin
+  echo 'kind: Pod'
+  echo 'apiVersion: v1'
+  echo 'metadata:'
+  echo '  name: liveness-demo'
+  echo '  namespace: default'
+  echo '  labels:'
+  echo '    app: liveness-demo'
+  echo 'spec:'
+  echo '  restartPolicy: Always'
+  echo '  containers:'
+  echo '  - name: app'
+  echo '    image: busybox'
+  echo '    imageTag: latest'
+  echo '    command: ["sh", "-c"]'
+  echo '    args: ["touch /tmp/healthy && sleep 3600"]'
+  echo '    livenessProbe:'
+  echo '      exec:'
+  echo '        command: ["cat", "/tmp/healthy"]'
+  echo '      initialDelaySeconds: 1'
+  echo '      timeoutSeconds: 1'
+  echo '      failureThreshold: 1'
+end >/tmp/minik8s-pod-liveness.yaml
+```
+
+流程：
+
+```fish
+./kubectl apply -f /tmp/minik8s-pod-liveness.yaml
+sleep 8
+./kubectl describe pod liveness-demo
+```
+
+根据 `describe pod` 中的 Node，到实际运行节点删除健康标记并等待重启：
+
+```fish
+set APP_CID (docker ps -q --filter label=minik8s.pod.name=liveness-demo --filter label=minik8s.container.name=app)
+docker exec "$APP_CID" rm -f /tmp/healthy
+sleep 12
+./kubectl get pods
+./kubectl describe pod liveness-demo
+```
+
+期望：
+
+- 删除 `/tmp/healthy` 前，`liveness-demo` 为 `Running`，`READY` 为 `1/1`。
+- 删除健康标记后，`RESTARTS` 至少为 `1`。
+- `describe pod liveness-demo` 显示 `Reason: LivenessProbeFailed` 或 `Message` 中包含 liveness probe failure。
+- `Containers` 段显示 `app ready=true restarts=... state=Running`。
+
+恢复状态：
+
+```fish
+./kubectl delete pod liveness-demo; or true
+rm -f /tmp/minik8s-pod-liveness.yaml
+sleep 6
+```
+
+失败排查：
+
+- 没有重启：确认 `docker exec rm -f /tmp/healthy` 在 Pod 实际运行节点执行，且对应节点的 sailer 仍在线。
+- Pod 一直 NotReady：确认容器是否反复快速重启，检查 `describe pod` 的 `Message`。
+
+## POD-03B：readinessProbe 控制 Service endpoints
+
+目标：验证 `readinessProbe` 会影响 Service endpoint。Pod 运行但 readiness 失败时，不应接入 Service；readiness 恢复后应进入 endpoints。
+
+机器：node-a 执行 CLI。Pod 可能被调度到 node-a 或 node-b；Docker exec 需要在实际运行节点执行。
+
+前置：node-a/node-b 均运行默认 `sailer run`，`./kubectl get nodes` 能看到两个节点为 `Ready`。
+
+```fish
+./kubectl delete service readiness-demo; or true
+./kubectl delete pod readiness-demo; or true
+```
+
+创建临时 Pod 和 Service YAML：
+
+```fish
+begin
+  echo 'kind: Pod'
+  echo 'apiVersion: v1'
+  echo 'metadata:'
+  echo '  name: readiness-demo'
+  echo '  namespace: default'
+  echo '  labels:'
+  echo '    app: readiness-demo'
+  echo 'spec:'
+  echo '  containers:'
+  echo '  - name: app'
+  echo '    image: python'
+  echo '    imageTag: "3.12-alpine"'
+  echo '    command: ["sh", "-c"]'
+  echo '    args: ["python -m http.server 8080 -d /tmp"]'
+  echo '    ports:'
+  echo '    - containerPort: 8080'
+  echo '    readinessProbe:'
+  echo '      exec:'
+  echo '        command: ["cat", "/tmp/ready"]'
+  echo '      initialDelaySeconds: 1'
+  echo '      timeoutSeconds: 1'
+  echo '      failureThreshold: 1'
+end >/tmp/minik8s-pod-readiness.yaml
+
+begin
+  echo 'kind: Service'
+  echo 'apiVersion: v1'
+  echo 'metadata:'
+  echo '  name: readiness-demo'
+  echo '  namespace: default'
+  echo 'spec:'
+  echo '  type: ClusterIP'
+  echo '  selector:'
+  echo '    matchLabels:'
+  echo '      app: readiness-demo'
+  echo '  ports:'
+  echo '  - port: 80'
+  echo '    targetPort: 8080'
+end >/tmp/minik8s-service-readiness.yaml
+```
+
+流程：
+
+```fish
+./kubectl apply -f /tmp/minik8s-pod-readiness.yaml
+./kubectl apply -f /tmp/minik8s-service-readiness.yaml
+sleep 12
+./kubectl get pods
+./kubectl describe pod readiness-demo
+./kubectl describe service readiness-demo
+```
+
+根据 `describe pod` 中的 Node，到实际运行节点创建 readiness 标记：
+
+```fish
+set APP_CID (docker ps -q --filter label=minik8s.pod.name=readiness-demo --filter label=minik8s.container.name=app)
+docker exec "$APP_CID" sh -c 'echo ready >/tmp/ready'
+sleep 12
+./kubectl get pods
+./kubectl describe pod readiness-demo
+./kubectl describe service readiness-demo
+```
+
+期望：
+
+- 创建 `/tmp/ready` 前，Pod phase 可以是 `Running`，但 `READY` 为 `0/1`。
+- 创建 `/tmp/ready` 前，`describe service readiness-demo` 的 `Endpoints` 为 `-`。
+- 创建 `/tmp/ready` 后，`READY` 变为 `1/1`。
+- 创建 `/tmp/ready` 后，Service endpoints 出现该 Pod 的 PodIP 和 targetPort `8080`。
+
+恢复状态：
+
+```fish
+./kubectl delete service readiness-demo; or true
+./kubectl delete pod readiness-demo; or true
+rm -f /tmp/minik8s-pod-readiness.yaml
+rm -f /tmp/minik8s-service-readiness.yaml
+sleep 6
+```
+
+失败排查：
+
+- Service 一直有 endpoint：确认运行的是包含 readiness 过滤的 bridge，并检查 Pod `Containers` 段是否已经 `ready=true`。
+- Service 一直无 endpoint：确认 readiness 标记是在 Pod 实际运行节点的 workload 容器中创建。
 
 ## POD-04：双 worker 心跳与调度
 
@@ -559,6 +743,9 @@ go test ./internal/sailer -run 'SandboxCreationFailure|SyncOnce' -count=1 -v
 
 ```fish
 ./kubectl delete service nginx-service; or true
+./kubectl delete service readiness-demo; or true
+./kubectl delete pod readiness-demo; or true
+./kubectl delete pod liveness-demo; or true
 ./kubectl delete pod nginx-node-b; or true
 ./kubectl delete pod multicontainer-localhost -n demo; or true
 ./kubectl delete pod nginx-pod-2; or true
@@ -566,6 +753,9 @@ go test ./internal/sailer -run 'SandboxCreationFailure|SyncOnce' -count=1 -v
 ./kubectl delete pod volume-resource-pod -n demo; or true
 ./kubectl delete pod nginx-pod; or true
 rm -f /tmp/minik8s-nginx.html
+rm -f /tmp/minik8s-pod-liveness.yaml
+rm -f /tmp/minik8s-pod-readiness.yaml
+rm -f /tmp/minik8s-service-readiness.yaml
 rm -f /tmp/minik8s-pod-multicontainer.yaml
 rm -f /tmp/minik8s-multicontainer/result
 rm -f /tmp/minik8s-case-data/marker

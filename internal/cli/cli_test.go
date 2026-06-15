@@ -1796,6 +1796,62 @@ func TestCLIGetPodsShowsPodIP(t *testing.T) {
 	assert.Contains(t, out.String(), "10.244.0.2")
 }
 
+func TestCLIGetPodsShowsReadyAndRestarts(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	podStore := store.NewInMemoryPodStore()
+	require.NoError(t, podStore.Create(&pod.Pod{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default", Labels: map[string]string{"app": "nginx"}},
+		Status: pod.PodStatus{Phase: pod.PodRunning, PodIP: "10.244.0.2", Containers: []pod.ContainerStatus{{
+			Name:         "nginx",
+			Ready:        true,
+			RestartCount: 2,
+		}, {
+			Name:         "sidecar",
+			Ready:        false,
+			RestartCount: 1,
+		}}},
+	}))
+	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore, NodeStore: store.NewInMemoryNodeStore()}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"get", "pods"}, &out))
+
+	assert.Contains(t, out.String(), "READY")
+	assert.Contains(t, out.String(), "RESTARTS")
+	assert.Contains(t, out.String(), "1/2")
+	assert.Contains(t, out.String(), "3")
+}
+
+func TestCLIDescribePodShowsReasonMessageAndContainerStatus(t *testing.T) {
+	t.Setenv("MINIK8S_PLAIN", "1")
+	t.Setenv("NO_COLOR", "1")
+	podStore := store.NewInMemoryPodStore()
+	require.NoError(t, podStore.Create(&pod.Pod{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default", Labels: map[string]string{"app": "nginx"}},
+		Status: pod.PodStatus{
+			Phase:   pod.PodRunning,
+			Reason:  "LivenessProbeFailed",
+			Message: "container nginx failed liveness probe",
+			Containers: []pod.ContainerStatus{{
+				Name:         "nginx",
+				Ready:        true,
+				RestartCount: 2,
+				State:        pod.ContainerState{Running: &pod.ContainerStateRunning{StartedAt: 123}},
+			}},
+		},
+	}))
+	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore, NodeStore: store.NewInMemoryNodeStore()}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"describe", "pod", "nginx"}, &out))
+
+	assert.Contains(t, out.String(), "Reason: LivenessProbeFailed")
+	assert.Contains(t, out.String(), "Message: container nginx failed liveness probe")
+	assert.Contains(t, out.String(), "Containers:")
+	assert.Contains(t, out.String(), "nginx ready=true restarts=2 state=Running")
+}
+
 func TestCLIGetNodesShowsHeartbeatNodes(t *testing.T) {
 	t.Setenv("MINIK8S_PLAIN", "1")
 	t.Setenv("NO_COLOR", "1")

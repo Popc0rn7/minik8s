@@ -3162,6 +3162,62 @@ func formatPodIP(ip string) string {
 	return ip
 }
 
+func formatPodReady(statuses []pod.ContainerStatus) string {
+	if len(statuses) == 0 {
+		return "0/0"
+	}
+	ready := 0
+	for _, status := range statuses {
+		if status.Ready {
+			ready++
+		}
+	}
+	return fmt.Sprintf("%d/%d", ready, len(statuses))
+}
+
+func totalRestarts(statuses []pod.ContainerStatus) int32 {
+	var total int32
+	for _, status := range statuses {
+		total += status.RestartCount
+	}
+	return total
+}
+
+func formatPodConditions(conditions []pod.PodCondition) string {
+	if len(conditions) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(conditions))
+	for _, condition := range conditions {
+		if condition.Reason != "" {
+			parts = append(parts, fmt.Sprintf("%s=%s(%s)", condition.Type, condition.Status, condition.Reason))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", condition.Type, condition.Status))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func formatContainerState(state pod.ContainerState) string {
+	switch {
+	case state.Running != nil:
+		return "Running"
+	case state.Terminated != nil:
+		if state.Terminated.Reason != "" {
+			return "Terminated(" + state.Terminated.Reason + ")"
+		}
+		return fmt.Sprintf("Terminated(exit=%d)", state.Terminated.ExitCode)
+	case state.Waiting != nil:
+		if state.Waiting.Reason != "" {
+			return "Waiting(" + state.Waiting.Reason + ")"
+		}
+		return "Waiting"
+	default:
+		return "Unknown"
+	}
+}
+
 func formatServicePorts(svc *service.Service) string {
 	if len(svc.Spec.Ports) == 0 {
 		return "-"
