@@ -268,14 +268,19 @@ func TestHarborReplicaSetRecreatesDeletedPod(t *testing.T) {
 	}`
 	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/replicasets", body)
 	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
-
-	del := serve(t, srv, http.MethodDelete, "/api/v1/namespaces/default/pods/nginx-rs-1", "")
-	require.Equal(t, http.StatusOK, del.Code, del.Body.String())
-
 	pods, err := podStore.List("default", &pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}})
 	require.NoError(t, err)
 	require.Len(t, pods, 1)
-	assert.Equal(t, "nginx-rs-1", pods[0].Name)
+	firstName := pods[0].Name
+
+	del := serve(t, srv, http.MethodDelete, "/api/v1/namespaces/default/pods/"+firstName, "")
+	require.Equal(t, http.StatusOK, del.Code, del.Body.String())
+
+	pods, err = podStore.List("default", &pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}})
+	require.NoError(t, err)
+	require.Len(t, pods, 1)
+	assert.True(t, strings.HasPrefix(pods[0].Name, "nginx-rs-"))
+	assert.NotEqual(t, firstName, pods[0].Name)
 }
 
 func TestHarborServesNetRegistryNodesEndpoint(t *testing.T) {
@@ -811,11 +816,15 @@ func TestHarborNodeLostEvictsReplicaSetPodAndSchedulesReplacement(t *testing.T) 
 	rec := serve(t, srv, http.MethodGet, "/api/v1/nodes/node-b/pods", "")
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	replacement, err := podStore.Get("nginx-rs-1", "default")
+	pods, err := podStore.List("default", &pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}})
 	require.NoError(t, err)
+	require.Len(t, pods, 1)
+	replacement := pods[0]
+	assert.True(t, strings.HasPrefix(replacement.Name, "nginx-rs-"))
+	assert.NotEqual(t, "nginx-rs-1", replacement.Name)
 	assert.Equal(t, "node-b", replacement.Spec.NodeName)
 	assert.Empty(t, replacement.Status.Phase)
-	assert.Contains(t, rec.Body.String(), `"name":"nginx-rs-1"`)
+	assert.Contains(t, rec.Body.String(), `"name":"`+replacement.Name+`"`)
 	assert.Contains(t, rec.Body.String(), `"nodeName":"node-b"`)
 }
 

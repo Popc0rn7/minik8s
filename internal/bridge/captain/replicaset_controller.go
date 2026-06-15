@@ -2,8 +2,10 @@ package captain
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"sort"
+	"sync/atomic"
 
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/minilog"
@@ -15,6 +17,8 @@ type ReplicaSetController struct {
 	podStore        store.PodStore
 	replicaSetStore store.ReplicaSetStore
 }
+
+var replicaNameFallbackCounter uint64
 
 func NewReplicaSetController(podStore store.PodStore, replicaSetStore store.ReplicaSetStore) *ReplicaSetController {
 	return &ReplicaSetController{
@@ -145,12 +149,32 @@ func nextReplicaPodName(prefix string, existing []*pod.Pod) string {
 	for _, p := range existing {
 		used[p.Name] = struct{}{}
 	}
-	for i := 1; ; i++ {
-		name := fmt.Sprintf("%s-%d", prefix, i)
+	for i := 0; i < 128; i++ {
+		name := fmt.Sprintf("%s-%s", prefix, randomReplicaSuffix())
 		if _, ok := used[name]; !ok {
 			return name
 		}
 	}
+	for {
+		name := fmt.Sprintf("%s-%x", prefix, atomic.AddUint64(&replicaNameFallbackCounter, 1))
+		if _, ok := used[name]; !ok {
+			return name
+		}
+	}
+}
+
+func randomReplicaSuffix() string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	const length = 5
+	var data [length]byte
+	if _, err := rand.Read(data[:]); err != nil {
+		n := atomic.AddUint64(&replicaNameFallbackCounter, 1)
+		return fmt.Sprintf("%05x", n)
+	}
+	for i := range data {
+		data[i] = alphabet[int(data[i])%len(alphabet)]
+	}
+	return string(data[:])
 }
 
 func filterOwnedPods(pods []*pod.Pod, owner string) []*pod.Pod {

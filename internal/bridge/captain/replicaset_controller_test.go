@@ -2,6 +2,7 @@ package captain
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -82,11 +83,35 @@ func TestReplicaSetControllerReplacesNodeLostOwnedPod(t *testing.T) {
 	require.Len(t, pods, 2)
 	assert.Equal(t, "nginx-rs-1", pods[0].Name)
 	assert.Equal(t, pod.PodUnknown, pods[0].Status.Phase)
-	assert.Equal(t, "nginx-rs-2", pods[1].Name)
+	assert.True(t, strings.HasPrefix(pods[1].Name, "nginx-rs-"))
+	assert.NotEqual(t, "nginx-rs-1", pods[1].Name)
 	assert.Empty(t, pods[1].Status.Phase)
 	updated, err := rsStore.Get("nginx-rs", "default")
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), updated.Status.Replicas)
+}
+
+func TestReplicaSetControllerGeneratedPodNamesDoNotReuseDeletedNames(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	rsStore := store.NewInMemoryReplicaSetStore()
+	require.NoError(t, rsStore.Create(testControllerReplicaSet("nginx-rs", 1)))
+
+	ctrl := NewReplicaSetController(podStore, rsStore)
+	require.NoError(t, ctrl.Sync(context.Background()))
+	pods, err := podStore.List("default", &pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}})
+	require.NoError(t, err)
+	require.Len(t, pods, 1)
+	firstName := pods[0].Name
+	require.True(t, strings.HasPrefix(firstName, "nginx-rs-"))
+
+	require.NoError(t, podStore.Delete(firstName, "default"))
+	require.NoError(t, ctrl.Sync(context.Background()))
+
+	pods, err = podStore.List("default", &pod.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}})
+	require.NoError(t, err)
+	require.Len(t, pods, 1)
+	assert.True(t, strings.HasPrefix(pods[0].Name, "nginx-rs-"))
+	assert.NotEqual(t, firstName, pods[0].Name)
 }
 
 func TestReplicaSetControllerDeletesAllOwnedPodsWhenReplicasZero(t *testing.T) {
