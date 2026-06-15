@@ -6,7 +6,6 @@ import (
 	"time"
 
 	store "minik8s/internal/bridge/logbook"
-	"minik8s/internal/functionrunner"
 	"minik8s/internal/minilog"
 	"minik8s/internal/natslite"
 )
@@ -15,7 +14,7 @@ type Controller struct {
 	functions store.FunctionStore
 	triggers  store.EventTriggerStore
 	natsURL   string
-	activator *Activator
+	invoker   FunctionInvoker
 	mu        sync.Mutex
 	started   map[string]struct{}
 }
@@ -31,7 +30,13 @@ func NewController(functions store.FunctionStore, triggers store.EventTriggerSto
 
 func NewControllerWithActivator(functions store.FunctionStore, triggers store.EventTriggerStore, natsURL string, activator *Activator) *Controller {
 	c := NewController(functions, triggers, natsURL)
-	c.activator = activator
+	c.invoker = activator
+	return c
+}
+
+func NewControllerWithInvoker(functions store.FunctionStore, triggers store.EventTriggerStore, natsURL string, invoker FunctionInvoker) *Controller {
+	c := NewController(functions, triggers, natsURL)
+	c.invoker = invoker
 	return c
 }
 
@@ -67,30 +72,28 @@ func (c *Controller) sync(ctx context.Context) {
 		triggerCopy := trigger.DeepCopy()
 		go func() {
 			minilog.Info("serverless-subscribe", "trigger=%s/%s subject=%s", triggerCopy.Namespace, triggerCopy.Name, triggerCopy.Spec.Subject)
-			err := natslite.Subscribe(ctx, c.natsURL, triggerCopy.Spec.Subject, func(payload []byte) {
+			err := natslite.SubscribeQueue(ctx, c.natsURL, triggerCopy.Spec.Subject, "", func(msg natslite.Message) {
 				fn, err := c.functions.Get(triggerCopy.Spec.FunctionRef.Name, triggerCopy.Namespace)
 				if err != nil {
 					minilog.Warn("serverless-invoke", "trigger=%s/%s error=%v", triggerCopy.Namespace, triggerCopy.Name, err)
 					return
 				}
-				var output string
-				if c.activator != nil {
-					resp, err := c.activator.Invoke(ctx, fn.Namespace, fn.Name, string(payload))
-					if err != nil {
-						minilog.Warn("serverless-invoke", "function=%s/%s error=%v", fn.Namespace, fn.Name, err)
-						return
-					}
-					output = resp.Output
-				} else {
-					output, err = functionrunner.RunPython(ctx, fn, string(payload))
-					if err != nil {
-						minilog.Warn("serverless-invoke", "function=%s/%s error=%v", fn.Namespace, fn.Name, err)
-						return
-					}
+				invoker := c.invoker
+				if invoker == nil {
+					invoker = NewNATSInvoker(nil, c.natsURL, 30*time.Second)
 				}
-				if triggerCopy.Spec.ReplySubject != "" {
-					if err := natslite.Publish(ctx, c.natsURL, triggerCopy.Spec.ReplySubject, []byte(output)); err != nil {
-						minilog.Warn("serverless-reply", "subject=%s error=%v", triggerCopy.Spec.ReplySubject, err)
+				output, err := invoker.InvokeFunction(ctx, fn.Namespace, fn.Name, string(msg.Payload))
+				if err != nil {
+					minilog.Warn("serverless-invoke", "function=%s/%s error=%v", fn.Namespace, fn.Name, err)
+					return
+				}
+				replySubject := triggerCopy.Spec.ReplySubject
+				if msg.Reply != "" {
+					replySubject = msg.Reply
+				}
+				if replySubject != "" {
+					if err := natslite.Publish(ctx, c.natsURL, replySubject, []byte(output)); err != nil {
+						minilog.Warn("serverless-reply", "subject=%s error=%v", replySubject, err)
 					}
 				}
 			})

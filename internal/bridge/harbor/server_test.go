@@ -162,6 +162,7 @@ func TestHarborServerlessCRUDAndInvoke(t *testing.T) {
 		FunctionStore:     store.NewInMemoryFunctionStore(),
 		EventTriggerStore: store.NewInMemoryEventTriggerStore(),
 		WorkflowStore:     store.NewInMemoryWorkflowStore(),
+		FunctionInvoker:   fakeFunctionInvoker{output: "hello"},
 		HTTPClient: &http.Client{Transport: harborRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -233,6 +234,15 @@ type harborRoundTripFunc func(req *http.Request) (*http.Response, error)
 
 func (f harborRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+type fakeFunctionInvoker struct {
+	output string
+	err    error
+}
+
+func (f fakeFunctionInvoker) InvokeFunction(ctx context.Context, namespace, name, input string) (string, error) {
+	return f.output, f.err
 }
 
 func TestHarborReplicaSetCRUDReconcilesPods(t *testing.T) {

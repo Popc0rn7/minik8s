@@ -173,7 +173,7 @@ func (a *Activator) forward(ctx context.Context, fn *function.Function, p *pod.P
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("function pod returned %d: %s", resp.StatusCode, string(body))

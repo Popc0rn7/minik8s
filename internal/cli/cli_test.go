@@ -279,6 +279,7 @@ func TestKubectlCommandExposesOnlyUserResourceCommands(t *testing.T) {
 	assertCommandMissing(t, cmd, "cni")
 	assertCommandMissing(t, cmd, "invoke")
 	assertCommandMissing(t, cmd, "publish")
+	assertCommandMissing(t, cmd, "request")
 }
 
 func TestMinik8sCommandExposesOnlyRuntimeAndUtilityCommands(t *testing.T) {
@@ -295,6 +296,7 @@ func TestMinik8sCommandExposesOnlyRuntimeAndUtilityCommands(t *testing.T) {
 	assertCommandExists(t, cmd, "sailer")
 	assertCommandExists(t, cmd, "invoke")
 	assertCommandExists(t, cmd, "publish")
+	assertCommandExists(t, cmd, "request")
 
 	assertCommandMissing(t, cmd, "apply")
 	assertCommandMissing(t, cmd, "get")
@@ -333,6 +335,7 @@ func TestCLIServerlessApplyGetInvokeDelete(t *testing.T) {
 		FunctionStore:     functionStore,
 		EventTriggerStore: store.NewInMemoryEventTriggerStore(),
 		WorkflowStore:     store.NewInMemoryWorkflowStore(),
+		FunctionInvoker:   cliFakeFunctionInvoker{output: "hello"},
 		HTTPClient: &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			body, _ := io.ReadAll(req.Body)
 			return &http.Response{
@@ -2492,6 +2495,15 @@ func (f cliRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 		req.Body = io.NopCloser(bytes.NewReader(nil))
 	}
 	return f(req)
+}
+
+type cliFakeFunctionInvoker struct {
+	output string
+	err    error
+}
+
+func (f cliFakeFunctionInvoker) InvokeFunction(ctx context.Context, namespace, name, input string) (string, error) {
+	return f.output, f.err
 }
 
 func httptestResponseRecorder(req *http.Request) *responseRecorder {
