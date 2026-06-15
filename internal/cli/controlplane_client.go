@@ -15,6 +15,7 @@ import (
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
 	"minik8s/internal/hpa"
+	"minik8s/internal/job"
 	"minik8s/internal/k8scompat"
 	"minik8s/internal/metrics"
 	"minik8s/internal/node"
@@ -278,6 +279,85 @@ func (c *controlPlaneClient) ApplyFunction(ctx context.Context, fn *function.Fun
 		return c.updateFunction(ctx, fn)
 	}
 	return created, err
+}
+
+func (c *controlPlaneClient) ApplyJob(ctx context.Context, j *job.Job) (*job.Job, error) {
+	created, err := c.createJob(ctx, j)
+	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {
+		return c.updateJob(ctx, j)
+	}
+	return created, err
+}
+
+func (c *controlPlaneClient) ListJobs(ctx context.Context, namespace string) ([]*job.Job, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "jobs"))
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []*job.Job `json:"items"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (c *controlPlaneClient) GetJob(ctx context.Context, name, namespace string) (*job.Job, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "jobs", name))
+	if err != nil {
+		return nil, err
+	}
+	var j job.Job
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &j); err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+
+func (c *controlPlaneClient) DeleteJob(ctx context.Context, name, namespace string) error {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "jobs", name))
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
+}
+
+func (c *controlPlaneClient) UpdateJobStatus(ctx context.Context, name, namespace string, status job.JobStatus) (*job.Job, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "jobs", name, "status"))
+	if err != nil {
+		return nil, err
+	}
+	var updated job.Job
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, status, http.StatusOK, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (c *controlPlaneClient) GetJobLogs(ctx context.Context, name, namespace string) (string, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "jobs", name, "logs"))
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		return "", controlPlaneError{statusCode: resp.StatusCode, status: resp.Status, body: strings.TrimSpace(string(data))}
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func (c *controlPlaneClient) ListFunctions(ctx context.Context, namespace string) ([]*function.Function, error) {
@@ -657,6 +737,30 @@ func (c *controlPlaneClient) updateReplicaSet(ctx context.Context, rs *replicase
 	}
 	var updated replicaset.ReplicaSet
 	if err := c.doJSON(ctx, http.MethodPut, endpoint, rs, http.StatusOK, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (c *controlPlaneClient) createJob(ctx context.Context, j *job.Job) (*job.Job, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(j.Namespace), "jobs"))
+	if err != nil {
+		return nil, err
+	}
+	var created job.Job
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, j, http.StatusCreated, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (c *controlPlaneClient) updateJob(ctx context.Context, j *job.Job) (*job.Job, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(j.Namespace), "jobs", j.Name))
+	if err != nil {
+		return nil, err
+	}
+	var updated job.Job
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, j, http.StatusOK, &updated); err != nil {
 		return nil, err
 	}
 	return &updated, nil

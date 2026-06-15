@@ -112,7 +112,8 @@ bridge fdb show dev mk8s-vxlan
 | HPA 和 metrics | `hpa.md`、`metrics-server.md` | 当前已有能力，按 addon 测 |
 | DNS host/path gateway | `dns.md` | 当前已有能力，按 addon 测 |
 | Serverless Function/EventTrigger/Workflow/NATS | `serverless-nats.md` | 当前最小闭环；完整 scale-to-0 未实现 |
-| PV/PVC、GPU、Security Context、MicroService mesh | 无可通过 testcase | 未实现或未纳入当前验收 |
+| Job GPU/Slurm 提交、状态、日志、隔离 | `job-gpu.md` | 当前最小闭环；真机验证依赖 SSH 凭据、submitter 镜像和 Harbor endpoint 配置 |
+| PV/PVC、Security Context、MicroService mesh | 无可通过 testcase | 未实现或未纳入当前验收 |
 
 ## Testcase 入口
 
@@ -130,6 +131,7 @@ bridge fdb show dev mk8s-vxlan
 | `hpa.md` | 需要 metrics 样本 | HPA 根据 Docker metrics 调整 ReplicaSet。 |
 | `dns.md` | 需要 dns addon | DNS 对象和 gateway host/path routing。 |
 | `serverless-nats.md` | 需要 serverless addon | Function/EventTrigger/Workflow + NATS publish。 |
+| `job-gpu.md` | 需要交我算账号和 submitter 镜像 | Job + Slurm GPU 后端，CUDA vector add、日志和隔离演示。 |
 | `testing-agent-prompt.md` | 辅助文档 | 给测试代理的执行、证据和恢复要求。 |
 
 ## TODO 验证进度
@@ -149,6 +151,7 @@ bridge fdb show dev mk8s-vxlan
 - [ ] `hpa.md`：HPA metrics、扩容和缩容。
 - [ ] `dns.md`：DNS 对象和 gateway host/path routing。
 - [ ] `serverless-nats.md`：Function/EventTrigger/Workflow + NATS publish。
+- [ ] `job-gpu.md`：Job + Slurm GPU 后端、CUDA vector add、日志和隔离演示。
 
 最近人工验证记录：
 
@@ -179,6 +182,7 @@ node-a 测试终端：
 ./kubectl get functions; or true
 ./kubectl get eventtriggers; or true
 ./kubectl get workflows; or true
+./kubectl get jobs; or true
 ```
 
 清理常见 API 对象：
@@ -193,6 +197,8 @@ for item in \
   "function echo" \
   "eventtrigger echo-events" \
   "workflow echo-chain" \
+  "job cuda-add" \
+  "job cuda-add-2" \
   "pod nginx-pod" \
   "pod nginx-pod-2" \
   "pod nginx-node-a" \

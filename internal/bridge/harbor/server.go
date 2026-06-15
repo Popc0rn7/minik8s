@@ -24,6 +24,7 @@ import (
 	"minik8s/internal/function"
 	"minik8s/internal/functionrunner"
 	"minik8s/internal/hpa"
+	"minik8s/internal/job"
 	"minik8s/internal/k8scompat"
 	"minik8s/internal/metrics"
 	"minik8s/internal/minilog"
@@ -42,6 +43,7 @@ type Config struct {
 	DNSStore           store.DNSStore
 	ReplicaSetStore    store.ReplicaSetStore
 	HPAStore           store.HPAStore
+	JobStore           store.JobStore
 	MetricsStore       store.MetricsStore
 	NodeStore          store.NodeStore
 	K8sCompatStore     store.K8sCompatStore
@@ -54,6 +56,7 @@ type Config struct {
 	ClusterCIDR        string
 	NodeCIDRMaskSize   int
 	BootstrapTokenPath string
+	HarborURL          string
 }
 
 type Server struct {
@@ -62,6 +65,7 @@ type Server struct {
 	dns                store.DNSStore
 	replicaSets        store.ReplicaSetStore
 	hpas               store.HPAStore
+	jobs               store.JobStore
 	metrics            store.MetricsStore
 	nodes              store.NodeStore
 	k8sCompat          store.K8sCompatStore
@@ -76,6 +80,7 @@ type Server struct {
 	bootstrapTokenPath string
 	nodeTokens         *nodeTokenRegistry
 	heartbeats         *heartbeatManager
+	harborURL          string
 }
 
 func New(config Config) *Server {
@@ -98,6 +103,10 @@ func New(config Config) *Server {
 	hpaStore := config.HPAStore
 	if hpaStore == nil {
 		hpaStore = store.NewInMemoryHPAStore()
+	}
+	jobStore := config.JobStore
+	if jobStore == nil {
+		jobStore = store.NewInMemoryJobStore()
 	}
 	metricsStore := config.MetricsStore
 	if metricsStore == nil {
@@ -146,6 +155,7 @@ func New(config Config) *Server {
 		dns:                dnsStore,
 		replicaSets:        replicaSetStore,
 		hpas:               hpaStore,
+		jobs:               jobStore,
 		metrics:            metricsStore,
 		nodes:              nodeStore,
 		k8sCompat:          k8sCompatStore,
@@ -159,6 +169,7 @@ func New(config Config) *Server {
 		nodeWatch:          newNodeWatchHub(),
 		bootstrapTokenPath: config.BootstrapTokenPath,
 		nodeTokens:         nodeTokens,
+		harborURL:          config.HarborURL,
 	}
 	server.heartbeats = newHeartbeatManager(heartbeatManagerConfig{
 		pods:        podStore,
@@ -251,6 +262,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"kind":       "HorizontalPodAutoscaler",
 				"verbs":      []string{"get", "list", "create", "update", "delete"},
 			}, {
+				"name":       "jobs",
+				"namespaced": true,
+				"kind":       "Job",
+				"verbs":      []string{"get", "list", "create", "update", "delete"},
+			}, {
 				"name":       "nodes",
 				"namespaced": false,
 				"kind":       "Node",
@@ -329,6 +345,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.handleReplicaSets(w, r, namespace, parts[5:])
 		case "horizontalpodautoscalers":
 			s.handleHPAs(w, r, namespace, parts[5:])
+		case "jobs":
+			s.handleJobs(w, r, namespace, parts[5:])
 		case "functions":
 			s.handleFunctions(w, r, namespace, parts[5:])
 		case "eventtriggers":
@@ -1470,6 +1488,155 @@ func (s *Server) handleFunctions(w http.ResponseWriter, r *http.Request, namespa
 	}
 }
 
+func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
+	name := ""
+	if len(parts) > 0 {
+		name = parts[0]
+	}
+	if len(parts) == 2 && parts[1] == "status" {
+		s.handleJobStatus(w, r, namespace, name)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "logs" {
+		s.handleJobLogs(w, r, namespace, name)
+		return
+	}
+	if len(parts) > 1 {
+		writeStatus(w, http.StatusNotFound, "NotFound", "job path not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		if name != "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "create must target job collection")
+			return
+		}
+		j, err := readJob(r.Body, namespace, "")
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if j.Status.Phase == "" {
+			j.Status.Phase = job.JobPending
+		}
+		if err := s.jobs.Create(j); err != nil {
+			writeStoreError(w, err, "jobs", j.Name)
+			return
+		}
+		if err := s.syncJobs(r.Context()); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		updated, err := s.jobs.Get(j.Name, j.Namespace)
+		if err != nil {
+			writeStoreError(w, err, "jobs", j.Name)
+			return
+		}
+		writeJSON(w, http.StatusCreated, updated)
+	case http.MethodGet:
+		if name == "" {
+			items, err := s.jobs.List(namespace, nil)
+			if err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+				return
+			}
+			sortJobs(items)
+			writeJSON(w, http.StatusOK, map[string]any{"kind": "JobList", "apiVersion": job.APIVersion, "items": items})
+			return
+		}
+		j, err := s.jobs.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "jobs", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, j)
+	case http.MethodPut:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "update must target a job")
+			return
+		}
+		existing, err := s.jobs.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "jobs", name)
+			return
+		}
+		j, err := readJob(r.Body, namespace, name)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		j.Status = existing.Status
+		if err := s.jobs.Update(j); err != nil {
+			writeStoreError(w, err, "jobs", name)
+			return
+		}
+		if err := s.syncJobs(r.Context()); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		updated, err := s.jobs.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "jobs", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, updated)
+	case http.MethodDelete:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target a job")
+			return
+		}
+		ctrl := captain.NewJobController(s.pods, s.services, s.jobs, captain.JobControllerConfig{})
+		if err := ctrl.DeleteJob(r.Context(), name, namespace); err != nil {
+			writeStoreError(w, err, "jobs", name)
+			return
+		}
+		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("job %q deleted", name))
+	default:
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+	}
+}
+
+func (s *Server) handleJobStatus(w http.ResponseWriter, r *http.Request, namespace, name string) {
+	if r.Method != http.MethodPut {
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	j, err := s.jobs.Get(name, namespace)
+	if err != nil {
+		writeStoreError(w, err, "jobs", name)
+		return
+	}
+	var status job.JobStatus
+	if err := decodeObject(r.Body, &status); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	j.Status = status
+	if err := s.jobs.Update(j); err != nil {
+		writeStoreError(w, err, "jobs", name)
+		return
+	}
+	writeJSON(w, http.StatusOK, j)
+}
+
+func (s *Server) handleJobLogs(w http.ResponseWriter, r *http.Request, namespace, name string) {
+	if r.Method != http.MethodGet {
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	j, err := s.jobs.Get(name, namespace)
+	if err != nil {
+		writeStoreError(w, err, "jobs", name)
+		return
+	}
+	body := j.Status.LastOutput
+	if body == "" {
+		body = j.Status.LastError
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, body)
+}
+
 func (s *Server) handleFunctionInvoke(w http.ResponseWriter, r *http.Request, namespace, name string) {
 	if r.Method != http.MethodPost {
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
@@ -1910,6 +2077,23 @@ func readFunction(r io.Reader, namespace, name string) (*function.Function, erro
 	return &fn, nil
 }
 
+func readJob(r io.Reader, namespace, name string) (*job.Job, error) {
+	var j job.Job
+	if err := decodeObject(r, &j); err != nil {
+		return nil, err
+	}
+	if namespace != "" {
+		j.Namespace = namespace
+	}
+	if name != "" {
+		j.Name = name
+	}
+	if err := podyaml.DefaultAndValidateJob(&j); err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+
 func readEventTrigger(r io.Reader, namespace, name string) (*eventtrigger.EventTrigger, error) {
 	var trigger eventtrigger.EventTrigger
 	if err := decodeObject(r, &trigger); err != nil {
@@ -1956,6 +2140,11 @@ func (s *Server) syncReplicaSets(ctx context.Context) error {
 
 func (s *Server) syncHPAs(ctx context.Context) error {
 	ctrl := captain.NewHPAController(s.pods, s.replicaSets, s.hpas, s.metrics, captain.HPAControllerConfig{})
+	return ctrl.Sync(ctx)
+}
+
+func (s *Server) syncJobs(ctx context.Context) error {
+	ctrl := captain.NewJobController(s.pods, s.services, s.jobs, captain.JobControllerConfig{HarborURL: s.harborURL, NodeStore: s.nodes})
 	return ctrl.Sync(ctx)
 }
 
@@ -2093,6 +2282,15 @@ func sortFunctions(functions []*function.Function) {
 	})
 }
 
+func sortJobs(jobs []*job.Job) {
+	sort.Slice(jobs, func(i, k int) bool {
+		if jobs[i].Namespace == jobs[k].Namespace {
+			return jobs[i].Name < jobs[k].Name
+		}
+		return jobs[i].Namespace < jobs[k].Namespace
+	})
+}
+
 func sortEventTriggers(triggers []*eventtrigger.EventTrigger) {
 	sort.Slice(triggers, func(i, j int) bool {
 		if triggers[i].Namespace == triggers[j].Namespace {
@@ -2171,6 +2369,10 @@ func writeStoreError(w http.ResponseWriter, err error, resource, name string) {
 	case errors.Is(err, store.ErrHPANotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
 	case errors.Is(err, store.ErrHPAAlreadyExists):
+		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
+	case errors.Is(err, store.ErrJobNotFound):
+		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
+	case errors.Is(err, store.ErrJobAlreadyExists):
 		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
 	case errors.Is(err, store.ErrFunctionNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))

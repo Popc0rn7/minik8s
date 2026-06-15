@@ -145,9 +145,13 @@
 
 ### GPU 应用
 
-- [ ] Slurm/交我算提交任务抽象未实现。
-- [ ] GPU job YAML、上传、编译运行、结果回传未实现。
-- [ ] CUDA 示例程序和隔离演示未实现。
+- [x] `Job` + Slurm submitter 最小抽象已接入：`kind: Job`、
+  `selector.matchLabels.accelerator=gpu`、Slurm 字段、submitter Pod/Service、状态和日志。
+- [x] CUDA vector add 示例和 `docs/testcase/job-gpu.md` 验收步骤已添加。
+- [ ] SSH 凭据的 Secret/volume 注入尚未实现；当前不能把密码写入 YAML。
+- [ ] Harbor endpoint 注入仍是简化默认值，多机真机环境需要显式配置为 node-a LAN 地址。
+- [ ] submitter 镜像需要发布到 GHCR 并确保 worker 可拉取。
+- [ ] tiled matrix multiplication 加分示例未实现。
 
 ### Security Context
 

@@ -24,6 +24,7 @@ const (
 	dnsPrefix          = "/registry/dns/"
 	replicaSetPrefix   = "/registry/replicasets/"
 	hpaPrefix          = "/registry/horizontalpodautoscalers/"
+	jobPrefix          = "/registry/jobs/"
 	nodePrefix         = "/registry/nodes/"
 	functionPrefix     = "/registry/functions/"
 	eventTriggerPrefix = "/registry/eventtriggers/"

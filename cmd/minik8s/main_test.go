@@ -45,6 +45,7 @@ func TestNewBridgeConfigDoesNotInjectServiceProxy(t *testing.T) {
 		store.NewInMemoryDNSStore(),
 		store.NewInMemoryReplicaSetStore(),
 		store.NewInMemoryHPAStore(),
+		store.NewInMemoryJobStore(),
 		store.NewInMemoryMetricsStore(),
 		store.NewInMemoryNodeStore(),
 		store.NewInMemoryK8sCompatStore(),
@@ -56,6 +57,7 @@ func TestNewBridgeConfigDoesNotInjectServiceProxy(t *testing.T) {
 	assert.NotNil(t, config.PodStore)
 	assert.NotNil(t, config.ServiceStore)
 	assert.NotNil(t, config.ReplicaSetStore)
+	assert.NotNil(t, config.JobStore)
 	assert.NotNil(t, config.NodeStore)
 	assert.NotNil(t, config.K8sCompatStore)
 	assert.NotNil(t, config.FunctionStore)
@@ -67,7 +69,7 @@ func TestOpenStoresUsesEtcdBackendForPodServiceReplicaSetAndNodeStores(t *testin
 	endpoint := newEmbeddedEtcdEndpoint(t)
 	t.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", endpoint)
 
-	podStore, serviceStore, dnsStore, replicaSetStore, hpaStore, metricsStore, nodeStore, k8sCompatStore, functionStore, eventTriggerStore, workflowStore, closeStores, err := openStores()
+	podStore, serviceStore, dnsStore, replicaSetStore, hpaStore, jobStore, metricsStore, nodeStore, k8sCompatStore, functionStore, eventTriggerStore, workflowStore, closeStores, err := openStores()
 	require.NoError(t, err)
 	defer closeStores()
 
@@ -76,6 +78,7 @@ func TestOpenStoresUsesEtcdBackendForPodServiceReplicaSetAndNodeStores(t *testin
 	assert.IsType(t, &store.EtcdDNSStore{}, dnsStore)
 	assert.IsType(t, &store.EtcdReplicaSetStore{}, replicaSetStore)
 	assert.IsType(t, &store.EtcdHPAStore{}, hpaStore)
+	assert.IsType(t, &store.EtcdJobStore{}, jobStore)
 	assert.IsType(t, &store.InMemoryMetricsStore{}, metricsStore)
 	assert.IsType(t, &store.EtcdNodeStore{}, nodeStore)
 	assert.IsType(t, &store.InMemoryK8sCompatStore{}, k8sCompatStore)

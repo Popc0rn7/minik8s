@@ -7,6 +7,7 @@ import (
 	"minik8s/internal/dns"
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
+	"minik8s/internal/job"
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
@@ -73,6 +74,81 @@ func DefaultAndValidatePod(p *pod.Pod) error {
 		}
 	}
 
+	return nil
+}
+
+func DefaultAndValidateJob(j *job.Job) error {
+	if j == nil {
+		return fmt.Errorf("job is nil")
+	}
+	if j.Kind != "" && j.Kind != job.Kind {
+		return fmt.Errorf("kind must be Job, got %q", j.Kind)
+	}
+	if j.Kind == "" {
+		j.Kind = job.Kind
+	}
+	if j.APIVersion == "" {
+		j.APIVersion = job.APIVersion
+	}
+	if j.Namespace == "" {
+		j.Namespace = "default"
+	}
+	if strings.TrimSpace(j.Name) == "" {
+		return fmt.Errorf("metadata.name is required")
+	}
+	if j.Spec.Selector.MatchLabels == nil || strings.TrimSpace(j.Spec.Selector.MatchLabels["accelerator"]) == "" {
+		return fmt.Errorf("spec.selector.matchLabels.accelerator is required")
+	}
+	if j.Spec.Selector.MatchLabels["accelerator"] != "gpu" {
+		return fmt.Errorf("spec.selector.matchLabels.accelerator must be gpu, got %q", j.Spec.Selector.MatchLabels["accelerator"])
+	}
+	if len(j.Spec.Source.Files) == 0 {
+		return fmt.Errorf("spec.source.files must contain at least one file")
+	}
+	for i, file := range j.Spec.Source.Files {
+		if strings.TrimSpace(file) == "" {
+			return fmt.Errorf("spec.source.files[%d] is required", i)
+		}
+	}
+	if strings.TrimSpace(j.Spec.Source.Command) == "" {
+		return fmt.Errorf("spec.source.command is required")
+	}
+	if j.Spec.Slurm.Partition == "" {
+		j.Spec.Slurm.Partition = "debuga100"
+	}
+	if j.Spec.Slurm.QOS == "" {
+		j.Spec.Slurm.QOS = "debug"
+	}
+	if j.Spec.Slurm.Nodes == 0 {
+		j.Spec.Slurm.Nodes = 1
+	}
+	if j.Spec.Slurm.NTasksPerNode == 0 {
+		j.Spec.Slurm.NTasksPerNode = 1
+	}
+	if j.Spec.Slurm.CPUsPerTask == 0 {
+		j.Spec.Slurm.CPUsPerTask = 4
+	}
+	if j.Spec.Slurm.GRES == "" {
+		j.Spec.Slurm.GRES = "gpu:1"
+	}
+	if j.Spec.Slurm.Time == "" {
+		j.Spec.Slurm.Time = "00:20:00"
+	}
+	if strings.TrimSpace(j.Spec.Remote.Host) == "" {
+		return fmt.Errorf("spec.remote.host is required")
+	}
+	if strings.TrimSpace(j.Spec.Remote.Username) == "" {
+		return fmt.Errorf("spec.remote.username is required")
+	}
+	if strings.TrimSpace(j.Spec.Remote.Workdir) == "" {
+		return fmt.Errorf("spec.remote.workdir is required")
+	}
+	if j.Status.Phase == "" {
+		j.Status.Phase = job.JobPending
+	}
+	if j.Labels == nil {
+		j.Labels = map[string]string{}
+	}
 	return nil
 }
 

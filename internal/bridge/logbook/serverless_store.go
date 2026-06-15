@@ -13,6 +13,7 @@ import (
 
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
+	"minik8s/internal/job"
 	"minik8s/internal/pod"
 	"minik8s/internal/workflow"
 )
@@ -685,6 +686,8 @@ func objectName(obj any) string {
 	switch item := obj.(type) {
 	case *function.Function:
 		return item.Name
+	case *job.Job:
+		return item.Name
 	case *eventtrigger.EventTrigger:
 		return item.Name
 	case *workflow.Workflow:
@@ -698,6 +701,8 @@ func objectNamespace(obj any) string {
 	switch item := obj.(type) {
 	case *function.Function:
 		return item.Namespace
+	case *job.Job:
+		return item.Namespace
 	case *eventtrigger.EventTrigger:
 		return item.Namespace
 	case *workflow.Workflow:
@@ -710,6 +715,8 @@ func objectNamespace(obj any) string {
 func objectLabels(obj any) map[string]string {
 	switch item := obj.(type) {
 	case *function.Function:
+		return item.Labels
+	case *job.Job:
 		return item.Labels
 	case *eventtrigger.EventTrigger:
 		return item.Labels

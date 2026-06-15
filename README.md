@@ -80,7 +80,11 @@ Sailer的核心责任包括：
 
 ### GPU支持
 
-> Not Implemented Yet
+当前提供 `Job` + Slurm submitter 的最小 GPU 作业后端。它不是原生 GPU device
+plugin，也不把交我算 Slurm 节点加入 Minik8s；用户通过 `kind: Job` 和
+`spec.selector.matchLabels.accelerator: gpu` 提交 CUDA 源码与编译运行命令，控制面为每个
+Job 创建独立 submitter Pod/Service，由 submitter 通过 SSH/SCP 提交到交我算 Slurm
+队列并回收 `.out/.err`。
 
 
 ## 当前能力
@@ -106,15 +110,18 @@ Sailer的核心责任包括：
   副本，并在删除 ReplicaSet 时级联删除 owned Pods。
 - HPA YAML、API、CLI、file/etcd store、控制器和 `sailer` Docker metrics 上报；
   当前只支持基于 ReplicaSet 的 CPU/Memory utilization 扩缩容。
+- Job YAML、API、CLI、file/etcd store、控制器和 GPU/Slurm submitter 最小闭环；
+  当前只支持 `accelerator=gpu` 的 Slurm 后端，真机运行依赖 SSH 凭据、submitter 镜像和
+  Harbor endpoint 配置。
 - Logbook 状态存储：默认本地 JSON；设置 `MINIK8S_LOGBOOK_ENDPOINTS` 后，
-  Pod、Service、ReplicaSet、HPA、Node 使用 etcd-backed store。
+  Pod、Service、ReplicaSet、HPA、Job、Node 使用 etcd-backed store。
 - 控制面重启后可从 file/etcd 恢复声明对象；worker 继续心跳后状态重新收敛。
 
 尚未实现或不应作为当前版本承诺：
 
 - DNS 对象、域名解析和同 host 多 path 转发。
 - Serverless 的事件 ack/retry、Workflow 自动执行、scale-to-0。
-- PV/PVC 持久化卷、GPU 应用、Security Context。
+- PV/PVC 持久化卷、Security Context。
 - 完整 Kubernetes API machinery，例如 watch、resourceVersion、admission、
   RBAC、EndpointSlice、probe 执行和资源感知调度。
 
@@ -265,7 +272,7 @@ etcd/Logbook 流程见 [docs/testcase/logbook.md](docs/testcase/logbook.md) 和
 | 容错 | 部分完成 | 控制面状态可持久化，重启后可恢复对象；Node heartbeat 可标记 Unknown；没有完整故障自愈和副本重调度。 |
 | 自选 Serverless | 部分完成 | Function/EventTrigger/Workflow 对象、YAML/API/CLI、file/etcd store、HTTP invoke、NATS 订阅触发和 publish/doctor 辅助命令已有；事件 ack/retry、Workflow 自动执行、scale-to-0 未实现。 |
 | 个人 PV/PVC | 未实现 | 尚无 PV/PVC 抽象和多机存储实现。 |
-| 个人 GPU | 未实现 | 尚无 Slurm/GPU job 抽象。 |
+| 个人 GPU | 部分完成 | `Job` + Slurm submitter 最小闭环已有；真机验证依赖 SSH 凭据注入、submitter 镜像发布/拉取和 Harbor endpoint 配置，不是原生 GPU 调度。 |
 | 个人 Security Context | 未实现 | 尚无 runAsUser、runAsGroup、fsGroup 映射。 |
 
 ## 测试与当前验证基线
