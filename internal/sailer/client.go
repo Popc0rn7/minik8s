@@ -24,9 +24,18 @@ type NodeHeartbeat struct {
 type PodClient interface {
 	ListAssignedPods(ctx context.Context, heartbeat NodeHeartbeat) ([]*pod.Pod, error)
 	ListServices(ctx context.Context) ([]*service.Service, error)
+	GetClusterConfig(ctx context.Context) (*ClusterConfig, error)
 	UpdatePodStatus(ctx context.Context, p *pod.Pod) error
 	UpdateNodeStatus(ctx context.Context, nodeName string, status node.NodeStatus) error
 	UpdateNodeMetrics(ctx context.Context, nodeName string, podMetrics []*metrics.PodMetrics) error
+}
+
+type ClusterConfig struct {
+	Kind          string `json:"kind"`
+	APIVersion    string `json:"apiVersion"`
+	ClusterDNS    string `json:"clusterDNS"`
+	ClusterDomain string `json:"clusterDomain"`
+	DNSEnabled    bool   `json:"dnsEnabled"`
 }
 
 type HTTPPodClient struct {
@@ -153,6 +162,31 @@ func (c *HTTPPodClient) ListServices(ctx context.Context) ([]*service.Service, e
 		return nil, err
 	}
 	return list.Items, nil
+}
+
+func (c *HTTPPodClient) GetClusterConfig(ctx context.Context) (*ClusterConfig, error) {
+	endpoint, err := c.url("/api/v1/cluster/config")
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.authorize(req)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get cluster config: %s", responseError(resp))
+	}
+	var config ClusterConfig
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return nil, err
+	}
+	return &config, nil
 }
 
 func (c *HTTPPodClient) UpdatePodStatus(ctx context.Context, p *pod.Pod) error {

@@ -66,6 +66,20 @@ func TestPodControllerPassesRuntimeConfigFromPodSpec(t *testing.T) {
 	assert.Equal(t, "128Mi", call.Config.Resources.Limits.Memory)
 }
 
+func TestPodControllerPassesClusterDNSSearchDomains(t *testing.T) {
+	mockRuntime := mock.NewMockRuntime()
+	podStore := NewMockPodStore()
+	ctrl := NewPodControllerWithNetworkAndDNS(mockRuntime, podStore, nil, "192.168.1.8")
+	p := newTestPod("web", "default", pod.RestartPolicyAlways)
+	require.NoError(t, podStore.Create(p))
+
+	ctrl.Sync(context.Background())
+
+	require.Len(t, mockRuntime.CreateSandboxConfigs, 1)
+	assert.Equal(t, []string{"192.168.1.8"}, mockRuntime.CreateSandboxConfigs[0].DNS)
+	assert.Equal(t, []string{"default.svc.cluster.local", "svc.cluster.local", "cluster.local"}, mockRuntime.CreateSandboxConfigs[0].DNSSearch)
+}
+
 func TestPodControllerDeletePodCleansRuntimeAndStore(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := NewMockPodStore()

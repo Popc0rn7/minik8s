@@ -44,6 +44,29 @@ func TestDNSCRUD(t *testing.T) {
 	}
 }
 
+func TestDNSRejectsHostClaimedByAnotherObject(t *testing.T) {
+	server := New(Config{})
+	first := []byte(`{"kind":"DNS","apiVersion":"v1","metadata":{"name":"web"},"spec":{"host":"example.com","paths":[{"path":"/","serviceName":"web","servicePort":80}]}}`)
+	second := []byte(`{"kind":"DNS","apiVersion":"v1","metadata":{"name":"api"},"spec":{"host":"EXAMPLE.com","paths":[{"path":"/api","serviceName":"api","servicePort":80}]}}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/namespaces/default/dns", bytes.NewReader(first))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create first status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/namespaces/default/dns", bytes.NewReader(second))
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("create conflicting status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "already claimed") {
+		t.Fatalf("conflict body = %s", rec.Body.String())
+	}
+}
+
 func TestAPIResourcesIncludesDNS(t *testing.T) {
 	rec := httptest.NewRecorder()
 	New(Config{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1", nil))

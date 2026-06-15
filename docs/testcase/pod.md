@@ -9,6 +9,7 @@
 | --- | --- | --- | --- |
 | POD-01 | 无 CNI 基础 Pod、hostPort、delete 清理 | node-a | 删除 Pod，恢复 node-a 的 `sailer run` |
 | POD-02 | hostPath volume 与 CPU/memory limit | node-a，必要时 node-b 辅助检查 | 删除 Pod，删除 marker 文件 |
+| POD-02B | 多容器 localhost 通信与共享 volume | node-a，必要时实际运行节点辅助检查 | 删除 Pod，删除 marker 文件 |
 | POD-03 | restartPolicy 崩溃重启 | node-a | 删除 Pod |
 | POD-04 | 双 worker 心跳与未指定 nodeName 的调度 | node-a + node-b | 删除 Pod，保持两个节点 Ready |
 | POD-05 | NodeLost 后 Pod Unknown 与 Service endpoint 移除 | node-a + node-b | 重启 node-b 的 `sailer run`，删除 Pod 和 Service |
@@ -177,6 +178,106 @@ docker ps -a --filter label=minik8s.pod.name=volume-resource-pod --format '{{.Na
 
 - marker 文件不存在：确认容器已 Running，再检查实际运行节点上的 hostPath 目录权限。
 - 资源值为 0：确认使用的是 workload 容器 `volume-resource-pod-writer`，不是 sandbox。
+
+## POD-02B：多容器 localhost 通信与共享 volume
+
+目标：验证同一 Pod 内多个容器共享网络命名空间和 volume。一个容器提供 HTTP 服务，另一个
+容器通过 `localhost` 访问该服务并把结果写入共享 volume。
+
+机器：node-a 执行 CLI。Pod 可能被调度到 node-a 或 node-b；Docker exec 和 marker 文件检查
+需要在实际运行节点执行。
+
+前置：node-a/node-b 均运行默认 `sailer run`，`./kubectl get nodes` 能看到两个节点为 `Ready`。
+
+```fish
+./kubectl delete pod multicontainer-localhost -n demo; or true
+mkdir -p /tmp/minik8s-multicontainer
+rm -f /tmp/minik8s-multicontainer/result
+```
+
+创建临时 YAML：
+
+```fish
+begin
+  echo 'kind: Pod'
+  echo 'apiVersion: v1'
+  echo 'metadata:'
+  echo '  name: multicontainer-localhost'
+  echo '  namespace: demo'
+  echo '  labels:'
+  echo '    app: multicontainer-localhost'
+  echo 'spec:'
+  echo '  containers:'
+  echo '  - name: web'
+  echo '    image: python'
+  echo '    imageTag: "3.12-alpine"'
+  echo '    command: ["sh", "-c"]'
+  echo '    args: ["mkdir -p /srv && echo pod-localhost-ok > /srv/index.html && python -m http.server 8080 -d /srv"]'
+  echo '    ports:'
+  echo '    - containerPort: 8080'
+  echo '    volumeMounts:'
+  echo '    - name: shared'
+  echo '      mountPath: /shared'
+  echo '  - name: client'
+  echo '    image: busybox'
+  echo '    imageTag: latest'
+  echo '    command: ["sh", "-c"]'
+  echo '    args: ["sleep 3; wget -qO- http://127.0.0.1:8080 > /shared/result; sleep 3600"]'
+  echo '    volumeMounts:'
+  echo '    - name: shared'
+  echo '      mountPath: /shared'
+  echo '  volumes:'
+  echo '  - name: shared'
+  echo '    hostPath:'
+  echo '      path: /tmp/minik8s-multicontainer'
+  echo '      type: Directory'
+  echo '  restartPolicy: Always'
+end > /tmp/minik8s-pod-multicontainer.yaml
+```
+
+流程：
+
+```fish
+./kubectl apply -f /tmp/minik8s-pod-multicontainer.yaml
+sleep 10
+./kubectl get pod multicontainer-localhost -n demo -o yaml
+./kubectl describe pod multicontainer-localhost -n demo
+```
+
+根据 `describe pod` 中的 Node，到实际运行节点执行：
+
+```fish
+cat /tmp/minik8s-multicontainer/result
+set WEB_CID (docker ps -q --filter label=minik8s.pod.name=multicontainer-localhost --filter label=minik8s.container.name=web)
+set CLIENT_CID (docker ps -q --filter label=minik8s.pod.name=multicontainer-localhost --filter label=minik8s.container.name=client)
+docker exec "$CLIENT_CID" wget -qO- http://127.0.0.1:8080
+docker inspect "$WEB_CID" --format '{{json .HostConfig.NetworkMode}} {{json .HostConfig.Mounts}}'
+docker inspect "$CLIENT_CID" --format '{{json .HostConfig.NetworkMode}} {{json .HostConfig.Mounts}}'
+```
+
+期望：
+
+- Pod 有两个 workload 容器 `web` 和 `client`，最终为 `Running`。
+- `client` 容器内访问 `http://127.0.0.1:8080` 返回 `pod-localhost-ok`。
+- 宿主机共享目录 `/tmp/minik8s-multicontainer/result` 内容为 `pod-localhost-ok`。
+- 两个 workload 容器都挂载同一个 shared volume。
+
+恢复状态：
+
+```fish
+./kubectl delete pod multicontainer-localhost -n demo; or true
+rm -f /tmp/minik8s-pod-multicontainer.yaml
+rm -f /tmp/minik8s-multicontainer/result
+sleep 6
+docker ps -a --filter label=minik8s.pod.name=multicontainer-localhost --format '{{.Names}} {{.Status}}'
+```
+
+失败排查：
+
+- `localhost` 访问失败：确认当前 runtime 是否让同 Pod workload 容器加入同一个 sandbox
+  network namespace，而不是各自独立网络。
+- marker 文件不存在：先确认 `client` 容器仍在运行，再查看 `docker logs` 或容器退出状态。
+- Pod 长时间 Pending：确认 `demo` namespace 不影响调度，且至少一个 Node Ready。
 
 ## POD-03：崩溃后重启
 
@@ -459,11 +560,14 @@ go test ./internal/sailer -run 'SandboxCreationFailure|SyncOnce' -count=1 -v
 ```fish
 ./kubectl delete service nginx-service; or true
 ./kubectl delete pod nginx-node-b; or true
+./kubectl delete pod multicontainer-localhost -n demo; or true
 ./kubectl delete pod nginx-pod-2; or true
 ./kubectl delete pod busybox-client; or true
 ./kubectl delete pod volume-resource-pod -n demo; or true
 ./kubectl delete pod nginx-pod; or true
 rm -f /tmp/minik8s-nginx.html
+rm -f /tmp/minik8s-pod-multicontainer.yaml
+rm -f /tmp/minik8s-multicontainer/result
 rm -f /tmp/minik8s-case-data/marker
 sleep 6
 ./kubectl get nodes

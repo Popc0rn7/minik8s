@@ -98,5 +98,13 @@ sleep 8
 ## 边界
 
 - 当前 metrics-server 是 bridge 直接提供 metrics API。
-- 未实现 Kubernetes API aggregation、TLS、RBAC、完整 metrics-server scrape 逻辑。
+- metrics addon 不是真实 scraper；sailer 上报 Docker stats 后，bridge 只在内存中保存
+  最新样本，bridge 重启会丢失 metrics。
+- CPU 需要相邻两轮样本计算 delta，首轮可能为空；API 没有 freshness gate，可能返回
+  stale 样本。
+- NodeMetrics 由当前 PodMetrics 汇总得到，不是节点原生指标。
+- 未实现 Kubernetes API aggregation、TLS、RBAC、完整 metrics-server scrape 逻辑、
+  cAdvisor 和 custom/external metrics。
 - HPA 可以复用这些 metrics 样本；样本缺失时 HPA 会进入 `MetricsUnavailable`。
+- 当前验收只证明 `sailer -> bridge -> metrics.k8s.io -> kubectl top` 最小链路；后续
+  改造目标是真实 metrics-server/cAdvisor 或等价 scraper。

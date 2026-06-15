@@ -11,6 +11,7 @@ import (
 // MockRuntime implements runtime.ContainerRuntime for sailer and CLI tests.
 type MockRuntime struct {
 	CreateSandboxCalls   []string
+	CreateSandboxConfigs []*runtime.SandboxConfig
 	StartSandboxCalls    []string
 	StopSandboxCalls     []string
 	RemoveSandboxCalls   []string
@@ -65,6 +66,14 @@ func (m *MockRuntime) CreateSandbox(ctx context.Context, config *runtime.Sandbox
 	id := fmt.Sprintf("sandbox-%d", m.nextSandbox)
 	m.nextSandbox++
 	m.CreateSandboxCalls = append(m.CreateSandboxCalls, id)
+	if config != nil {
+		cp := *config
+		cp.Labels = cloneLabels(config.Labels)
+		cp.Ports = append([]runtime.ContainerPort(nil), config.Ports...)
+		cp.DNS = append([]string(nil), config.DNS...)
+		cp.DNSSearch = append([]string(nil), config.DNSSearch...)
+		m.CreateSandboxConfigs = append(m.CreateSandboxConfigs, &cp)
+	}
 	m.sandboxes[id] = &runtime.SandboxInfo{
 		ID:        id,
 		Name:      config.Name,
@@ -341,6 +350,7 @@ func (m *MockRuntime) SetContainerState(containerID, status string, exitCode int
 
 func (m *MockRuntime) Reset() {
 	m.CreateSandboxCalls = nil
+	m.CreateSandboxConfigs = nil
 	m.StartSandboxCalls = nil
 	m.StopSandboxCalls = nil
 	m.RemoveSandboxCalls = nil

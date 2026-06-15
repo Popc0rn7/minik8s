@@ -27,6 +27,9 @@ type Config struct {
 	NodeTTL            time.Duration
 	ClusterCIDR        string
 	NodeCIDRMaskSize   int
+	ClusterDNS         string
+	ClusterDomain      string
+	DNSEnabled         bool
 	BootstrapTokenPath string
 }
 
@@ -46,6 +49,9 @@ type Bridge struct {
 	nodeTTL            time.Duration
 	clusterCIDR        string
 	nodeCIDRMaskSize   int
+	clusterDNS         string
+	clusterDomain      string
+	dnsEnabled         bool
 	bootstrapTokenPath string
 	controllerRunner   *captain.Runner
 }
@@ -119,6 +125,9 @@ func New(config Config) *Bridge {
 		nodeTTL:            nodeTTL,
 		clusterCIDR:        config.ClusterCIDR,
 		nodeCIDRMaskSize:   config.NodeCIDRMaskSize,
+		clusterDNS:         config.ClusterDNS,
+		clusterDomain:      config.ClusterDomain,
+		dnsEnabled:         config.DNSEnabled,
 		bootstrapTokenPath: config.BootstrapTokenPath,
 		controllerRunner:   captain.NewRunner(),
 	}
@@ -141,6 +150,9 @@ func (k *Bridge) Handler() http.Handler {
 		NodeTTL:            k.nodeTTL,
 		ClusterCIDR:        k.clusterCIDR,
 		NodeCIDRMaskSize:   k.nodeCIDRMaskSize,
+		ClusterDNS:         k.clusterDNS,
+		ClusterDomain:      k.clusterDomain,
+		DNSEnabled:         k.dnsEnabled,
 		BootstrapTokenPath: k.bootstrapTokenPath,
 	})
 }
@@ -148,6 +160,12 @@ func (k *Bridge) Handler() http.Handler {
 func (k *Bridge) SetNodeCIDRConfig(clusterCIDR string, maskSize int) {
 	k.clusterCIDR = clusterCIDR
 	k.nodeCIDRMaskSize = maskSize
+}
+
+func (k *Bridge) SetClusterDNSConfig(enabled bool, clusterDNS, clusterDomain string) {
+	k.dnsEnabled = enabled
+	k.clusterDNS = clusterDNS
+	k.clusterDomain = clusterDomain
 }
 
 func (k *Bridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransition, error) {
@@ -167,6 +185,9 @@ func (k *Bridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 		NodeTTL:            k.nodeTTL,
 		ClusterCIDR:        k.clusterCIDR,
 		NodeCIDRMaskSize:   k.nodeCIDRMaskSize,
+		ClusterDNS:         k.clusterDNS,
+		ClusterDomain:      k.clusterDomain,
+		DNSEnabled:         k.dnsEnabled,
 		BootstrapTokenPath: k.bootstrapTokenPath,
 	}).RefreshNodeLiveness(ctx)
 }

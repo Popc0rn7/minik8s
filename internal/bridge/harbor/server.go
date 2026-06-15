@@ -53,6 +53,9 @@ type Config struct {
 	NetRegistry        *netregistry.Store
 	ClusterCIDR        string
 	NodeCIDRMaskSize   int
+	ClusterDNS         string
+	ClusterDomain      string
+	DNSEnabled         bool
 	BootstrapTokenPath string
 }
 
@@ -72,6 +75,9 @@ type Server struct {
 	nodeTTL            time.Duration
 	netRegistry        *netregistry.Store
 	cidrAlloc          *nodeCIDRAllocator
+	clusterDNS         string
+	clusterDomain      string
+	dnsEnabled         bool
 	nodeWatch          *nodeWatchHub
 	bootstrapTokenPath string
 	nodeTokens         *nodeTokenRegistry
@@ -140,6 +146,10 @@ func New(config Config) *Server {
 		panic(err)
 	}
 	nodeTokens := newNodeTokenRegistry()
+	clusterDomain := strings.TrimSpace(config.ClusterDomain)
+	if clusterDomain == "" {
+		clusterDomain = "cluster.local"
+	}
 	server := &Server{
 		pods:               podStore,
 		services:           serviceStore,
@@ -156,6 +166,9 @@ func New(config Config) *Server {
 		nodeTTL:            nodeTTL,
 		netRegistry:        netRegistryStore,
 		cidrAlloc:          cidrAlloc,
+		clusterDNS:         strings.TrimSpace(config.ClusterDNS),
+		clusterDomain:      clusterDomain,
+		dnsEnabled:         config.DNSEnabled,
 		nodeWatch:          newNodeWatchHub(),
 		bootstrapTokenPath: config.BootstrapTokenPath,
 		nodeTokens:         nodeTokens,
@@ -291,6 +304,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"kind":       "NodeMetrics",
 				"verbs":      []string{"get", "list"},
 			}},
+		})
+	case r.URL.Path == "/api/v1/cluster/config":
+		if r.Method != http.MethodGet {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "cluster config is read-only")
+			return
+		}
+		clusterDNS := ""
+		if s.dnsEnabled {
+			clusterDNS = s.clusterDNS
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"kind":          "ClusterConfig",
+			"apiVersion":    "v1",
+			"clusterDNS":    clusterDNS,
+			"clusterDomain": s.clusterDomain,
+			"dnsEnabled":    s.dnsEnabled,
 		})
 	case len(parts) == 3 && parts[0] == "apis" && parts[1] == "metrics.k8s.io" && parts[2] == "v1beta1":
 		writeJSON(w, http.StatusOK, map[string]any{"kind": "APIGroup", "apiVersion": "v1", "name": "metrics.k8s.io", "versions": []map[string]string{{"groupVersion": metrics.MetricsAPIVersion, "version": "v1beta1"}}, "preferredVersion": map[string]string{"groupVersion": metrics.MetricsAPIVersion, "version": "v1beta1"}})

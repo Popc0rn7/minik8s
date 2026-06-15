@@ -37,6 +37,8 @@ go.work.sum
 
 # docs
 *.pdf
+*.ppt
+*.pptx
 
 # vibe coding
 /.agents/

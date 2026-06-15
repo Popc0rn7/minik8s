@@ -81,6 +81,40 @@ func TestHTTPPodClientListsServices(t *testing.T) {
 	assert.Equal(t, "10.96.0.1", services[0].Status.ClusterIP)
 }
 
+func TestHTTPPodClientGetsClusterConfig(t *testing.T) {
+	srv := harbor.New(harbor.Config{DNSEnabled: true, ClusterDNS: "192.168.1.8"})
+	client := NewHTTPPodClient("http://minik8s.test", &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+			return rec.Result(), nil
+		}),
+	})
+
+	config, err := client.GetClusterConfig(t.Context())
+	require.NoError(t, err)
+
+	assert.True(t, config.DNSEnabled)
+	assert.Equal(t, "192.168.1.8", config.ClusterDNS)
+	assert.Equal(t, "cluster.local", config.ClusterDomain)
+}
+
+func TestHTTPPodClientClusterConfigErrorIncludesResponseBody(t *testing.T) {
+	client := NewHTTPPodClient("http://minik8s.test", &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptest.NewRecorder()
+			http.Error(rec, "missing config", http.StatusInternalServerError)
+			return rec.Result(), nil
+		}),
+	})
+
+	_, err := client.GetClusterConfig(t.Context())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "500 Internal Server Error")
+	assert.Contains(t, err.Error(), "missing config")
+}
+
 func TestHTTPPodClientSendsBearerToken(t *testing.T) {
 	var got []string
 	client := NewHTTPPodClientWithToken("http://minik8s.test", "node_node-a_secret", &http.Client{
