@@ -6,7 +6,7 @@
 ## 最高优先级
 
 - 始终以 [docs/Handout.md](docs/Handout.md) 为课程规格来源。
-- 不要把 [docs/PLAN.md](docs/PLAN.md) 或开题报告中的目标蓝图写成当前已实现能力。
+- 不要把已删除的开题/中期过程文档或目标蓝图写成当前已实现能力。
 - README 写真实可运行状态；TODO 写 Handout 缺口；测试步骤放在 `docs/testcase/`。
 - 保护用户已有工作区改动，不要回滚 `.gitignore`、`NOTE.md` 或其他无关文件。
 
@@ -16,13 +16,14 @@ Minik8s 当前是一个教学版 Kubernetes 核心闭环：
 
 - `bridge` 组合了 apiserver 子集、controller-manager 子集和 scheduler 子集。
 - `sailer` 组合了 kubelet 子集、node network agent 和 kube-proxy。
-- 支持的主资源是 Pod、Service、ReplicaSet、Node。
+- 支持的主资源是 Pod、Service、ReplicaSet、Node、HPA、DNS、Job，以及
+  Serverless 的 Function/EventTrigger/Workflow 最小对象。
 - 默认状态存储是本地 JSON；设置 `MINIK8S_LOGBOOK_ENDPOINTS` 后使用 etcd-backed
   Logbook。
-- HPA、DNS、Serverless、PV/PVC、GPU、Security Context 尚未实现。
+- HPA、DNS、GPU Job、Serverless 均为教学版简化实现；PV/PVC、Security Context 尚未实现。
 
-写文档或实现功能时，先确认当前代码状态，再决定措辞。旧文档可能过时，例如
-`docs/status-report.md` 中关于 ReplicaSet 未实现的判断已经不再准确。
+写文档或实现功能时，先确认当前代码状态，再决定措辞。旧开题/中期过程文档已删除，
+不要按历史目标或旧状态报告描述当前能力。
 
 ## Project Layout
 

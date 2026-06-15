@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Minik8s Poster</title>
+    <link rel="stylesheet" href="./poster.css">
+  </head>
+  <body>
+    <aside class="prep no-print" aria-label="展示前 TODO">
+      <strong>展示前 TODO</strong>
+      <span>准备 60cm x 90cm 竖版导出</span>
+      <span>补仓库二维码、运行截图、录屏二维码</span>
+      <span>准备 Serverless 自选功能展示</span>
+      <span>准备 CNI/双机/Logbook 兜底截图</span>
+    </aside>
+
+    <main class="poster">
+      <header class="poster-header">
+        <div class="identity">
+          <div class="mark">MK8S</div>
+          <div>
+            <p class="course">Cloud OS Lab 2026</p>
+            <h1>Minik8s: A Teaching Kubernetes Core Loop</h1>
+            <p class="subtitle">
+              A lightweight container orchestration system with control plane, node agent,
+              CNI networking, Service proxying, and controller reconciliation.
+            </p>
+          </div>
+        </div>
+        <div class="meta">
+          <p><strong>Author</strong> Popc0rn</p>
+          <p><strong>Language</strong> Go</p>
+          <div class="qr">QR</div>
+          <p class="tiny">GitHub / README / Testcases</p>
+        </div>
+      </header>
+
+      <section class="strip">
+        <div>
+          <strong>bridge</strong>
+          <span>apiserver subset + controller-manager subset + scheduler subset</span>
+        </div>
+        <div>
+          <strong>sailer</strong>
+          <span>kubelet subset + node network agent + kube-proxy</span>
+        </div>
+      </section>
+
+      <div class="grid">
+        <section class="panel">
+          <h2>Goal and Scope</h2>
+          <p>
+            Minik8s does not aim to reproduce all Kubernetes semantics. The goal is to
+            implement a clear, demonstrable core loop from declarative YAML to scheduled
+            Pods, Pod networking, Service access, controller convergence, and state recovery.
+          </p>
+          <ul>
+            <li>Kubernetes-like resource workflow: apply, get, describe, delete.</li>
+            <li>Bridge control plane stores state, schedules Pods, and runs controllers.</li>
+            <li>Sailer worker creates Docker containers and manages local data plane.</li>
+            <li>File or etcd-backed Logbook persists objects across control-plane restart.</li>
+          </ul>
+        </section>
+
+        <section class="panel">
+          <h2>Core Features</h2>
+          <table>
+            <tbody>
+              <tr><th>Pod</th><td>YAML, Docker sandbox, volume, resource limit, restartPolicy</td></tr>
+              <tr><th>Node</th><td>YAML join, heartbeat, Ready/Unknown, PodCIDR allocation</td></tr>
+              <tr><th>CNI</th><td>mooring plugin, host-local IPAM, Pod IP, cross-node routes</td></tr>
+              <tr><th>Service</th><td>ClusterIP, NodePort, endpoints, iptables DNAT</td></tr>
+              <tr><th>ReplicaSet</th><td>desired/current convergence and owned Pod cleanup</td></tr>
+              <tr><th>HPA</th><td>CPU/Memory utilization based scaling for ReplicaSet</td></tr>
+              <tr><th>DNS</th><td>CoreDNS hosts sync, host/path gateway, Pod DNS injection</td></tr>
+              <tr><th>Logbook</th><td>local JSON and etcd-backed object recovery</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="panel span-2">
+          <h2>System Architecture</h2>
+          <div class="architecture">
+            <div class="arch-row">
+              <div class="node wide">User CLI<br><small>./kubectl apply/get/describe/delete</small></div>
+            </div>
+            <div class="arrow"></div>
+            <div class="arch-row">
+              <div class="node">Harbor API</div>
+              <div class="node">Logbook Store</div>
+              <div class="node">Navigator</div>
+              <div class="node">Captain Controllers</div>
+            </div>
+            <div class="arrow"></div>
+            <div class="arch-row">
+              <div class="node">Sailer Agent</div>
+              <div class="node">Docker Runtime</div>
+              <div class="node">CNI Runner</div>
+              <div class="node">kube-proxy</div>
+            </div>
+            <div class="arrow"></div>
+            <div class="arch-row">
+              <div class="node">Pod Sandbox</div>
+              <div class="node">mooring CNI</div>
+              <div class="node">VXLAN / Routes</div>
+              <div class="node">iptables NAT</div>
+            </div>
+          </div>
+          <p class="caption">
+            Bridge combines API, persistence, scheduling, and controllers. Sailer pulls assigned
+            Pods, creates sandboxes, runs CNI, writes status, and syncs Service rules.
+          </p>
+        </section>
+
+        <section class="panel">
+          <h2>Implementation Highlights</h2>
+          <h3>Self-built CNI: mooring</h3>
+          <p>
+            Implements CNI ADD/DEL/CHECK, creates bridge/veth, assigns Pod IPs, writes default
+            routes, and cooperates with Sailer for VXLAN/FDB/route synchronization.
+          </p>
+          <h3>Controller reconciliation</h3>
+          <p>
+            Service endpoints, ReplicaSet replicas, HPA scaling, DNS snapshots, Job submitters,
+            and Serverless objects are reconciled by Captain controllers.
+          </p>
+          <h3>Restart recovery</h3>
+          <p>
+            File or etcd-backed state lets bridge recover declared objects after restart while
+            workers continue heartbeating and reconverge status.
+          </p>
+        </section>
+
+        <section class="panel accent">
+          <h2>Optional Feature: Serverless</h2>
+          <p>
+            The optional feature focuses on a teaching Serverless API model. Function,
+            EventTrigger, and Workflow are first-class Minik8s resources with YAML loaders,
+            Harbor APIs, file/etcd stores, and a minimal execution path.
+          </p>
+          <ul>
+            <li><code>Function</code>: inline Python function object.</li>
+            <li><code>EventTrigger</code>: connects events to Function references.</li>
+            <li><code>Workflow</code>: minimal resource model for function chains.</li>
+          </ul>
+          <p class="limit">
+            Limits: scale-to-0, reliable ack/retry, dead-letter handling, and complex DAG execution
+            are not complete.
+          </p>
+        </section>
+
+        <section class="panel">
+          <h2>GPU Job Extension</h2>
+          <p>
+            Minik8s supports a minimal Job + Slurm submitter backend. GPU jobs declare
+            <code>accelerator=gpu</code>, submit CUDA source and commands, then collect Slurm
+            <code>.out/.err</code> logs.
+          </p>
+          <div class="flow">
+            <span>Job YAML</span>
+            <span>Submitter Pod</span>
+            <span>SSH / SCP</span>
+            <span>Slurm Queue</span>
+            <span>Logs</span>
+          </div>
+          <p class="caption">
+            This is not a native Kubernetes GPU device plugin; it is a teaching backend for
+            submitting CUDA work to the SJTU Slurm platform.
+          </p>
+        </section>
+
+        <section class="panel">
+          <h2>Known Limits</h2>
+          <ul>
+            <li>No full Kubernetes watch/resourceVersion/admission/RBAC machinery.</li>
+            <li>CNI, VXLAN, iptables, and NodePort demos require Linux network tools and root.</li>
+            <li>Scheduler is simple and not resource-aware.</li>
+            <li>PV/PVC and Security Context are not implemented.</li>
+            <li>Serverless is an object model and minimal path, not a full platform yet.</li>
+          </ul>
+        </section>
+
+        <section class="panel span-2">
+          <h2>Demonstration Path</h2>
+          <ol class="demo-list">
+            <li><code>make build</code> creates <code>minik8s</code> and <code>kubectl</code>.</li>
+            <li><code>minik8s init</code> prepares state directories and static manifests.</li>
+            <li><code>minik8s bridge</code> starts Harbor, Logbook, scheduler, and controllers.</li>
+            <li><code>sailer join/run</code> registers workers and receives PodCIDR.</li>
+            <li><code>kubectl apply</code> creates Pods, Services, ReplicaSets, HPA, DNS.</li>
+            <li>Service endpoints, Pod IPs, Node status, and Logbook recovery are shown by CLI output.</li>
+          </ol>
+          <div class="screenshots">
+            <div>get pods -o wide</div>
+            <div>describe service</div>
+            <div>ReplicaSet recovery</div>
+            <div>Logbook restart</div>
+          </div>
+        </section>
+      </div>
+
+      <footer class="poster-footer">
+        <p>
+          Testcases: <code>docs/testcase/</code> · API: <code>docs/harbor-api.md</code> ·
+          Deployment: <code>docs/deploy.md</code>
+        </p>
+        <p>Honest boundary: implemented paths are shown as current capability; unfinished Kubernetes semantics are listed as limits.</p>
+      </footer>
+    </main>
+  </body>
+</html>

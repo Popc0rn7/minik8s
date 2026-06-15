@@ -4,7 +4,7 @@
 CNI 配置落地、Pod IP 分配、同节点 PodIP 通信、VXLAN 跨节点 PodIP 通信、
 CNI DEL/IPAM 清理，以及静态 route fallback。
 
-CNI 架构、运行模式和成熟化目标见 [docs/cni.md](../cni.md)。通用双机环境见
+CNI 架构、运行模式和环境要求见 [README.md](../../README.md)。通用双机环境见
 [docs/testcase/README.md](README.md)。
 
 ## 覆盖矩阵

@@ -66,13 +66,24 @@ Sailer的核心责任包括：
 ### kube-proxy
 
 
-### CNI网络插件 Mooring
+### CNI能力 与 网络插件 Mooring
 
-> Mooring是船只的锚点，提供稳定的网络连接。
+> Mooring是船只的锚点，锚定船只，提供稳定的网络通信。
 
-由于题目理解问题，最初自己实现了一个CNI插件Mooring，提供单节点和跨节点的网络能力。
+由于题目理解问题，最初自己实现了一套CNI插件+CNI基座的混合组件，后续为了支持如Flannel的其他插件插拔，拆分了CNI能力为内部基座和CNI插件Mooring，提供单节点和跨节点的网络能力。
 
-同时，为兼容性考虑，Minik8s也改造了CNI插件接口，把编译好的Mooring插件上传到DockerHub上，使得用户可以凭借常规的`apply xxx.yaml`的CNI配置模式来接入使用CNI插件。
+Minik8s改造了CNI插件接口，把编译好的Mooring插件上传到DockerHub上，使得用户可以凭借常规的`kubectl apply xxx.yaml`的CNI配置模式来接入使用Mooring CNI插件。
+
+当前网络闭环分为四层：
+
+- `cmd/mooring/`、`internal/cniplugin/`：实现 CNI `ADD`/`DEL`/`CHECK`，创建 bridge、veth、Pod IP、默认路由和 NAT。
+- `internal/cni/`：读取 CNI conf 目录，执行单插件配置或基础 conflist 插件链。
+- `internal/sailer/`：注册 Node，获取控制面分配的 `spec.podCIDR`，写入节点本地 CNI 配置，并在 Pod sandbox 创建/删除时调用 CNI runner。
+- `internal/netagent`：通过 Harbor 节点信息同步 VXLAN/FDB/route，让不同节点 PodCIDR 可互通。
+
+默认 CNI 配置目录是 `/etc/cni/net.d`，插件目录是 `/opt/cni/bin`，可分别用 `MINIK8S_CNI_CONF_DIR` 和 `MINIK8S_CNI_BIN_DIR` 覆盖。`make build` 默认把 `mooring` 构建到 `.minik8s/cni/bin/mooring`；真实 root 网络测试需要安装到 `/opt/cni/bin/mooring`，或显式覆盖插件目录。
+
+当前支持三种模式：默认内置 mooring 模式、`manifest/cni/mooring.yaml` 激活的自研 CNI 模式、flannel 兼容模式。CNI 和 kube-proxy 依赖 Linux network namespace、`ip`、`bridge`、`iptables`、`nsenter` 和通常的 root 权限；只演示控制面对象和 Pod lifecycle 时，可以使用 `MINIK8S_CNI_DISABLED=1` 或 `sailer --proxy-disabled` 降低环境要求。
 
 ### Addons
 
@@ -84,6 +95,25 @@ Sailer的核心责任包括：
 ### Bridge BootStrap & Node Join
 
 ### CICD
+
+本项目使用 GitHub Actions 做工程验证和发布：
+
+- `ci.yml`：在 Pull Request 和 `main` push 时执行格式检查、lint、`go vet`、race test 和 build。
+- `release.yml`：推送 `v*` tag 时交叉编译 Linux `amd64/arm64` 的 `minik8s` 和 `kubectl`，生成压缩包、`SHA256SUMS` 和 GitHub Release。
+- `docker-image.yml`：在 `main` push 或手动触发时构建并发布 `ghcr.io/popc0rn7/minik8s` 和 `ghcr.io/popc0rn7/mooring-cni`。
+- `ai-summary.yml`：在功能分支生成非阻塞的 AI 变更摘要；需要 repository secret `ZAI_API_KEY` 才会真实调用模型。
+
+本地等价验证命令包括：
+
+```bash
+golangci-lint fmt --diff
+golangci-lint run
+go vet ./...
+go test -race -covermode=atomic -coverprofile=coverage.out ./...
+go build ./...
+```
+
+镜像发布只表示可分发运行入口。运行 `sailer` 仍需要宿主机提供 Docker daemon、Linux 网络工具、CNI 目录、iptables 权限以及必要的 bind mount；`mooring-cni` 镜像只用于安装自研 CNI 插件。
 
 ### HPA
 
