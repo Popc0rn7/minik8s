@@ -139,16 +139,53 @@ bridge fdb show dev mk8s-vxlan
 
 - [x] `startup.md`：`init`、static deps pod、bridge dependency startup。
 - [x] `two-node.md`：双节点预检、启动、Ready、CNI 基线。
-- [x] `pod.md`：Pod lifecycle、调度、NodeLost 和删除 Node。
+- [ ] `pod.md`：Pod lifecycle、调度、NodeLost 和删除 Node；新增多容器 localhost 与共享 volume 后需补测。
 - [x] `cni.md`：mooring CNI、Pod IP、同节点和跨节点通信。
-- [x] `service.md`：Service endpoints、ClusterIP、NodePort、负载均衡、iptables 清理。
-- [ ] `replicaset.md`：ReplicaSet 创建、补齐、缩容和级联删除。
-- [x] `logbook.md`：file/etcd Logbook、对象持久化和 bridge 重启恢复。
-- [ ] `addons.md`：addon manifest、`--addons` readiness 和 doctor 状态。
+- [ ] `service.md`：Service endpoints、ClusterIP、NodePort、负载均衡、iptables 清理；新增集群外 NodePort 证据后需补测。
+- [ ] `replicaset.md`：ReplicaSet 创建、补齐、缩容和级联删除；新增跨节点分布与 NodeLost 补副本后需补测。
+- [x] `logbook.md`：file/etcd Logbook、对象持久化和 bridge 重启恢复；LOGBOOK-06 为可选工程增强项，尚未记录通过。
+- [x] `addons.md`：addon manifest、`--addons` readiness 和 doctor 状态。
 - [ ] `metrics-server.md`：metrics API 和 `kubectl top`。
-- [ ] `hpa.md`：HPA metrics、扩容和缩容。
-- [ ] `dns.md`：DNS 对象和 gateway host/path routing。
-- [ ] `serverless-nats.md`：Function/EventTrigger/Workflow + NATS publish。
+- [ ] `hpa.md`：HPA metrics、扩容和缩容；新增扩缩容速度时间点记录后需补测。
+- [ ] `dns.md`：自动 cluster DNS 注入、Service FQDN 和 gateway host/path routing；新增 Pod 内域名与多 path 输出证据后需补测。
+- [ ] `serverless-nats.md`：Function/EventTrigger/Workflow + NATS publish；Serverless 正在开发中，不纳入当前基础能力整理。
+
+## Testcase 整理建议
+
+本节只整理基础功能和非 Serverless/GPU 的验收覆盖。已经明确不作为当前实现目标的
+PV/PVC、Security Context、MicroService mesh 不在此处展开。
+
+### 新增后待补测的检验项
+
+- `metrics-server.md` 仍需要补真实运行记录：addon
+  启动、metrics API、Pod/Node 样本和 `kubectl top`。
+- `pod.md` 新增 `POD-02B`，覆盖多容器 localhost 通信和同 Pod 共享 volume，待真实环境补测。
+- `service.md` 新增 `SVC-03B`，覆盖从 node-b 或第三方机器访问 node-a NodePort，待补测。
+- `replicaset.md` 新增 `RS-05B`，覆盖 owned Pods 跨节点分布和 NodeLost 后补副本，待补测。
+- `hpa.md` 新增 `HPA-04B`，覆盖扩缩容速度和冷却窗口的时间点记录，待补测。
+- `dns.md` 新增 `DNS-02B`，覆盖同一 host 下不同 path 转发到不同响应后端；`DNS-04`
+  补充自动 cluster DNS 注入、Service FQDN 和 Pod 内 `/etc/resolv.conf` 证据，待补测。
+- `logbook.md` 已覆盖主要恢复路径；如仍保留 LOGBOOK-06，需要补 watch/并发检查的通过
+  记录，或把它降级为工程增强项。
+
+### 可合并的语义重合项
+
+- `startup.md` 与 `addons.md` 都覆盖 `minik8s init` 生成依赖 manifest 和 bridge 启动依赖；
+  可保留 `startup.md` 验证核心 storage-etcd，`addons.md` 只验证可选 addon readiness。
+- `two-node.md` 的 Node Ready、PodCIDR 和网络基线与 `cni.md` 的 CNI 环境基线有重合；
+  可让 `two-node.md` 负责集群启动，`cni.md` 直接复用默认环境并专注 PodIP 通信。
+- `pod.md` 的 NodeLost、Node 删除级联与 `service.md` 的 endpoint 动态更新有重合；
+  可在 `pod.md` 验证 Node/Pod 状态级联，在 `service.md` 只验证 Service endpoints 被刷新。
+- `hpa.md` 依赖 metrics 样本，和 `metrics-server.md` 的 metrics API 有重合；建议
+  `metrics-server.md` 只证明样本可查，`hpa.md` 只证明这些样本驱动 ReplicaSet 扩缩容。
+- `logbook.md` 的 bridge 重启恢复和各 feature 的对象 CRUD 后状态展示有重合；保留
+  `logbook.md` 作为唯一控制面恢复验收，各 feature testcase 不重复做控制面重启。
+
+### Handout 提到但当前未覆盖或仍需实测的项
+
+- metrics-server 真实运行记录。
+- LOGBOOK-06 watch/并发检查；当前作为可选工程增强项，不阻塞基础通过记录。
+- 新增的 `POD-02B`、`SVC-03B`、`RS-05B`、`HPA-04B`、`DNS-02B` 需要跑完后再重新打勾。
 
 最近人工验证记录：
 

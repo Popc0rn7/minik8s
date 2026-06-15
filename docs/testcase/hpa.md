@@ -16,6 +16,7 @@ Kubernetes HPA，不包含复杂 stabilization policy 或多 Workload 类型。
 | HPA-02 | metrics 缺失时 condition | node-a | 等待或记录缺失原因 |
 | HPA-03 | CPU 压力触发扩容 | Pod 实际运行节点 | 停止压力进程 |
 | HPA-04 | 压力停止后冷却缩容 | node-a | 删除 HPA 不删除 RS |
+| HPA-04B | 扩缩容速度和冷却窗口记录 | node-a | 删除 HPA/RS |
 | HPA-05 | HPA 单元测试 | 任意开发机 | 不改变集群 |
 
 ## HPA-00：环境基线
@@ -143,6 +144,47 @@ sleep 30
 
 - HPA 不会立即剧烈缩容；冷却窗口后每轮最多减少 1 个副本。
 - 删除 HPA 不删除 ReplicaSet，也不回滚当前 replicas。
+
+## HPA-04B：扩缩容速度和冷却窗口记录
+
+目标：把 Handout 要求的“扩缩容速度策略”从文字说明变成可检查证据。当前策略预期为每轮
+最多增减 1 个副本，并存在缩容冷却窗口。
+
+前置：已完成 HPA-03 的加压，或重新创建 `nginx-rs` 和 `nginx-hpa` 并制造 CPU 压力。
+
+扩容观测：
+
+```fish
+for i in (seq 1 5)
+  date -Is
+  ./kubectl get hpa nginx-hpa
+  ./kubectl get rs nginx-rs
+  ./kubectl get pods
+  sleep 15
+end
+```
+
+停止压力后观测缩容：
+
+```fish
+date -Is
+docker exec "$NGINX_CID" sh -c "pkill -f 'while true' || true"
+
+for i in (seq 1 6)
+  date -Is
+  ./kubectl get hpa nginx-hpa
+  ./kubectl get rs nginx-rs
+  ./kubectl get pods
+  sleep 15
+end
+```
+
+期望：
+
+- 每条记录都有 ISO 时间戳、HPA 当前指标、ReplicaSet desired/current 和 Pod 列表。
+- 扩容阶段 `nginx-rs` replicas 每轮最多增加 1，且不超过 `maxReplicas`。
+- 缩容阶段先经历冷却窗口，之后每轮最多减少 1，且不低于 `minReplicas`。
+- 如果 metrics 尚未稳定或压力不足，应记录当轮 metrics、condition 和未扩缩容原因。
 
 ## HPA-05：单元测试
 
