@@ -182,7 +182,7 @@ func (c *HPAController) evaluateMetric(pods []*pod.Pod, spec hpa.MetricSpec) met
 	valid := 0
 	for _, p := range pods {
 		pm, ok := c.metricsStore.GetPodMetrics(p.Namespace, p.Name)
-		if !ok || c.now().Sub(pm.Timestamp) > c.metricsTTL {
+		if !ok || c.now().Sub(metricsFreshnessTime(pm)) > c.metricsTTL {
 			continue
 		}
 		utilization, err := metrics.PodUtilization(p, pm, spec.Resource.Name)
@@ -200,6 +200,16 @@ func (c *HPAController) evaluateMetric(pods []*pod.Pod, spec hpa.MetricSpec) met
 		targetUtilization:  spec.Resource.Target.AverageUtilization,
 		validPods:          valid,
 	}
+}
+
+func metricsFreshnessTime(pm *metrics.PodMetrics) time.Time {
+	if pm == nil {
+		return time.Time{}
+	}
+	if !pm.ReceivedAt.IsZero() {
+		return pm.ReceivedAt
+	}
+	return pm.Timestamp
 }
 
 func (c *HPAController) applyScalePolicy(autoscaler *hpa.HorizontalPodAutoscaler, current, desired int32) int32 {
