@@ -1,0 +1,12 @@
+NVCC ?= nvcc
+
+.PHONY: run clean
+
+run: matmul_tiled
+	./matmul_tiled
+
+matmul_tiled: matmul_tiled.cu
+	$(NVCC) -O2 matmul_tiled.cu -o matmul_tiled
+
+clean:
+	rm -f matmul_tiled

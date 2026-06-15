@@ -202,11 +202,65 @@ Result: PASS
 - 两个 Job 的 `Remote Dir` 不同。
 - 两个 Job 的 `Slurm Job ID` 不同。
 
-## GPU-06：删除和清理
+## GPU-06：复杂 CUDA tiled matmul
+
+该用例用于展示比 vector add 更充分的 CUDA 并发能力：二维 grid/block、shared memory
+tile、block 内同步，以及结果回收。
+
+```fish
+./kubectl apply -f manifest/job/cuda-matmul.yaml
+./kubectl get jobs
+./kubectl describe job cuda-matmul-tiled
+./kubectl logs job cuda-matmul-tiled
+```
+
+期望：
+
+- `cuda-matmul-tiled` 进入 `Succeeded`。
+- `describe` 显示独立 submitter Pod/Service：
+
+```text
+Submitter Pod: job-cuda-matmul-tiled-submitter
+Submitter Service: job-cuda-matmul-tiled-submitter
+```
+
+- `logs` 至少包含：
+
+```text
+Matrix N = 1024
+Tile size = 16
+Block = 16 x 16
+Grid = 64 x 64
+Kernel: tiled shared-memory matrix multiplication
+Result: PASS
+```
+
+答辩讲解点：
+
+- 每个 CUDA thread 计算输出矩阵 `C` 的一个元素。
+- 每个 block 覆盖 `16 x 16` 个输出元素。
+- `__shared__` 的 `tileA` 和 `tileB` 缓存全局内存中的子矩阵 tile，减少重复读取。
+- 每一轮 tile 载入后使用 `__syncthreads()` 保证 block 内所有线程都能看到完整 tile。
+- `grid = 64 x 64`，`block = 16 x 16`，总共调度 1,048,576 个输出元素计算。
+
+真机记录：
+
+- 2026-06-15 在 node-a `192.168.1.8` 上验证通过。
+- `cuda-matmul-tiled` 最终状态为 `Succeeded`，Slurm Job ID 为 `58996280`。
+- 远程目录为
+  `/dssg/home/acct-stu/stu1718/minik8s-gpujobs/cuda-matmul-tiled-20260615071456`。
+- `sacct -j 58996280 --format=JobID,State,ExitCode -P -n` 显示主 Job
+  `COMPLETED|0:0`。
+- `kubectl logs job cuda-matmul-tiled` 显示 A100 GPU、CUDA 12.2 `nvcc`，并输出
+  `Matrix N = 1024`、`Grid = 64 x 64`、`Kernel time ms = 27.3418`、
+  `Max error = 0`、`Result: PASS`。
+
+## GPU-07：删除和清理
 
 ```fish
 ./kubectl delete job cuda-add
 ./kubectl delete job cuda-add-2
+./kubectl delete job cuda-matmul-tiled
 ./kubectl get jobs
 ./kubectl get pods
 ./kubectl get services
