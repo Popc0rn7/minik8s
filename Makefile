@@ -23,7 +23,7 @@ build:
 	go build -o $(KUBECTL) ./cmd/kubectl
 	go build -o $(CNI_PLUGIN) ./cmd/mooring
 
-prod: prod-build
+prod: prod-build prod-push
 
 prod-build:
 	PROD_IMAGE="$(PROD_IMAGE)" PROD_DIR="$(PROD_DIR)" PROD_GOOS="$(PROD_GOOS)" PROD_GOARCH="$(PROD_GOARCH)" PROD_GOPROXY="$(PROD_GOPROXY)" PROD_DOCKER_USER="$(PROD_DOCKER_USER)" scripts/prod-build.sh

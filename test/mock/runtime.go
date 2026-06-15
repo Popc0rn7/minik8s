@@ -260,6 +260,61 @@ func (m *MockRuntime) CleanupNodePods(ctx context.Context, nodeName string) erro
 	return nil
 }
 
+func (m *MockRuntime) ListNodePods(ctx context.Context, nodeName string) ([]runtime.PodRef, error) {
+	_ = ctx
+	seen := make(map[string]runtime.PodRef)
+	for _, info := range m.sandboxes {
+		if info.Labels["minik8s.node.name"] != nodeName {
+			continue
+		}
+		namespace := info.Labels["minik8s.pod.namespace"]
+		name := info.Labels["minik8s.pod.name"]
+		if namespace == "" || name == "" {
+			continue
+		}
+		seen[namespace+"/"+name] = runtime.PodRef{Namespace: namespace, Name: name}
+	}
+	for _, info := range m.containers {
+		if info.Labels["minik8s.node.name"] != nodeName {
+			continue
+		}
+		namespace := info.Labels["minik8s.pod.namespace"]
+		name := info.Labels["minik8s.pod.name"]
+		if namespace == "" || name == "" {
+			continue
+		}
+		seen[namespace+"/"+name] = runtime.PodRef{Namespace: namespace, Name: name}
+	}
+	out := make([]runtime.PodRef, 0, len(seen))
+	for _, ref := range seen {
+		out = append(out, ref)
+	}
+	return out, nil
+}
+
+func (m *MockRuntime) SeedPod(namespace, name, nodeName string) {
+	sandboxID := fmt.Sprintf("seed-sandbox-%s-%s", namespace, name)
+	containerID := fmt.Sprintf("seed-container-%s-%s", namespace, name)
+	labels := map[string]string{
+		"minik8s.kind":          "pod-sandbox",
+		"minik8s.pod.name":      name,
+		"minik8s.pod.namespace": namespace,
+		"minik8s.node.name":     nodeName,
+	}
+	m.sandboxes[sandboxID] = &runtime.SandboxInfo{
+		ID:     sandboxID,
+		Name:   name,
+		Labels: cloneLabels(labels),
+		State:  runtime.SandboxStateReady,
+	}
+	m.containers[containerID] = &runtime.ContainerInfo{
+		ID:     containerID,
+		Name:   name + "-c",
+		Labels: cloneLabels(labels),
+		State:  &runtime.ContainerStateInfo{Status: "running"},
+	}
+}
+
 func (m *MockRuntime) IsHealthy(ctx context.Context) bool {
 	_ = ctx
 	return m.Healthy

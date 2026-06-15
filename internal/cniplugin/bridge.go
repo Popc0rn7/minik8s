@@ -196,22 +196,29 @@ func configurePodNetwork(conf BridgeConfig, env CNIEnv, ip net.IP, prefix int) e
 }
 
 func ensureBridge(conf BridgeConfig, prefix int) error {
-	if err := run("ip", "link", "show", conf.Bridge); err != nil {
-		if err := run("ip", "link", "add", conf.Bridge, "type", "bridge"); err != nil {
+	return ensureBridgeWithRunner(conf, prefix, run)
+}
+
+func ensureBridgeWithRunner(conf BridgeConfig, prefix int, runner commandRunner) error {
+	if err := runner("ip", "link", "show", conf.Bridge); err != nil {
+		if err := runner("ip", "link", "add", conf.Bridge, "type", "bridge"); err != nil {
 			return err
 		}
 	}
-	if err := run("ip", "addr", "replace", fmt.Sprintf("%s/%d", conf.Gateway, prefix), "dev", conf.Bridge); err != nil {
+	if err := runner("ip", "addr", "replace", fmt.Sprintf("%s/%d", conf.Gateway, prefix), "dev", conf.Bridge); err != nil {
 		return err
 	}
-	if err := run("ip", "link", "set", conf.Bridge, "up"); err != nil {
+	if err := runner("ip", "link", "set", conf.Bridge, "up"); err != nil {
 		return err
 	}
-	_ = run("sysctl", "-w", "net.ipv4.ip_forward=1")
-	if err := configureForwarding(conf, run); err != nil {
+	if err := runner("ip", "route", "replace", conf.PodCIDR, "dev", conf.Bridge); err != nil {
 		return err
 	}
-	return configureMasquerade(conf, run)
+	_ = runner("sysctl", "-w", "net.ipv4.ip_forward=1")
+	if err := configureForwarding(conf, runner); err != nil {
+		return err
+	}
+	return configureMasquerade(conf, runner)
 }
 
 type commandRunner func(name string, args ...string) error

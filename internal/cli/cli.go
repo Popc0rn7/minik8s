@@ -1856,8 +1856,18 @@ func waitForBridgeDependenciesReady(ctx context.Context, errCh <-chan error, opt
 	defer deadline.Stop()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
+	lastEtcdError := ""
 	for {
-		ready := etcdDependencyReady(ctx)
+		ready, err := etcdDependencyReady(ctx)
+		if err != nil {
+			message := err.Error()
+			if message != lastEtcdError {
+				minilog.Warn("bridge-dependency", "etcd=http://127.0.0.1:2379 waiting error=%v", err)
+				lastEtcdError = message
+			}
+		} else if ready {
+			lastEtcdError = ""
+		}
 		if options.addons.Enabled(AddonServerless) {
 			ready = ready && tcpPortReady("127.0.0.1:4222")
 		}
@@ -1882,13 +1892,16 @@ func waitForBridgeDependenciesReady(ctx context.Context, errCh <-chan error, opt
 	}
 }
 
-func etcdDependencyReady(ctx context.Context) bool {
+func etcdDependencyReady(ctx context.Context) (bool, error) {
 	if !bridgeDependencyTCPReady("127.0.0.1:2379") {
-		return false
+		return false, nil
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	return bridgeDependencyEtcdProbe(probeCtx, []string{"http://127.0.0.1:2379"}) == nil
+	if err := bridgeDependencyEtcdProbe(probeCtx, []string{"http://127.0.0.1:2379"}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func tcpPortReady(address string) bool {
@@ -2221,7 +2234,7 @@ func (a *App) sailerRun(ctx context.Context, args []string, out io.Writer) error
 	options.nodeIP = conf.NodeIP
 	options.podCIDR = conf.PodCIDR
 	podClient := nodeSailer.NewHTTPPodClientWithToken(conf.APIServer, conf.NodeToken, a.httpClient)
-	assignedNode, err := podClient.GetNode(ctx, conf.NodeName)
+	assignedNode, err := getNodeWithRetry(ctx, podClient, conf.NodeName, options.interval)
 	if err != nil {
 		return err
 	}
@@ -2235,6 +2248,29 @@ func (a *App) sailerRun(ctx context.Context, args []string, out io.Writer) error
 	options.nodeIP = assignedNode.InternalIP()
 	options.podCIDR = assignedNode.Spec.PodCIDR
 	return a.runAssignedSailer(ctx, options, podClient, assignedNode, out)
+}
+
+func getNodeWithRetry(ctx context.Context, client *nodeSailer.HTTPPodClient, nodeName string, interval time.Duration) (*node.Node, error) {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		assignedNode, err := client.GetNode(ctx, nodeName)
+		if err == nil {
+			return assignedNode, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		minilog.Warn("sailer-startup", "node=%s harbor lookup failed error=%v", nodeName, err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (a *App) runAssignedSailer(ctx context.Context, options sailerOptions, podClient *nodeSailer.HTTPPodClient, assignedNode *node.Node, out io.Writer) error {

@@ -38,6 +38,8 @@ func TestMetricsAPIListsPods(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "ReceivedAt")
+	assert.NotContains(t, rec.Body.String(), "receivedAt")
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Equal(t, "PodMetricsList", body["kind"])

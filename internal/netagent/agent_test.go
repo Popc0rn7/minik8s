@@ -2,8 +2,10 @@ package netagent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,12 +14,26 @@ import (
 )
 
 type fakeRegistry struct {
-	registered []netregistry.Node
-	nodes      []netregistry.Node
+	registered     []netregistry.Node
+	nodes          []netregistry.Node
+	registerErrors []error
+	registerCalls  int
+	onRegister     func()
 }
 
 func (f *fakeRegistry) Register(ctx context.Context, node netregistry.Node) error {
+	f.registerCalls++
+	if len(f.registerErrors) > 0 {
+		err := f.registerErrors[0]
+		f.registerErrors = f.registerErrors[1:]
+		if err != nil {
+			return err
+		}
+	}
 	f.registered = append(f.registered, node)
+	if f.onRegister != nil {
+		f.onRegister()
+	}
 	return nil
 }
 
@@ -61,6 +77,7 @@ func TestAgentRegistersLocalNodeAndSyncsVXLANOverlay(t *testing.T) {
 	assert.Contains(t, commands, "ip link show mk8s0")
 	assert.Contains(t, commands, "ip addr replace 10.244.0.1/24 dev mk8s0")
 	assert.Contains(t, commands, "ip link set mk8s0 up")
+	assert.Contains(t, commands, "ip route replace 10.244.0.0/24 dev mk8s0")
 	assert.Contains(t, commands, "sysctl -w net.ipv4.ip_forward=1")
 	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -i mk8s0 -j ACCEPT")
 	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -o mk8s0 -j ACCEPT")
@@ -74,6 +91,32 @@ func TestAgentRegistersLocalNodeAndSyncsVXLANOverlay(t *testing.T) {
 	assert.Contains(t, commands, "iptables -t nat -I POSTROUTING 1 -s 10.244.0.0/24 -d 10.244.1.0/24 -j ACCEPT")
 	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -s 10.244.0.0/24 -d 10.244.1.0/24 -j ACCEPT")
 	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -s 10.244.1.0/24 -d 10.244.0.0/24 -j ACCEPT")
+}
+
+func TestAgentRunRetriesSyncErrorAndRecovers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	registry := &fakeRegistry{
+		nodes:          []netregistry.Node{{Name: "node-a", NodeIP: "192.168.1.10", PodCIDR: "10.244.0.0/24"}},
+		registerErrors: []error{errors.New("harbor unavailable")},
+		onRegister: func() {
+			cancel()
+		},
+	}
+	agent := New(Options{
+		NodeName: "node-a",
+		NodeIP:   "192.168.1.10",
+		PodCIDR:  "10.244.0.0/24",
+		Registry: registry,
+		Runner: func(name string, args ...string) error {
+			return nil
+		},
+	})
+
+	err := agent.Run(ctx, time.Millisecond)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.GreaterOrEqual(t, registry.registerCalls, 2)
+	assert.Len(t, registry.registered, 1)
 }
 
 func TestAgentUsesCustomVXLANOptions(t *testing.T) {
@@ -150,6 +193,7 @@ func TestAgentCreatesBridgeBeforeOverlaySync(t *testing.T) {
 	assert.Contains(t, commands, "ip link show mk8s0")
 	assert.Contains(t, commands, "ip link add mk8s0 type bridge")
 	assert.Contains(t, commands, "ip addr replace 10.244.0.1/24 dev mk8s0")
+	assert.Contains(t, commands, "ip route replace 10.244.0.0/24 dev mk8s0")
 	assert.Contains(t, commands, "ip link add mk8s-vxlan type vxlan id 42 local 192.168.1.10 dstport 4789")
 	assert.Contains(t, commands, "ip route replace 10.244.1.0/24 dev mk8s0")
 	assert.Contains(t, commands, "bridge fdb append 00:00:00:00:00:00 dev mk8s-vxlan dst 192.168.1.11")

@@ -24,5 +24,6 @@ type PodMetrics struct {
 	Name       string             `json:"name" yaml:"name"`
 	NodeName   string             `json:"nodeName" yaml:"nodeName"`
 	Timestamp  time.Time          `json:"timestamp" yaml:"timestamp"`
+	ReceivedAt time.Time          `json:"-" yaml:"-"`
 	Containers []ContainerMetrics `json:"containers" yaml:"containers"`
 }

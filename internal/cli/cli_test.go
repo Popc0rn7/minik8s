@@ -22,6 +22,7 @@ import (
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/k8scompat"
 	"minik8s/internal/metrics"
+	"minik8s/internal/minilog"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
 	"minik8s/internal/replicaset"
@@ -398,6 +399,9 @@ func TestBridgeDependencyEtcdDirIsAbsolute(t *testing.T) {
 
 func TestWaitForBridgeDependenciesReadyUsesEtcdProbe(t *testing.T) {
 	calls := 0
+	var logs bytes.Buffer
+	restoreLog := minilog.SetOutput(&logs)
+	defer restoreLog()
 	originalTCPReady := bridgeDependencyTCPReady
 	bridgeDependencyTCPReady = func(address string) bool {
 		assert.Equal(t, "127.0.0.1:2379", address)
@@ -419,6 +423,8 @@ func TestWaitForBridgeDependenciesReadyUsesEtcdProbe(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, calls)
+	assert.Contains(t, logs.String(), "bridge-dependency")
+	assert.Contains(t, logs.String(), "etcd=http://127.0.0.1:2379 waiting error=not ready")
 }
 
 func TestWaitForBridgeDependenciesReadySkipsEtcdProbeUntilTCPReady(t *testing.T) {
@@ -841,6 +847,51 @@ func TestCLISailerRunRequiresLocalJoinConfig(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sailer is not joined")
+}
+
+func TestCLISailerRunRetriesInitialGetNode(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
+	require.NoError(t, writeLocalSailerConfig(DefaultSailerConfigPath(), localSailerConfig{
+		APIServer: "http://minik8s.test",
+		NodeName:  "node-a",
+		NodeIP:    "192.168.1.8",
+		PodCIDR:   "10.244.0.0/24",
+		NodeToken: "node-token",
+	}))
+	calls := 0
+	nodeStore := store.NewInMemoryNodeStore()
+	require.NoError(t, nodeStore.Upsert(node.New("node-a", node.NodeSpec{Role: node.NodeRoleWorker, PodCIDR: "10.244.0.0/24"}, node.NodeStatus{
+		Phase:     node.NodeReady,
+		Addresses: []node.NodeAddress{{Type: node.NodeAddressInternalIP, Address: "192.168.1.8"}},
+	})))
+	srv := harbor.New(harbor.Config{
+		PodStore:     store.NewInMemoryPodStore(),
+		NodeStore:    nodeStore,
+		ServiceStore: store.NewInMemoryServiceStore(),
+	})
+	app := New(Config{
+		Runtime:   mock.NewMockRuntime(),
+		NetRunner: func(name string, args ...string) error { return nil },
+		HTTPClient: &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path == "/api/v1/nodes/node-a" {
+				calls++
+				if calls == 1 {
+					return nil, fmt.Errorf("temporary harbor outage")
+				}
+			}
+			rec := httptestResponseRecorder(req)
+			srv.ServeHTTP(rec, req)
+			return rec.Result(), nil
+		})},
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"sailer", "run", "--once", "--interval", "1ms", "--proxy-disabled"}, &out))
+	assert.GreaterOrEqual(t, calls, 2)
+	assert.Contains(t, out.String(), "sailer synced node=node-a")
 }
 
 func TestCLISailerPreservesExistingExternalCNIConfig(t *testing.T) {

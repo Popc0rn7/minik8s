@@ -117,6 +117,26 @@ func TestConfigureForwardingAllowsBridgeTraffic(t *testing.T) {
 	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -o mk8s0 -j ACCEPT")
 }
 
+func TestEnsureBridgeInstallsLocalPodCIDRRoute(t *testing.T) {
+	var commands []string
+	runner := func(name string, args ...string) error {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		if name == "iptables" && len(args) > 3 && args[2] == "-C" {
+			return errors.New("missing rule")
+		}
+		return nil
+	}
+
+	err := ensureBridgeWithRunner(BridgeConfig{
+		Bridge:  "mk8s0",
+		PodCIDR: "10.244.0.0/24",
+		Gateway: "10.244.0.1",
+	}, 24, runner)
+
+	require.NoError(t, err)
+	assert.Contains(t, commands, "ip route replace 10.244.0.0/24 dev mk8s0")
+}
+
 func TestRunBridgePluginVersionReturnsSupportedVersions(t *testing.T) {
 	var out bytes.Buffer
 

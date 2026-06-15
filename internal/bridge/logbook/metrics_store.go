@@ -2,6 +2,7 @@ package logbook
 
 import (
 	"sync"
+	"time"
 
 	"minik8s/internal/metrics"
 )
@@ -16,15 +17,24 @@ type MetricsStore interface {
 type InMemoryMetricsStore struct {
 	mu      sync.RWMutex
 	metrics map[string]*metrics.PodMetrics
+	now     func() time.Time
 }
 
 func NewInMemoryMetricsStore() *InMemoryMetricsStore {
-	return &InMemoryMetricsStore{metrics: make(map[string]*metrics.PodMetrics)}
+	return NewInMemoryMetricsStoreWithClock(time.Now)
+}
+
+func NewInMemoryMetricsStoreWithClock(now func() time.Time) *InMemoryMetricsStore {
+	if now == nil {
+		now = time.Now
+	}
+	return &InMemoryMetricsStore{metrics: make(map[string]*metrics.PodMetrics), now: now}
 }
 
 func (s *InMemoryMetricsStore) UpsertNodeMetrics(nodeName string, podMetrics []*metrics.PodMetrics) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	receivedAt := s.now().UTC()
 	for _, pm := range podMetrics {
 		if pm == nil {
 			continue
@@ -32,6 +42,9 @@ func (s *InMemoryMetricsStore) UpsertNodeMetrics(nodeName string, podMetrics []*
 		copy := copyPodMetrics(pm)
 		if copy.NodeName == "" {
 			copy.NodeName = nodeName
+		}
+		if copy.ReceivedAt.IsZero() {
+			copy.ReceivedAt = receivedAt
 		}
 		s.metrics[podMetricsKey(copy.Namespace, copy.Name)] = copy
 	}

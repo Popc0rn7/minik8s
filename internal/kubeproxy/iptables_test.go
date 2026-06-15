@@ -25,6 +25,9 @@ func (r *recordingRunner) Run(ctx context.Context, args ...string) error {
 	if r.failOn != "" && strings.Contains(command, r.failOn) {
 		return errors.New("runner failed")
 	}
+	if strings.Contains(command, "-D ") {
+		return errors.New("Bad rule (does a matching rule exist in that chain?)")
+	}
 	return nil
 }
 
@@ -110,7 +113,7 @@ func TestIPTablesProxySyncAllDeletesServicesMissingFromSnapshot(t *testing.T) {
 }
 
 func TestIPTablesProxyDeleteServiceIgnoresMissingRules(t *testing.T) {
-	runner := &recordingRunner{failOn: "-D"}
+	runner := &recordingRunner{}
 	proxy := NewIPTablesProxy(runner.Run)
 	svc := &service.Service{
 		ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default"},
@@ -127,6 +130,41 @@ func TestIPTablesProxyDeleteServiceIgnoresMissingRules(t *testing.T) {
 	assert.Contains(t, joined, "-t nat -D PREROUTING -p tcp -d 10.96.0.10 --dport 80 -j MK8S-SVC-")
 	assert.Contains(t, joined, "-t nat -F MK8S-SVC-")
 	assert.Contains(t, joined, "-t nat -X MK8S-SVC-")
+}
+
+func TestIPTablesProxyDeleteServiceRemovesDuplicateEntryRules(t *testing.T) {
+	deleteAttempts := 0
+	var commands []string
+	runner := func(ctx context.Context, args ...string) error {
+		_ = ctx
+		command := strings.Join(args, " ")
+		commands = append(commands, command)
+		if strings.Contains(command, "-D PREROUTING") {
+			deleteAttempts++
+			if deleteAttempts <= 2 {
+				return nil
+			}
+			return errors.New("Bad rule (does a matching rule exist in that chain?)")
+		}
+		if strings.Contains(command, "-D ") {
+			return errors.New("Bad rule (does a matching rule exist in that chain?)")
+		}
+		return nil
+	}
+	proxy := NewIPTablesProxy(runner)
+	svc := &service.Service{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default"},
+		Spec: service.ServiceSpec{
+			Type:  service.ServiceTypeClusterIP,
+			Ports: []service.ServicePort{{Protocol: "TCP", Port: 80, TargetPort: 8080}},
+		},
+		Status: service.ServiceStatus{ClusterIP: "10.96.0.10"},
+	}
+
+	require.NoError(t, proxy.DeleteService(context.Background(), svc))
+
+	assert.GreaterOrEqual(t, countCommandsContaining(commands, "-t nat -D PREROUTING"), 3)
+	assert.Contains(t, strings.Join(commands, "\n"), "-t nat -X MK8S-SVC-")
 }
 
 func countCommandsContaining(commands []string, needle string) int {

@@ -137,10 +137,10 @@ func (c *HPAController) reconcileHPA(ctx context.Context, autoscaler *hpa.Horizo
 		return c.hpaStore.Update(autoscaler)
 	}
 
-	desired := rs.Spec.Replicas
-	for _, evaluation := range evaluations {
+	var desired int32
+	for i, evaluation := range evaluations {
 		candidate := int32(math.Ceil(float64(rs.Spec.Replicas) * float64(evaluation.averageUtilization) / float64(evaluation.targetUtilization)))
-		if candidate > desired {
+		if i == 0 || candidate > desired {
 			desired = candidate
 		}
 	}
@@ -182,7 +182,7 @@ func (c *HPAController) evaluateMetric(pods []*pod.Pod, spec hpa.MetricSpec) met
 	valid := 0
 	for _, p := range pods {
 		pm, ok := c.metricsStore.GetPodMetrics(p.Namespace, p.Name)
-		if !ok || c.now().Sub(pm.Timestamp) > c.metricsTTL {
+		if !ok || c.now().Sub(metricsFreshnessTime(pm)) > c.metricsTTL {
 			continue
 		}
 		utilization, err := metrics.PodUtilization(p, pm, spec.Resource.Name)
@@ -200,6 +200,16 @@ func (c *HPAController) evaluateMetric(pods []*pod.Pod, spec hpa.MetricSpec) met
 		targetUtilization:  spec.Resource.Target.AverageUtilization,
 		validPods:          valid,
 	}
+}
+
+func metricsFreshnessTime(pm *metrics.PodMetrics) time.Time {
+	if pm == nil {
+		return time.Time{}
+	}
+	if !pm.ReceivedAt.IsZero() {
+		return pm.ReceivedAt
+	}
+	return pm.Timestamp
 }
 
 func (c *HPAController) applyScalePolicy(autoscaler *hpa.HorizontalPodAutoscaler, current, desired int32) int32 {

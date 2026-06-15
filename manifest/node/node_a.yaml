@@ -2,6 +2,8 @@ kind: Node
 apiVersion: v1
 metadata:
   name: node-a
+  labels:
+    node: node-a
 status:
   addresses:
   - type: InternalIP
