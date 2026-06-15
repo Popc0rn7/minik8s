@@ -14,13 +14,23 @@ type Function struct {
 }
 
 type FunctionSpec struct {
-	Runtime string `json:"runtime" yaml:"runtime"`
-	Handler string `json:"handler" yaml:"handler"`
-	Code    string `json:"code" yaml:"code"`
+	Runtime            string `json:"runtime" yaml:"runtime"`
+	Handler            string `json:"handler" yaml:"handler"`
+	Code               string `json:"code" yaml:"code"`
+	Port               int32  `json:"port,omitempty" yaml:"port,omitempty"`
+	MinReplicas        int32  `json:"minReplicas,omitempty" yaml:"minReplicas,omitempty"`
+	MaxReplicas        int32  `json:"maxReplicas,omitempty" yaml:"maxReplicas,omitempty"`
+	TargetConcurrency  int32  `json:"targetConcurrency,omitempty" yaml:"targetConcurrency,omitempty"`
+	IdleTimeoutSeconds int32  `json:"idleTimeoutSeconds,omitempty" yaml:"idleTimeoutSeconds,omitempty"`
 }
 
 type FunctionStatus struct {
 	Phase          string    `json:"phase,omitempty" yaml:"phase,omitempty"`
+	Revision       string    `json:"revision,omitempty" yaml:"revision,omitempty"`
+	Replicas       int32     `json:"replicas,omitempty" yaml:"replicas,omitempty"`
+	ReadyReplicas  int32     `json:"readyReplicas,omitempty" yaml:"readyReplicas,omitempty"`
+	Endpoint       string    `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	LastScaleTime  time.Time `json:"lastScaleTime,omitempty" yaml:"lastScaleTime,omitempty"`
 	LastInvocation time.Time `json:"lastInvocation,omitempty" yaml:"lastInvocation,omitempty"`
 	LastOutput     string    `json:"lastOutput,omitempty" yaml:"lastOutput,omitempty"`
 	LastError      string    `json:"lastError,omitempty" yaml:"lastError,omitempty"`

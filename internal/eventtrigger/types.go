@@ -20,8 +20,10 @@ type EventTriggerSpec struct {
 }
 
 type EventTriggerStatus struct {
-	Active bool   `json:"active" yaml:"active"`
-	Reason string `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Active        bool   `json:"active" yaml:"active"`
+	Reason        string `json:"reason,omitempty" yaml:"reason,omitempty"`
+	LastEventTime string `json:"lastEventTime,omitempty" yaml:"lastEventTime,omitempty"`
+	LastError     string `json:"lastError,omitempty" yaml:"lastError,omitempty"`
 }
 
 func (t EventTrigger) DeepCopy() *EventTrigger {

@@ -1,0 +1,22 @@
+kind: Workflow
+apiVersion: v1
+metadata:
+  name: text-branch
+  labels:
+    app: serverless-demo
+spec:
+  steps:
+  - name: route
+    functionRef:
+      name: route
+    branches:
+    - contains: "summary:"
+      next: summarize
+    - contains: "qa:"
+      next: answer
+  - name: summarize
+    functionRef:
+      name: summarize
+  - name: answer
+    functionRef:
+      name: answer

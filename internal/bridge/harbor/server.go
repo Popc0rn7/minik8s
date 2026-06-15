@@ -18,11 +18,11 @@ import (
 	"minik8s/internal/bridge/captain"
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/bridge/navigator"
+	bridgeServerless "minik8s/internal/bridge/serverless"
 	"minik8s/internal/bridge/tokens"
 	"minik8s/internal/dns"
 	"minik8s/internal/eventtrigger"
 	"minik8s/internal/function"
-	"minik8s/internal/functionrunner"
 	"minik8s/internal/hpa"
 	"minik8s/internal/job"
 	"minik8s/internal/k8scompat"
@@ -64,6 +64,7 @@ type Config struct {
 	HarborURL          string
 	Now                func() time.Time
 	MetricsTTL         time.Duration
+	HTTPClient         *http.Client
 }
 
 type Server struct {
@@ -94,6 +95,7 @@ type Server struct {
 	harborURL          string
 	now                func() time.Time
 	metricsTTL         time.Duration
+	activator          *bridgeServerless.Activator
 }
 
 func New(config Config) *Server {
@@ -208,6 +210,12 @@ func New(config Config) *Server {
 		harborURL:          config.HarborURL,
 		now:                now,
 		metricsTTL:         metricsTTL,
+		activator: bridgeServerless.NewActivator(bridgeServerless.ActivatorConfig{
+			Functions:   functionStore,
+			Pods:        podStore,
+			ReplicaSets: replicaSetStore,
+			HTTPClient:  config.HTTPClient,
+		}),
 	}
 	server.heartbeats = newHeartbeatManager(heartbeatManagerConfig{
 		pods:        podStore,
@@ -1488,6 +1496,7 @@ func (s *Server) handleFunctions(w http.ResponseWriter, r *http.Request, namespa
 			writeStoreError(w, err, "functions", fn.Name)
 			return
 		}
+		_ = bridgeServerless.NewFunctionController(s.functions, s.replicaSets, s.services).Sync(r.Context())
 		writeJSON(w, http.StatusCreated, fn)
 	case http.MethodGet:
 		if name == "" {
@@ -1526,6 +1535,7 @@ func (s *Server) handleFunctions(w http.ResponseWriter, r *http.Request, namespa
 			writeStoreError(w, err, "functions", name)
 			return
 		}
+		_ = bridgeServerless.NewFunctionController(s.functions, s.replicaSets, s.services).Sync(r.Context())
 		writeJSON(w, http.StatusOK, fn)
 	case http.MethodDelete:
 		if name == "" {
@@ -1536,6 +1546,7 @@ func (s *Server) handleFunctions(w http.ResponseWriter, r *http.Request, namespa
 			writeStoreError(w, err, "functions", name)
 			return
 		}
+		_ = bridgeServerless.NewFunctionController(s.functions, s.replicaSets, s.services).Sync(r.Context())
 		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("function %q deleted", name))
 	default:
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
@@ -1696,34 +1707,16 @@ func (s *Server) handleFunctionInvoke(w http.ResponseWriter, r *http.Request, na
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 		return
 	}
-	fn, err := s.functions.Get(name, namespace)
-	if err != nil {
-		writeStoreError(w, err, "functions", name)
-		return
-	}
 	var req function.InvocationRequest
 	if err := decodeObject(r.Body, &req); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
-	output, err := functionrunner.RunPython(r.Context(), fn, req.Data)
-	resp := function.InvocationResponse{Function: fn.Name, Namespace: fn.Namespace}
-	fn.Status.LastInvocation = time.Now().UTC()
+	resp, err := s.activator.Invoke(r.Context(), namespace, name, req.Data)
 	if err != nil {
-		resp.Phase = "Failed"
-		resp.Error = err.Error()
-		fn.Status.Phase = "Failed"
-		fn.Status.LastError = err.Error()
-		_ = s.functions.Update(fn)
 		writeJSON(w, http.StatusInternalServerError, resp)
 		return
 	}
-	resp.Phase = "Succeeded"
-	resp.Output = output
-	fn.Status.Phase = "Ready"
-	fn.Status.LastOutput = output
-	fn.Status.LastError = ""
-	_ = s.functions.Update(fn)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1794,6 +1787,10 @@ func (s *Server) handleWorkflows(w http.ResponseWriter, r *http.Request, namespa
 	if len(parts) > 0 {
 		name = parts[0]
 	}
+	if len(parts) > 1 && parts[1] == "invoke" {
+		s.handleWorkflowInvoke(w, r, namespace, name)
+		return
+	}
 	if len(parts) > 1 {
 		writeStatus(w, http.StatusNotFound, "NotFound", "workflow path not found")
 		return
@@ -1847,6 +1844,25 @@ func (s *Server) handleWorkflows(w http.ResponseWriter, r *http.Request, namespa
 	default:
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 	}
+}
+
+func (s *Server) handleWorkflowInvoke(w http.ResponseWriter, r *http.Request, namespace, name string) {
+	if r.Method != http.MethodPost {
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+		return
+	}
+	var req function.InvocationRequest
+	if err := decodeObject(r.Body, &req); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	executor := bridgeServerless.NewWorkflowExecutor(s.workflows, s.activator)
+	resp, err := executor.Invoke(r.Context(), namespace, name, req.Data)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, resp)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleHPAs(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {

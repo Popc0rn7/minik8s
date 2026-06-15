@@ -34,9 +34,14 @@ EventTrigger, Workflow, and the Kubernetes-compatible CNI bootstrap objects.
 | --- | --- |
 | `dns/dns_example.yaml` | DNS route object mapping `example.com` paths to the nginx ClusterIP and NodePort Services. |
 | `hpa/hpa_nginx.yaml` | HPA object targeting `replicaset/replicaset_nginx.yaml`. Requires metrics reporting. |
-| `function/function_echo.yaml` | Minimal Python Function object. |
-| `function/eventtrigger_echo.yaml` | EventTrigger object for the echo Function. |
+| `function/function_echo.yaml` | Minimal Python Function object with scale-to-0 defaults. |
+| `function/function_upper.yaml` | Python Function that transforms input to uppercase. |
+| `function/function_route.yaml` | Python Function that routes text to summary or QA branches. |
+| `function/function_summary.yaml` | Python summary branch Function. |
+| `function/function_answer.yaml` | Python answer branch Function. |
+| `function/eventtrigger_echo.yaml` | EventTrigger object for the echo Function with a reply subject. |
 | `function/workflow_echo.yaml` | Minimal sequential Workflow object for the echo Function. |
+| `function/workflow_text_branch.yaml` | Branching Workflow that runs route -> summarize or route -> answer. |
 
 ## Overlap and cleanup notes
 

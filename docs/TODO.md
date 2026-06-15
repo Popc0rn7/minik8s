@@ -142,10 +142,16 @@
 - [x] EventTrigger 对象、NATS 订阅触发、publish/doctor 辅助命令已有最小实现；
   NATS 可由 `serverless` addon 启动，也可通过 `MINIK8S_NATS_URL` 指定外部实例。
 - [x] Workflow 对象、YAML/API/CLI、file/etcd store 已有最小实现。
+- [x] Function 可映射为独立 Pod 后端：Function controller 创建 `fn-*`
+  ReplicaSet 和 Service，Activator 负责 HTTP invoke、冷启动和请求转发。
+- [x] Workflow 可通过 `invoke workflow` 运行顺序链，并支持基于输出的 contains/regex
+  分支跳转。
+- [x] Serverless scale-to-0 和并发扩容已有最小实现：空闲超时缩到 0，请求到来冷启动，
+  inflight 超过 `targetConcurrency` 时扩容到 `maxReplicas` 内。
+- [x] `manifest/function/` 和 `docs/testcase/serverless.md` 提供 P0/P1 展示材料。
 - [ ] EventTrigger ack/retry、dead-letter、订阅状态可视化尚未实现。
-- [ ] Workflow DAG 自动执行、顺序调用、分支控制尚未实现。
+- [ ] Workflow 复杂 DAG 自动执行、并行节点、重试策略尚未实现。
 - [ ] 函数 zip/代码文件上传、update 的完整语义尚未实现；当前以 YAML 内联代码为主。
-- [ ] scale-to-0、冷启动、并发扩容未实现。
 - [ ] 结合模型类 workload 的复杂应用未实现。
 
 ### 持久化存储

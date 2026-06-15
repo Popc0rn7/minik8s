@@ -15,6 +15,7 @@ type Controller struct {
 	functions store.FunctionStore
 	triggers  store.EventTriggerStore
 	natsURL   string
+	activator *Activator
 	mu        sync.Mutex
 	started   map[string]struct{}
 }
@@ -26,6 +27,12 @@ func NewController(functions store.FunctionStore, triggers store.EventTriggerSto
 		natsURL:   natsURL,
 		started:   make(map[string]struct{}),
 	}
+}
+
+func NewControllerWithActivator(functions store.FunctionStore, triggers store.EventTriggerStore, natsURL string, activator *Activator) *Controller {
+	c := NewController(functions, triggers, natsURL)
+	c.activator = activator
+	return c
 }
 
 func (c *Controller) Run(ctx context.Context, interval time.Duration) {
@@ -66,10 +73,20 @@ func (c *Controller) sync(ctx context.Context) {
 					minilog.Warn("serverless-invoke", "trigger=%s/%s error=%v", triggerCopy.Namespace, triggerCopy.Name, err)
 					return
 				}
-				output, err := functionrunner.RunPython(ctx, fn, string(payload))
-				if err != nil {
-					minilog.Warn("serverless-invoke", "function=%s/%s error=%v", fn.Namespace, fn.Name, err)
-					return
+				var output string
+				if c.activator != nil {
+					resp, err := c.activator.Invoke(ctx, fn.Namespace, fn.Name, string(payload))
+					if err != nil {
+						minilog.Warn("serverless-invoke", "function=%s/%s error=%v", fn.Namespace, fn.Name, err)
+						return
+					}
+					output = resp.Output
+				} else {
+					output, err = functionrunner.RunPython(ctx, fn, string(payload))
+					if err != nil {
+						minilog.Warn("serverless-invoke", "function=%s/%s error=%v", fn.Namespace, fn.Name, err)
+						return
+					}
 				}
 				if triggerCopy.Spec.ReplySubject != "" {
 					if err := natslite.Publish(ctx, c.natsURL, triggerCopy.Spec.ReplySubject, []byte(output)); err != nil {
