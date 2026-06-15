@@ -1,17 +1,22 @@
 # Minik8s
 
+作者：Popc0rn
+
+---
+
 Minik8s 是一个面向云OS Lab 的轻量容器编排系统。项目目标参考Kubernetes。
 
-使用Go语言实现。一个舰桥 `bridge` 控制面加多个节点本地 `sailer` agent，用户通过单独的 `kubectl` 二进制用 Kubernetes 风格命令管理 Pod、Service、ReplicaSet、HorizontalPodAutoscaler 和 Node，并在 Linux + Docker 环境中演示 Pod 网络、
-Service 转发和控制面状态恢复。
+使用Go语言实现。一个舰桥 `bridge` 控制面加多个 Node Agent 水手`sailer`，用户通过单独的 `kubectl` 二进制用 Kubernetes 风格命令管理 Pod、Service、ReplicaSet、Node等对象，并在 Linux + Docker 环境中演示 Pod 网络、Service 转发和控制面状态恢复。
 
-课程规格以 [docs/Handout.md](docs/Handout.md) 为准。在个人时间和能力的取舍下实现到当前的功能版本，并在答辩中演示核心功能和架构设计。
+课程规格以 [docs/Handout.md](docs/Handout.md) 为准。在个人时间和能力的取舍下凝练到当前的功能版本，并在答辩中演示核心功能和架构设计。
 
 ## 系统架构
 
 系统的整体架构基本参照Kubernetes的经典组件划分，但重新设计了组件名称和边界，以适应个人实现思路。
 
 ### 控制面 与 Bridge
+
+> Bridge是一个舰队的指挥中心
 
 整个Minik8s的编排都要依赖控制面Bridge，Bridge本身只是一个平台，组合控制面组件，保证协同以及组件启停的一致性。
 
@@ -25,21 +30,31 @@ Service 转发和控制面状态恢复。
 
 ### Harbor港湾
 
+> Harbor是船只调度的集散地，船只在此流动。
+
 > TODO: API设计
 
 ### Logbook日志簿
+
+> Logbook记录了航海日志，保存了船只的状态和历史。
 
 > TODO
 
 ### Navigator导航
 
+> Navigator是船只的导航员，负责指派船只和任务。
+
 > TODO
 
 ### Captain船长
 
+> Captain是舰队的船长，负责时刻管理舰队中的船只行为。
+
 > TODO
 
 ### Worker Node 与 Sailer
+
+> Sailer是船只上的水手，负责执行船长的命令，执行实际任务并管理船只航行和运作状态。
 
 Worker Node是Minik8s的工作节点，负责运行用户的Pod和Service的单元。每个Worker Node上运行一个Sailer agent，负责管理Docker容器、CNI网络、Pod状态和kube-proxy规则。
 
@@ -52,6 +67,8 @@ Sailer的核心责任包括：
 
 
 ### CNI网络插件 Mooring
+
+> Mooring是船只的锚点，提供稳定的网络连接。
 
 由于题目理解问题，最初自己实现了一个CNI插件Mooring，提供单节点和跨节点的网络能力。
 
@@ -113,13 +130,17 @@ Job 创建独立 submitter Pod/Service，由 submitter 通过 SSH/SCP 提交到�
 - Job YAML、API、CLI、file/etcd store、控制器和 GPU/Slurm submitter 最小闭环；
   当前只支持 `accelerator=gpu` 的 Slurm 后端，真机运行依赖 SSH 凭据、submitter 镜像和
   Harbor endpoint 配置。
+- DNS YAML、API、CLI、file/etcd store、CoreDNS hosts 配置同步和 HTTP
+  host/path gateway；同一 host 下可按 path 转发到不同 Service endpoints。
+- `sailer run --cluster-dns <dns-ip>` 会把 cluster DNS 写入新建 Pod 的 Docker
+  sandbox DNS 配置，用于 Pod 内域名访问验收。
 - Logbook 状态存储：默认本地 JSON；设置 `MINIK8S_LOGBOOK_ENDPOINTS` 后，
-  Pod、Service、ReplicaSet、HPA、Job、Node 使用 etcd-backed store。
+  Pod、Service、ReplicaSet、HPA、DNS、Node 使用 etcd-backed store。
 - 控制面重启后可从 file/etcd 恢复声明对象；worker 继续心跳后状态重新收敛。
 
 尚未实现或不应作为当前版本承诺：
 
-- DNS 对象、域名解析和同 host 多 path 转发。
+- 完整 Kubernetes Ingress 语义、TLS、外部 DNS controller 和 DNS route 的强一致更新。
 - Serverless 的事件 ack/retry、Workflow 自动执行、scale-to-0。
 - PV/PVC 持久化卷、Security Context。
 - 完整 Kubernetes API machinery，例如 watch、resourceVersion、admission、
@@ -141,6 +162,8 @@ Job 创建独立 submitter Pod/Service，由 submitter 通过 SSH/SCP 提交到�
 - `internal/bridge/navigator/`：轻量调度器，目前按 Ready Node 做简单分配。
 - `internal/bridge/captain/`：控制器集合，当前包括 Service endpoint controller、
   ReplicaSet controller 和 HPA controller。
+- `internal/dns/`、`internal/dnssync/`、`internal/routeproxy/`：DNS 资源类型、
+  CoreDNS hosts/route snapshot 同步和 HTTP host/path gateway。
 - `internal/sailer/`：节点本地 agent，轮询 assigned Pods，管理 Docker 容器、
   CNI、Pod status 和 kube-proxy 规则。
 - `internal/cniplugin/`、`internal/cni/`、`internal/netagent/`：CNI 插件、CNI
@@ -258,23 +281,6 @@ etcd/Logbook 流程见 [docs/testcase/logbook.md](docs/testcase/logbook.md) 和
 
 默认 etcd 模式下，Pod、Service、ReplicaSet、Node 会写入 `/registry/...` 前缀。
 
-## Handout 覆盖状态
-
-| Handout 项 | 当前状态 | 说明 |
-| --- | --- | --- |
-| Pod 抽象与生命周期 | 部分完成 | Pod YAML、Docker 运行、状态展示、删除、基础 restartPolicy 已有；probe、exec/logs、完整多容器语义未完成。 |
-| CNI Pod 间通信 | 部分完成 | 单节点 bridge/IPAM 可演示；跨节点 VXLAN/host-gw 可演示但依赖环境和节点配置。 |
-| Service ClusterIP/NodePort | 部分完成 | Service 对象、endpoints、iptables proxy 和简单负载均衡已有；复杂 SNAT、readiness、EndpointSlice 未完成。 |
-| ReplicaSet | 部分完成 | YAML/API/CLI/controller/store 已有；当前是简化控制器，没有 ownerReference、adoption/orphan 等完整 K8s 语义。 |
-| 资源监控与 HPA | 部分完成 | HPA 对象/API/CLI/store、Docker CPU/Memory metrics 上报和 ReplicaSet 扩缩容已有；只支持 Resource utilization，metrics 不持久化。 |
-| DNS 与转发 | 未实现 | 没有 DNS 对象、DNS server 或 HTTP path gateway。 |
-| 多机部署 | 部分完成 | Node、heartbeat、PodCIDR、简单调度、跨节点网络同步已有；调度不做资源过滤，故障迁移能力有限。 |
-| 容错 | 部分完成 | 控制面状态可持久化，重启后可恢复对象；Node heartbeat 可标记 Unknown；没有完整故障自愈和副本重调度。 |
-| 自选 Serverless | 部分完成 | Function/EventTrigger/Workflow 对象、YAML/API/CLI、file/etcd store、HTTP invoke、NATS 订阅触发和 publish/doctor 辅助命令已有；事件 ack/retry、Workflow 自动执行、scale-to-0 未实现。 |
-| 个人 PV/PVC | 未实现 | 尚无 PV/PVC 抽象和多机存储实现。 |
-| 个人 GPU | 部分完成 | `Job` + Slurm submitter 最小闭环已有；真机验证依赖 SSH 凭据注入、submitter 镜像发布/拉取和 Harbor endpoint 配置，不是原生 GPU 调度。 |
-| 个人 Security Context | 未实现 | 尚无 runAsUser、runAsGroup、fsGroup 映射。 |
-
 ## 测试与当前验证基线
 
 推荐先跑包级测试，再跑人工 testcase：
@@ -288,12 +294,6 @@ go test ./pkg/yaml ./internal/bridge/logbook ./internal/bridge/captain ./interna
 ```bash
 go test ./...
 ```
-
-当前在干净模块缓存下，全量测试会因为 `go.mod` 中
-`github.com/docker/docker v27.0.0+incompatible` 被 Go 解析为不存在的
-`v27.0.0` revision 而导致 Docker runtime 相关包 setup failed；这不是某个
-业务单测断言失败。修复依赖版本前，不要在文档或答辩中宣称 `go test ./...`
-全量通过。
 
 ## AI 使用说明
 

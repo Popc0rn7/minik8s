@@ -22,6 +22,8 @@ import (
 type fakePodClient struct {
 	pods       []*pod.Pod
 	services   []*service.Service
+	config     *ClusterConfig
+	configErr  error
 	heartbeat  NodeHeartbeat
 	updates    []*pod.Pod
 	statuses   []node.NodeStatus
@@ -29,6 +31,18 @@ type fakePodClient struct {
 	onUpdate   func()
 	listErrors []error
 	listCalls  int
+}
+
+func (f *fakePodClient) GetClusterConfig(ctx context.Context) (*ClusterConfig, error) {
+	_ = ctx
+	if f.configErr != nil {
+		return nil, f.configErr
+	}
+	if f.config == nil {
+		return &ClusterConfig{}, nil
+	}
+	cp := *f.config
+	return &cp, nil
 }
 
 func (f *fakePodClient) ListAssignedPods(ctx context.Context, heartbeat NodeHeartbeat) ([]*pod.Pod, error) {
@@ -152,6 +166,52 @@ func TestSailerSyncOnceSyncsServiceProxyWhenConfigured(t *testing.T) {
 	require.Len(t, proxy.synced, 1)
 	require.Len(t, proxy.synced[0], 1)
 	assert.Equal(t, "nginx-service", proxy.synced[0][0].Name)
+}
+
+func TestSailerSyncOnceUsesControlPlaneClusterDNSWhenNoOverride(t *testing.T) {
+	rt := mock.NewMockRuntime()
+	rt.NetNSPath = "/proc/101/ns/net"
+	client := &fakePodClient{
+		pods:   []*pod.Pod{testPod("nginx", "node-a")},
+		config: &ClusterConfig{DNSEnabled: true, ClusterDNS: "192.168.1.8", ClusterDomain: "cluster.local"},
+	}
+	k := New(Config{NodeName: "node-a", Runtime: rt, Client: client})
+
+	require.NoError(t, k.SyncOnce(context.Background()))
+
+	require.Len(t, rt.CreateSandboxConfigs, 1)
+	assert.Equal(t, []string{"192.168.1.8"}, rt.CreateSandboxConfigs[0].DNS)
+	assert.Equal(t, []string{"default.svc.cluster.local", "svc.cluster.local", "cluster.local"}, rt.CreateSandboxConfigs[0].DNSSearch)
+}
+
+func TestSailerClusterDNSOverrideWinsOverControlPlaneConfig(t *testing.T) {
+	rt := mock.NewMockRuntime()
+	rt.NetNSPath = "/proc/101/ns/net"
+	client := &fakePodClient{
+		pods:   []*pod.Pod{testPod("nginx", "node-a")},
+		config: &ClusterConfig{DNSEnabled: true, ClusterDNS: "192.168.1.8", ClusterDomain: "cluster.local"},
+	}
+	k := New(Config{NodeName: "node-a", Runtime: rt, Client: client, ClusterDNS: "10.0.0.53"})
+
+	require.NoError(t, k.SyncOnce(context.Background()))
+
+	require.Len(t, rt.CreateSandboxConfigs, 1)
+	assert.Equal(t, []string{"10.0.0.53"}, rt.CreateSandboxConfigs[0].DNS)
+}
+
+func TestSailerSyncOnceIgnoresClusterConfigFetchError(t *testing.T) {
+	rt := mock.NewMockRuntime()
+	rt.NetNSPath = "/proc/101/ns/net"
+	client := &fakePodClient{
+		pods:      []*pod.Pod{testPod("nginx", "node-a")},
+		configErr: errors.New("harbor unavailable"),
+	}
+	k := New(Config{NodeName: "node-a", Runtime: rt, Client: client})
+
+	require.NoError(t, k.SyncOnce(context.Background()))
+
+	require.Len(t, rt.CreateSandboxConfigs, 1)
+	assert.Empty(t, rt.CreateSandboxConfigs[0].DNS)
 }
 
 func TestSailerSyncOnceCleansRemovedAssignedPods(t *testing.T) {

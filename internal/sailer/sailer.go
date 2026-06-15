@@ -3,6 +3,7 @@ package sailer
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	store "minik8s/internal/bridge/logbook"
@@ -146,7 +147,7 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 		syncPods = append(syncPods, localPod)
 	}
 
-	ctrl := NewPodControllerWithNetworkAndDNS(k.runtime, k.local, k.network, k.clusterDNS)
+	ctrl := NewPodControllerWithNetworkAndDNS(k.runtime, k.local, k.network, k.effectiveClusterDNS(ctx))
 	ctrl.SyncPods(ctx, syncPods)
 
 	for _, p := range syncPods {
@@ -178,6 +179,21 @@ func (k *Sailer) SyncOnce(ctx context.Context) error {
 		delete(k.known, key)
 	}
 	return k.SyncProxy(ctx)
+}
+
+func (k *Sailer) effectiveClusterDNS(ctx context.Context) string {
+	if strings.TrimSpace(k.clusterDNS) != "" {
+		return k.clusterDNS
+	}
+	config, err := k.client.GetClusterConfig(ctx)
+	if err != nil {
+		minilog.Warn("sailer-cluster-config", "node=%s error=%v", k.nodeName, err)
+		return ""
+	}
+	if config == nil || !config.DNSEnabled {
+		return ""
+	}
+	return strings.TrimSpace(config.ClusterDNS)
 }
 
 func (k *Sailer) cleanupRuntimeOrphans(ctx context.Context, desiredByKey map[string]*pod.Pod) error {

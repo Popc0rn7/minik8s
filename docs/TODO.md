@@ -83,8 +83,11 @@
 - [x] HPA controller 可按 CPU/Memory utilization 调整 ReplicaSet replicas，并
   支持每轮最多扩缩 1 个副本、缩容冷却。
 - [ ] 当前是简化实现：只支持 target `ReplicaSet`、Resource utilization；
-  metrics 不持久化，`metrics.k8s.io/v1beta1` 只是复用 sailer 样本的最小 adapter，
-  缺少 cAdvisor、custom/external metrics 和 Kubernetes 完整 stabilization policy。
+  metrics addon 不是真实 scraper，metrics 仅保存在控制面内存中，CPU 需要两轮
+  Docker stats 才能由 delta 算出，API 可能返回 stale 样本；NodeMetrics 由
+  PodMetrics 汇总而来，不是节点原生指标；`metrics.k8s.io/v1beta1` 只是复用
+  sailer 样本的最小 adapter，缺少真实 metrics-server、cAdvisor、API
+  aggregation、custom/external metrics 和 Kubernetes 完整 stabilization policy。
 - [ ] 真实压力扩缩容需要补 Linux + Docker 人工验收记录。
 
 ### Runtime
@@ -99,9 +102,18 @@
 
 ### DNS 与转发
 
-- [ ] 未实现 DNS 配置对象。
-- [ ] 未实现集群内域名解析。
-- [ ] 未实现同一 host 下多个 path 转发到不同 Service 的 HTTP gateway。
+- [x] DNS 配置对象、YAML loader、Harbor API、CLI 和 file/etcd store 已实现。
+- [x] CoreDNS hosts 文件与 route snapshot 可由 DNS + Service endpoints 周期同步。
+- [x] HTTP gateway 支持 Host header + longest path match，将同一 host 下多个 path
+  转发到不同 Service endpoints。
+- [x] 启用 DNS addon 后，sailer 可从 Harbor 读取 cluster DNS 配置并为新建 Pod
+  sandbox 注入 resolver；`--cluster-dns` 保留为 override/debug 路径。
+- [x] CoreDNS hosts 同步支持 Kubernetes-like Service FQDN：
+  `<service>.<namespace>.svc.cluster.local`、`<service>.<namespace>.svc` 和短名。
+- [ ] Pod 内 DNS 仍依赖 bridge `--gateway-ip` 设置为 Pod 可达的 node-a 地址；需要保留
+  自动 cluster DNS 注入、Service FQDN 和 host/path gateway 的真实双机验收记录。
+- [ ] 当前是简化实现：没有 Kubernetes Ingress 完整语义、TLS、外部 DNS controller
+  或强一致 route 更新。
 
 ### 多机部署
 

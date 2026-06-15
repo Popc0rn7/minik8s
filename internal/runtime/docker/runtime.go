@@ -116,7 +116,7 @@ func (d *DockerRuntime) CreateSandbox(ctx context.Context, config *runtime.Sandb
 	if err := d.CleanupPod(ctx, config.Namespace, config.Name); err != nil {
 		return "", err
 	}
-	hostConfig := sandboxHostConfig(portBindings, config.NetworkMode, config.DNS)
+	hostConfig := sandboxHostConfig(portBindings, config.NetworkMode, config.DNS, config.DNSSearch)
 
 	resp, err := d.client.ContainerCreate(ctx, &container.Config{
 		Image:        imageName,
@@ -136,10 +136,15 @@ func sandboxHostConfig(portBindings nat.PortMap, networkMode string, dnsServers 
 	if len(dnsServers) > 0 {
 		dns = dnsServers[0]
 	}
+	var dnsSearch []string
+	if len(dnsServers) > 1 {
+		dnsSearch = dnsServers[1]
+	}
 	hostConfig := &container.HostConfig{
 		PortBindings: portBindings,
 		NetworkMode:  container.NetworkMode("none"),
 		DNS:          dns,
+		DNSSearch:    dnsSearch,
 	}
 	if networkMode != "" {
 		hostConfig.NetworkMode = container.NetworkMode(networkMode)
@@ -470,7 +475,7 @@ func parsePortBindings(ports []runtime.ContainerPort) (nat.PortMap, nat.PortSet,
 
 		if port.HostPort != 0 {
 			portBindings[containerPort] = []nat.PortBinding{
-				{HostPort: fmt.Sprintf("%d", port.HostPort)},
+				{HostIP: port.HostIP, HostPort: fmt.Sprintf("%d", port.HostPort)},
 			}
 		}
 	}

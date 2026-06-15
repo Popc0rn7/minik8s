@@ -85,6 +85,29 @@ func prefixPathMatches(prefix, requestPath string) bool {
 	return strings.HasSuffix(prefix, "/") || requestPath[len(prefix)] == '/'
 }
 
+func BackendPath(route PathRoute, requestPath string) string {
+	if requestPath == "" {
+		requestPath = "/"
+	}
+	if route.PathType != "Prefix" || route.Path == "" || route.Path == "/" {
+		return requestPath
+	}
+	if requestPath == route.Path {
+		return "/"
+	}
+	if prefixPathMatches(route.Path, requestPath) {
+		trimmed := strings.TrimPrefix(requestPath, route.Path)
+		if trimmed == "" {
+			return "/"
+		}
+		if strings.HasPrefix(trimmed, "/") {
+			return trimmed
+		}
+		return "/" + trimmed
+	}
+	return requestPath
+}
+
 func stripPort(host string) string {
 	if i := strings.Index(host, ":"); i >= 0 {
 		return host[:i]

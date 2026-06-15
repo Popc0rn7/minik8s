@@ -51,8 +51,8 @@ func (h *FileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
 		req.Host = r.Host
-		req.URL.Path = r.URL.Path
-		req.URL.RawPath = r.URL.RawPath
+		req.URL.Path = BackendPath(route, r.URL.Path)
+		req.URL.RawPath = ""
 		req.URL.RawQuery = r.URL.RawQuery
 	}
 	proxy.ServeHTTP(w, r)

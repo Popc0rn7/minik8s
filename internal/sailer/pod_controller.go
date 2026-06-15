@@ -204,6 +204,7 @@ func (pc *PodController) handlePendingPod(ctx context.Context, p *pod.Pod) error
 		Ports:       podPorts(p),
 		NetworkMode: pc.sandboxNetworkMode(p),
 		DNS:         pc.sandboxDNS(),
+		DNSSearch:   pc.sandboxDNSSearch(p),
 	})
 	if err != nil {
 		minilog.Error("pod-failed", "pod=%s/%s reason=%v", p.Namespace, p.Name, err)
@@ -300,6 +301,18 @@ func (pc *PodController) sandboxDNS() []string {
 		return nil
 	}
 	return []string{pc.clusterDNS}
+}
+
+func (pc *PodController) sandboxDNSSearch(p *pod.Pod) []string {
+	if strings.TrimSpace(pc.clusterDNS) == "" {
+		return nil
+	}
+	namespace := podNamespace(p.Namespace)
+	return []string{
+		namespace + ".svc.cluster.local",
+		"svc.cluster.local",
+		"cluster.local",
+	}
 }
 
 // handleRunningPod checks and enforces restart policy
@@ -517,6 +530,7 @@ func podPorts(p *pod.Pod) []runtime.ContainerPort {
 			ports = append(ports, runtime.ContainerPort{
 				Name:          port.Name,
 				ContainerPort: port.ContainerPort,
+				HostIP:        port.HostIP,
 				HostPort:      port.HostPort,
 				Protocol:      port.Protocol,
 			})

@@ -141,12 +141,12 @@ bridge fdb show dev mk8s-vxlan
 
 - [x] `startup.md`：`init`、static deps pod、bridge dependency startup。
 - [x] `two-node.md`：双节点预检、启动、Ready、CNI 基线。
-- [x] `pod.md`：Pod lifecycle、调度、NodeLost 和删除 Node。
+- [ ] `pod.md`：Pod lifecycle、调度、NodeLost 和删除 Node；新增多容器 localhost 与共享 volume 后需补测。
 - [x] `cni.md`：mooring CNI、Pod IP、同节点和跨节点通信。
-- [x] `service.md`：Service endpoints、ClusterIP、NodePort、负载均衡、iptables 清理。
-- [ ] `replicaset.md`：ReplicaSet 创建、补齐、缩容和级联删除。
-- [x] `logbook.md`：file/etcd Logbook、对象持久化和 bridge 重启恢复。
-- [ ] `addons.md`：addon manifest、`--addons` readiness 和 doctor 状态。
+- [ ] `service.md`：Service endpoints、ClusterIP、NodePort、负载均衡、iptables 清理；新增集群外 NodePort 证据后需补测。
+- [ ] `replicaset.md`：ReplicaSet 创建、补齐、缩容和级联删除；新增跨节点分布与 NodeLost 补副本后需补测。
+- [x] `logbook.md`：file/etcd Logbook、对象持久化和 bridge 重启恢复；LOGBOOK-06 为可选工程增强项，尚未记录通过。
+- [x] `addons.md`：addon manifest、`--addons` readiness 和 doctor 状态。
 - [ ] `metrics-server.md`：metrics API 和 `kubectl top`。
 - [ ] `hpa.md`：HPA metrics、扩容和缩容。
 - [ ] `dns.md`：DNS 对象和 gateway host/path routing。

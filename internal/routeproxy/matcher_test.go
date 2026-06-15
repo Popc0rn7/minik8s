@@ -41,3 +41,17 @@ func TestEndpointPickerRoundRobins(t *testing.T) {
 		t.Fatalf("picker did not round-robin: %v then %v", first, second)
 	}
 }
+
+func TestBackendPathStripsMatchedPrefix(t *testing.T) {
+	route := PathRoute{Path: "/path1", PathType: "Prefix"}
+
+	if got := BackendPath(route, "/path1"); got != "/" {
+		t.Fatalf("BackendPath exact prefix = %q, want /", got)
+	}
+	if got := BackendPath(route, "/path1/assets/app.js"); got != "/assets/app.js" {
+		t.Fatalf("BackendPath nested prefix = %q", got)
+	}
+	if got := BackendPath(PathRoute{Path: "/", PathType: "Prefix"}, "/path1"); got != "/path1" {
+		t.Fatalf("BackendPath root prefix = %q", got)
+	}
+}

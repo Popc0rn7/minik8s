@@ -46,7 +46,7 @@ func Sync(ctx context.Context, config Config) error {
 		return key(items[i].Namespace, items[i].Name) < key(items[j].Namespace, items[j].Name)
 	})
 	snapshot := routeproxy.Snapshot{Hosts: make([]routeproxy.HostRoute, 0, len(items))}
-	hosts := make([]string, 0, len(items))
+	hosts := make([]string, 0, len(items)+len(services))
 	for _, d := range items {
 		host := strings.TrimSpace(d.Spec.Host)
 		if host == "" {
@@ -67,6 +67,21 @@ func Sync(ctx context.Context, config Config) error {
 			hostRoute.Paths = append(hostRoute.Paths, route)
 		}
 		snapshot.Hosts = append(snapshot.Hosts, hostRoute)
+	}
+	for _, svc := range services {
+		clusterIP := strings.TrimSpace(svc.Status.ClusterIP)
+		if clusterIP == "" {
+			continue
+		}
+		namespace := strings.TrimSpace(svc.Namespace)
+		if namespace == "" {
+			namespace = "default"
+		}
+		name := strings.TrimSpace(svc.Name)
+		if name == "" {
+			continue
+		}
+		hosts = append(hosts, fmt.Sprintf("%s %s.%s.svc.cluster.local %s.%s.svc %s", clusterIP, name, namespace, name, namespace, name))
 	}
 	if err := writeHosts(config.HostsPath, hosts); err != nil {
 		return err

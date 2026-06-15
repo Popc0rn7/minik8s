@@ -17,6 +17,7 @@ Pod 变化后 endpoints 动态刷新，删除 Service 后清理 iptables。
 | SVC-01 | selector 生成 endpoints | node-a | 删除 Service/Pod |
 | SVC-02 | ClusterIP 规则与 Pod 内访问 | node-a | 删除 Service/client/backend |
 | SVC-03 | NodePort 规则与宿主机访问 | node-a，node-b 观察 | 删除 NodePort Service |
+| SVC-03B | 从集群外节点访问 NodePort | node-b 或第三方机器 | 删除 NodePort Service |
 | SVC-04 | 双节点多 endpoint 与负载均衡规则 | node-a + node-b | 删除两个 backend |
 | SVC-05 | endpoint 动态更新 | node-a + node-b | 删除 Service/Pod |
 | SVC-06 | 删除 Service 清理 iptables | node-a | 无 MK8S-SVC 残留 |
@@ -132,6 +133,45 @@ curl --noproxy '*' -fsS "http://$NODE_B_IP:30080" >/tmp/minik8s-service-nodeport
   旧 `cni0` 或其他同 PodCIDR route 抢路由；重启当前 `sailer run` 后 netagent 应刷新本地
   PodCIDR route 到 `mk8s0`。
 - node-b curl 失败：先记录为观察项，不影响 node-a 必测结论。
+
+## SVC-03B：从集群外节点访问 NodePort
+
+目标：补充 FINAL 中“集群外访问 Service”的证据。使用 node-b 或第三方机器访问 node-a 的
+NodePort，证明 NodePort 暴露在集群外网络可达地址上。
+
+前置：
+
+- node-a 已通过 SVC-03 创建 `nginx-nodeport`。
+- node-b 或第三方机器能够访问 `${NODE_A_IP}:30080`。
+- 如果使用第三方机器，不需要运行 Minik8s，只需要能访问 node-a 内网 IP。
+
+node-a 检查 Service 和规则：
+
+```fish
+./kubectl get service nginx-nodeport
+./kubectl describe service nginx-nodeport
+iptables-save -t nat | grep -E '30080|MK8S-SVC'
+```
+
+node-b 或第三方机器执行：
+
+```fish
+curl --noproxy '*' -fsS "http://$NODE_A_IP:30080" >/tmp/minik8s-service-nodeport-external.html
+head -n 1 /tmp/minik8s-service-nodeport-external.html
+```
+
+期望：
+
+- `describe service nginx-nodeport` 显示 NodePort `30080` 和非空 endpoints。
+- 从 node-b 或第三方机器访问 `${NODE_A_IP}:30080` 返回 nginx HTML 或 backend 响应。
+- 输出记录中保留访问来源机器、目标地址和响应摘要。
+
+失败排查：
+
+- node-a 本机访问成功、外部访问失败：检查 node-a 防火墙、安全组、监听地址和路由。
+- node-b 访问 `${NODE_B_IP}:30080` 失败不等于本 case 失败；本 case 只要求从集群外网络
+  访问 node-a 对外入口。
+- 第三方机器经过代理导致失败：使用 `curl --noproxy '*'` 或清理代理环境变量。
 
 ## SVC-04：双节点多 endpoint 与负载均衡
 
@@ -250,6 +290,7 @@ node-a：
 ./kubectl delete pod busybox-client; or true
 rm -f /tmp/minik8s-service-clusterip.html
 rm -f /tmp/minik8s-service-nodeport-a.html
+rm -f /tmp/minik8s-service-nodeport-external.html
 sleep 8
 ./kubectl get services
 ./kubectl get pods
@@ -260,5 +301,6 @@ node-b：
 
 ```fish
 rm -f /tmp/minik8s-service-nodeport-b.html
+rm -f /tmp/minik8s-service-nodeport-external.html
 docker ps -a --filter label=minik8s.pod.namespace=default --format '{{.Names}} {{.Status}}'
 ```
