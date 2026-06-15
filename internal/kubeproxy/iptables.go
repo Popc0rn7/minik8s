@@ -78,19 +78,47 @@ func (p *IPTablesProxy) SyncService(ctx context.Context, svc *service.Service) e
 
 func (p *IPTablesProxy) DeleteService(ctx context.Context, svc *service.Service) error {
 	chain := serviceChainName(svc)
+	var firstErr error
 	for _, port := range svc.Spec.Ports {
 		proto := normalizedProtocol(port.Protocol)
-		_ = p.runner(ctx, "-t", "nat", "-D", "PREROUTING", "-p", proto, "-d", svc.Status.ClusterIP, "--dport", fmt.Sprint(port.Port), "-j", chain)
-		_ = p.runner(ctx, "-t", "nat", "-D", "OUTPUT", "-p", proto, "-d", svc.Status.ClusterIP, "--dport", fmt.Sprint(port.Port), "-j", chain)
+		if err := p.deleteRuleUntilMissing(ctx, "PREROUTING", "-p", proto, "-d", svc.Status.ClusterIP, "--dport", fmt.Sprint(port.Port), "-j", chain); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if err := p.deleteRuleUntilMissing(ctx, "OUTPUT", "-p", proto, "-d", svc.Status.ClusterIP, "--dport", fmt.Sprint(port.Port), "-j", chain); err != nil && firstErr == nil {
+			firstErr = err
+		}
 		if svc.Spec.Type == service.ServiceTypeNodePort && port.NodePort > 0 {
-			_ = p.runner(ctx, "-t", "nat", "-D", "PREROUTING", "-p", proto, "--dport", fmt.Sprint(port.NodePort), "-j", chain)
-			_ = p.runner(ctx, "-t", "nat", "-D", "OUTPUT", "-p", proto, "--dport", fmt.Sprint(port.NodePort), "-j", chain)
+			if err := p.deleteRuleUntilMissing(ctx, "PREROUTING", "-p", proto, "--dport", fmt.Sprint(port.NodePort), "-j", chain); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			if err := p.deleteRuleUntilMissing(ctx, "OUTPUT", "-p", proto, "--dport", fmt.Sprint(port.NodePort), "-j", chain); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	_ = p.runner(ctx, "-t", "nat", "-F", chain)
-	_ = p.runner(ctx, "-t", "nat", "-X", chain)
+	if err := p.runner(ctx, "-t", "nat", "-F", chain); err != nil && !isIPTablesMissingRule(err) && firstErr == nil {
+		firstErr = err
+	}
+	if err := p.runner(ctx, "-t", "nat", "-X", chain); err != nil && !isIPTablesMissingRule(err) && firstErr == nil {
+		firstErr = err
+	}
 	delete(p.known, serviceKey(svc))
-	return nil
+	return firstErr
+}
+
+func (p *IPTablesProxy) deleteRuleUntilMissing(ctx context.Context, chain string, rule ...string) error {
+	args := append([]string{"-t", "nat", "-D", chain}, rule...)
+	for i := 0; i < 32; i++ {
+		err := p.runner(ctx, args...)
+		if err == nil {
+			continue
+		}
+		if isIPTablesMissingRule(err) {
+			return nil
+		}
+		return err
+	}
+	return fmt.Errorf("iptables delete did not converge for %s %s", chain, strings.Join(rule, " "))
 }
 
 func (p *IPTablesProxy) appendClusterIPRules(ctx context.Context, chain, clusterIP string, port int32, proto string) error {
@@ -150,6 +178,17 @@ func runIPTables(ctx context.Context, args ...string) error {
 		return fmt.Errorf("iptables %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func isIPTablesMissingRule(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Bad rule") ||
+		strings.Contains(msg, "No chain/target/match by that name") ||
+		strings.Contains(msg, "No such file or directory") ||
+		strings.Contains(msg, "does a matching rule exist")
 }
 
 func serviceChainName(svc *service.Service) string {

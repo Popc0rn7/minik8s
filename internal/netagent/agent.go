@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"minik8s/internal/minilog"
 	"minik8s/internal/netregistry"
 )
 
@@ -127,19 +128,19 @@ func (a *Agent) Run(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
-	if err := a.Sync(ctx); err != nil {
-		return err
-	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
+		if err := a.Sync(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			minilog.Warn("netagent-sync", "node=%s error=%v", a.local.Name, err)
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := a.Sync(ctx); err != nil {
-				return err
-			}
 		}
 	}
 }
@@ -165,6 +166,9 @@ func (a *Agent) ensureBridgeDevice() error {
 		return err
 	}
 	if err := a.runner("ip", "link", "set", a.bridgeName, "up"); err != nil {
+		return err
+	}
+	if err := a.runner("ip", "route", "replace", a.local.PodCIDR, "dev", a.bridgeName); err != nil {
 		return err
 	}
 	if err := a.runner("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {

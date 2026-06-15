@@ -3,6 +3,7 @@ package sailer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -19,18 +20,28 @@ import (
 )
 
 type fakePodClient struct {
-	pods      []*pod.Pod
-	services  []*service.Service
-	heartbeat NodeHeartbeat
-	updates   []*pod.Pod
-	statuses  []node.NodeStatus
-	metrics   []*metrics.PodMetrics
-	onUpdate  func()
+	pods       []*pod.Pod
+	services   []*service.Service
+	heartbeat  NodeHeartbeat
+	updates    []*pod.Pod
+	statuses   []node.NodeStatus
+	metrics    []*metrics.PodMetrics
+	onUpdate   func()
+	listErrors []error
+	listCalls  int
 }
 
 func (f *fakePodClient) ListAssignedPods(ctx context.Context, heartbeat NodeHeartbeat) ([]*pod.Pod, error) {
 	_ = ctx
 	f.heartbeat = heartbeat
+	f.listCalls++
+	if len(f.listErrors) > 0 {
+		err := f.listErrors[0]
+		f.listErrors = f.listErrors[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	result := make([]*pod.Pod, 0)
 	for _, p := range f.pods {
 		if heartbeat.Node != nil && p.Spec.NodeName == heartbeat.Node.Name() {
@@ -217,6 +228,30 @@ func TestSailerRunCleansKnownPodsOnCancel(t *testing.T) {
 
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Contains(t, rt.CleanupPodCalls, "default/nginx")
+}
+
+func TestSailerRunRetriesSyncErrorAndRecovers(t *testing.T) {
+	rt := mock.NewMockRuntime()
+	rt.NetNSPath = "/proc/101/ns/net"
+	ctx, cancel := context.WithCancel(context.Background())
+	var client *fakePodClient
+	client = &fakePodClient{
+		pods:       []*pod.Pod{testPod("nginx", "node-a")},
+		listErrors: []error{errors.New("harbor unavailable")},
+		onUpdate: func() {
+			assert.Empty(t, client.statuses, "transient sync errors must not mark the node Unknown")
+			cancel()
+		},
+	}
+	k := New(Config{NodeName: "node-a", Runtime: rt, Client: client, Interval: time.Millisecond})
+
+	err := k.Run(ctx)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.GreaterOrEqual(t, client.listCalls, 2)
+	assert.Len(t, client.updates, 1)
+	require.Len(t, client.statuses, 1)
+	assert.Equal(t, "SailerStopped", client.statuses[0].Conditions[0].Reason)
 }
 
 func TestSailerShutdownCleansNodePodsWhenKnownIsEmpty(t *testing.T) {

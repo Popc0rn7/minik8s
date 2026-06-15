@@ -69,26 +69,25 @@ func (k *Sailer) Run(ctx context.Context) error {
 	if err := k.validate(); err != nil {
 		return err
 	}
-	if err := k.SyncOnce(ctx); err != nil {
-		if ctx.Err() != nil {
-			k.shutdownAfterCancel()
-		}
-		return err
-	}
+	return k.runSyncLoop(ctx)
+}
+
+func (k *Sailer) runSyncLoop(ctx context.Context) error {
 	ticker := time.NewTicker(k.interval)
 	defer ticker.Stop()
 	for {
+		if err := k.SyncOnce(ctx); err != nil {
+			if ctx.Err() != nil {
+				k.shutdownAfterCancel()
+				return ctx.Err()
+			}
+			minilog.Warn("sailer-sync", "node=%s error=%v", k.nodeName, err)
+		}
 		select {
 		case <-ctx.Done():
 			k.shutdownAfterCancel()
 			return ctx.Err()
 		case <-ticker.C:
-			if err := k.SyncOnce(ctx); err != nil {
-				if ctx.Err() != nil {
-					k.shutdownAfterCancel()
-				}
-				return err
-			}
 		}
 	}
 }

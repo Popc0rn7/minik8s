@@ -2234,7 +2234,7 @@ func (a *App) sailerRun(ctx context.Context, args []string, out io.Writer) error
 	options.nodeIP = conf.NodeIP
 	options.podCIDR = conf.PodCIDR
 	podClient := nodeSailer.NewHTTPPodClientWithToken(conf.APIServer, conf.NodeToken, a.httpClient)
-	assignedNode, err := podClient.GetNode(ctx, conf.NodeName)
+	assignedNode, err := getNodeWithRetry(ctx, podClient, conf.NodeName, options.interval)
 	if err != nil {
 		return err
 	}
@@ -2248,6 +2248,29 @@ func (a *App) sailerRun(ctx context.Context, args []string, out io.Writer) error
 	options.nodeIP = assignedNode.InternalIP()
 	options.podCIDR = assignedNode.Spec.PodCIDR
 	return a.runAssignedSailer(ctx, options, podClient, assignedNode, out)
+}
+
+func getNodeWithRetry(ctx context.Context, client *nodeSailer.HTTPPodClient, nodeName string, interval time.Duration) (*node.Node, error) {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		assignedNode, err := client.GetNode(ctx, nodeName)
+		if err == nil {
+			return assignedNode, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		minilog.Warn("sailer-startup", "node=%s harbor lookup failed error=%v", nodeName, err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (a *App) runAssignedSailer(ctx context.Context, options sailerOptions, podClient *nodeSailer.HTTPPodClient, assignedNode *node.Node, out io.Writer) error {
