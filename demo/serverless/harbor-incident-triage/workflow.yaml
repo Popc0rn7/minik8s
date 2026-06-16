@@ -1,0 +1,45 @@
+kind: Workflow
+apiVersion: v1
+metadata:
+  name: harbor-incident-triage
+  labels:
+    app: harbor-incident-triage
+spec:
+  steps:
+  - name: normalize-input
+    functionRef:
+      name: normalize-input
+  - name: tiny-log-classifier
+    functionRef:
+      name: tiny-log-classifier
+    branches:
+    - contains: '"severity":"critical"'
+      next: notify-captain
+    - contains: '"category":"network"'
+      next: network-diagnose
+    - contains: '"category":"runtime"'
+      next: runtime-diagnose
+    - contains: '"category":"build"'
+      next: build-diagnose
+    - contains: '"category":"app"'
+      next: app-diagnose
+    - contains: '"category":"unknown"'
+      next: quick-reply
+  - name: quick-reply
+    functionRef:
+      name: quick-reply
+  - name: notify-captain
+    functionRef:
+      name: notify-captain
+  - name: network-diagnose
+    functionRef:
+      name: network-diagnose
+  - name: runtime-diagnose
+    functionRef:
+      name: runtime-diagnose
+  - name: build-diagnose
+    functionRef:
+      name: build-diagnose
+  - name: app-diagnose
+    functionRef:
+      name: app-diagnose

@@ -1,0 +1,10 @@
+kind: EventTrigger
+apiVersion: v1
+metadata:
+  name: harbor-incident-created
+  labels:
+    app: harbor-incident-triage
+spec:
+  subject: minik8s.incident.created
+  functionRef:
+    name: normalize-input

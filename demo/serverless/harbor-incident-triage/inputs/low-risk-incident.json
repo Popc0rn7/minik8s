@@ -1,0 +1,8 @@
+{
+  "source": "demo",
+  "title": "Operator asks for cluster notes",
+  "log": "notice debug question about where to find recent events",
+  "labels": {
+    "cluster": "minik8s-demo"
+  }
+}

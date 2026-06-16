@@ -1,0 +1,48 @@
+import json
+import sys
+
+
+def compact(data):
+    return json.dumps(data, separators=(",", ":"), sort_keys=True)
+
+
+def append_trace(event, step):
+    trace = list(event.get("trace", []))
+    trace.append(step)
+    event["trace"] = trace
+    event["executedSteps"] = trace
+    return event
+
+
+def main(event):
+    text = str(event.get("normalizedText", ""))
+    diagnosis = ["Reproduce the build with the same proxy, registry, and base image settings."]
+    if "apt-get" in text:
+        diagnosis.append("apt-get hangs often come from DNS, proxy, or package mirror reachability inside the build context.")
+    if "docker pull" in text or "registry" in text:
+        diagnosis.append("Check registry credentials, image name, tag, and proxy variables passed to Docker.")
+    if "glibc" in text:
+        diagnosis.append("Check the target host glibc version and build image compatibility.")
+    if "npm install" in text:
+        diagnosis.append("Check Node version, npm registry, lockfile, and directory permissions.")
+    out = dict(event)
+    out.update(
+        {
+            "ok": True,
+            "workflow": "harbor-incident-triage",
+            "step": "build_diagnose",
+            "diagnosisType": "build",
+            "diagnosis": diagnosis,
+            "notified": bool(out.get("notified", False)),
+        }
+    )
+    return append_trace(out, "build_diagnose")
+
+
+def handler(event):
+    payload = json.loads(event or "{}")
+    return compact(main(payload))
+
+
+if __name__ == "__main__":
+    print(json.dumps(main(json.load(sys.stdin)), indent=2, sort_keys=True))

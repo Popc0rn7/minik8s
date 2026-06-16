@@ -1,0 +1,152 @@
+kind: Function
+apiVersion: v1
+metadata:
+  name: tiny-log-classifier
+  labels:
+    app: harbor-incident-triage
+spec:
+  runtime: python
+  handler: handler
+  port: 8080
+  minReplicas: 0
+  maxReplicas: 5
+  targetConcurrency: 1
+  idleTimeoutSeconds: 30
+  code: |
+    import json
+    import sys
+    
+    
+    MODEL = {
+        "categories": {
+            "network": [
+                "nodeport",
+                "service",
+                "endpoint",
+                "iptables",
+                "ipvs",
+                "dns",
+                "cni",
+                "vxlan",
+                "flannel",
+                "timeout",
+                "connection refused",
+                "security group",
+                "port",
+                "clusterip",
+                "cannot be reached",
+            ],
+            "runtime": [
+                "oomkilled",
+                "crashloop",
+                "restart",
+                "exit code",
+                "container",
+                "killed",
+                "segmentation fault",
+                "permission denied",
+                "volume",
+            ],
+            "build": [
+                "docker pull",
+                "docker build",
+                "apt-get",
+                "registry",
+                "image",
+                "proxy",
+                "build",
+                "glibc",
+                "go build",
+                "npm install",
+            ],
+            "app": [
+                "502",
+                "404",
+                "500",
+                "nginx",
+                "upstream",
+                "http",
+                "api",
+                "websocket",
+                "bad gateway",
+                "not found",
+            ],
+        },
+        "severity": {
+            "critical": [
+                "production down",
+                "unreachable",
+                "cannot be reached",
+                "crashloop",
+                "oomkilled",
+                "all requests failed",
+                "timeout",
+            ],
+            "warning": ["slow", "retry", "failed once", "unstable", "high latency"],
+            "info": ["notice", "debug", "question"],
+        },
+    }
+    
+    
+    def compact(data):
+        return json.dumps(data, separators=(",", ":"), sort_keys=True)
+    
+    
+    def append_trace(event, step):
+        trace = list(event.get("trace", []))
+        trace.append(step)
+        event["trace"] = trace
+        return event
+    
+    
+    def matches(text, keywords):
+        return [keyword for keyword in keywords if keyword in text]
+    
+    
+    def best_label(text, groups, default):
+        best_name = default
+        best_hits = []
+        for name, keywords in groups.items():
+            hits = matches(text, keywords)
+            if len(hits) > len(best_hits):
+                best_name = name
+                best_hits = hits
+        return best_name, best_hits
+    
+    
+    def confidence(hit_count, total_keywords):
+        if hit_count <= 0 or total_keywords <= 0:
+            return 0.05
+        score = hit_count / total_keywords
+        return min(0.99, max(0.05, round(score, 2)))
+    
+    
+    def main(event):
+        text = str(event.get("normalizedText") or (event.get("title", "") + " " + event.get("log", ""))).lower()
+        category, category_hits = best_label(text, MODEL["categories"], "unknown")
+        severity, severity_hits = best_label(text, MODEL["severity"], "info")
+        if not severity_hits:
+            severity = "info"
+        category_keywords = MODEL["categories"].get(category, [])
+        out = dict(event)
+        out.update(
+            {
+                "ok": True,
+                "step": "tiny_log_classifier",
+                "category": category,
+                "severity": severity,
+                "confidence": confidence(len(category_hits), len(category_keywords)),
+                "matchedKeywords": category_hits,
+                "severityKeywords": severity_hits,
+            }
+        )
+        return append_trace(out, "tiny_log_classifier")
+    
+    
+    def handler(event):
+        payload = json.loads(event or "{}")
+        return compact(main(payload))
+    
+    
+    if __name__ == "__main__":
+        print(json.dumps(main(json.load(sys.stdin)), indent=2, sort_keys=True))

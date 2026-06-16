@@ -16,8 +16,9 @@ GPU_SUBMITTER_IMAGE ?= ghcr.io/popc0rn7/gpu-submitter
 IMAGE_TAG ?= latest
 PLATFORM ?= linux/amd64
 DEPLOY_ARGS ?=
+DEMO_DIR ?= demo/serverless/harbor-incident-triage
 
-.PHONY: build prod prod-build prod-push prod-cni mooring-cni-image push-mooring-cni-image gpu-submitter-image push-gpu-submitter-image deploy-prod prod-deploy test bridge sailer-once sailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
+.PHONY: build prod prod-build prod-push prod-cni prod-demo mooring-cni-image push-mooring-cni-image gpu-submitter-image push-gpu-submitter-image deploy-prod prod-deploy test bridge sailer-once sailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
 
 build:
 	go build -o $(MINIK8S) ./cmd/minik8s
@@ -34,6 +35,9 @@ prod-push:
 
 prod-cni: mooring-cni-image push-mooring-cni-image
 	MOORING_CNI_IMAGE="$(MOORING_CNI_IMAGE)" IMAGE_TAG="$(IMAGE_TAG)" scripts/deploy-prod.sh --pull-image-only
+
+prod-demo:
+	DEMO_DIR="$(DEMO_DIR)" scripts/deploy-demo.sh
 
 mooring-cni-image:
 	MOORING_CNI_IMAGE="$(MOORING_CNI_IMAGE)" IMAGE_TAG="$(IMAGE_TAG)" PLATFORM="$(PLATFORM)" scripts/build-mooring-cni-image.sh
