@@ -16,6 +16,7 @@ import (
 	"minik8s/internal/job"
 	"minik8s/internal/pod"
 	"minik8s/internal/workflow"
+	"minik8s/internal/workflowrun"
 )
 
 var (
@@ -25,6 +26,8 @@ var (
 	ErrEventTriggerAlreadyExists = errors.New("eventtrigger already exists")
 	ErrWorkflowNotFound          = errors.New("workflow not found")
 	ErrWorkflowAlreadyExists     = errors.New("workflow already exists")
+	ErrWorkflowRunNotFound       = errors.New("workflowrun not found")
+	ErrWorkflowRunAlreadyExists  = errors.New("workflowrun already exists")
 )
 
 type FunctionStore interface {
@@ -48,6 +51,14 @@ type WorkflowStore interface {
 	Get(name, namespace string) (*workflow.Workflow, error)
 	List(namespace string, selector *pod.LabelSelector) ([]*workflow.Workflow, error)
 	Update(wf *workflow.Workflow) error
+	Delete(name, namespace string) error
+}
+
+type WorkflowRunStore interface {
+	Create(run *workflowrun.WorkflowRun) error
+	Get(name, namespace string) (*workflowrun.WorkflowRun, error)
+	List(namespace string, selector *pod.LabelSelector) ([]*workflowrun.WorkflowRun, error)
+	Update(run *workflowrun.WorkflowRun) error
 	Delete(name, namespace string) error
 }
 
@@ -258,11 +269,14 @@ func (s *FileFunctionStore) Delete(name, namespace string) error {
 
 type InMemoryEventTriggerStore = memoryObjectStore[eventtrigger.EventTrigger]
 type InMemoryWorkflowStore = memoryObjectStore[workflow.Workflow]
+type InMemoryWorkflowRunStore = memoryObjectStore[workflowrun.WorkflowRun]
 type FileEventTriggerStore = fileObjectStore[eventtrigger.EventTrigger]
 type FileWorkflowStore = fileObjectStore[workflow.Workflow]
+type FileWorkflowRunStore = fileObjectStore[workflowrun.WorkflowRun]
 type EtcdFunctionStore = etcdObjectStore[function.Function]
 type EtcdEventTriggerStore = etcdObjectStore[eventtrigger.EventTrigger]
 type EtcdWorkflowStore = etcdObjectStore[workflow.Workflow]
+type EtcdWorkflowRunStore = etcdObjectStore[workflowrun.WorkflowRun]
 
 func NewInMemoryEventTriggerStore() *InMemoryEventTriggerStore {
 	return newMemoryObjectStore[eventtrigger.EventTrigger](normalizeEventTrigger, ErrEventTriggerNotFound, ErrEventTriggerAlreadyExists)
@@ -272,12 +286,20 @@ func NewInMemoryWorkflowStore() *InMemoryWorkflowStore {
 	return newMemoryObjectStore[workflow.Workflow](normalizeWorkflow, ErrWorkflowNotFound, ErrWorkflowAlreadyExists)
 }
 
+func NewInMemoryWorkflowRunStore() *InMemoryWorkflowRunStore {
+	return newMemoryObjectStore[workflowrun.WorkflowRun](normalizeWorkflowRun, ErrWorkflowRunNotFound, ErrWorkflowRunAlreadyExists)
+}
+
 func NewFileEventTriggerStore(path string) (*FileEventTriggerStore, error) {
 	return newFileObjectStore[eventtrigger.EventTrigger](path, "eventtrigger", normalizeEventTrigger, ErrEventTriggerNotFound, ErrEventTriggerAlreadyExists)
 }
 
 func NewFileWorkflowStore(path string) (*FileWorkflowStore, error) {
 	return newFileObjectStore[workflow.Workflow](path, "workflow", normalizeWorkflow, ErrWorkflowNotFound, ErrWorkflowAlreadyExists)
+}
+
+func NewFileWorkflowRunStore(path string) (*FileWorkflowRunStore, error) {
+	return newFileObjectStore[workflowrun.WorkflowRun](path, "workflowrun", normalizeWorkflowRun, ErrWorkflowRunNotFound, ErrWorkflowRunAlreadyExists)
 }
 
 func NewEtcdFunctionStore(client *clientv3.Client) *EtcdFunctionStore {
@@ -290,6 +312,10 @@ func NewEtcdEventTriggerStore(client *clientv3.Client) *EtcdEventTriggerStore {
 
 func NewEtcdWorkflowStore(client *clientv3.Client) *EtcdWorkflowStore {
 	return newEtcdObjectStore[workflow.Workflow](client, workflowPrefix, "workflow", normalizeWorkflow, ErrWorkflowNotFound, ErrWorkflowAlreadyExists)
+}
+
+func NewEtcdWorkflowRunStore(client *clientv3.Client) *EtcdWorkflowRunStore {
+	return newEtcdObjectStore[workflowrun.WorkflowRun](client, workflowRunPrefix, "workflowrun", normalizeWorkflowRun, ErrWorkflowRunNotFound, ErrWorkflowRunAlreadyExists)
 }
 
 type objectResource[T any] interface {
@@ -675,6 +701,20 @@ func normalizeWorkflow(wf *workflow.Workflow) *workflow.Workflow {
 	return copy
 }
 
+func normalizeWorkflowRun(run *workflowrun.WorkflowRun) *workflowrun.WorkflowRun {
+	copy := run.DeepCopy()
+	if copy.Kind == "" {
+		copy.Kind = "WorkflowRun"
+	}
+	if copy.Namespace == "" {
+		copy.Namespace = "default"
+	}
+	if copy.Labels == nil {
+		copy.Labels = map[string]string{}
+	}
+	return copy
+}
+
 func objectKey(name, namespace string) string {
 	if namespace == "" {
 		namespace = "default"
@@ -692,6 +732,8 @@ func objectName(obj any) string {
 		return item.Name
 	case *workflow.Workflow:
 		return item.Name
+	case *workflowrun.WorkflowRun:
+		return item.Name
 	default:
 		return ""
 	}
@@ -707,6 +749,8 @@ func objectNamespace(obj any) string {
 		return item.Namespace
 	case *workflow.Workflow:
 		return item.Namespace
+	case *workflowrun.WorkflowRun:
+		return item.Namespace
 	default:
 		return ""
 	}
@@ -721,6 +765,8 @@ func objectLabels(obj any) map[string]string {
 	case *eventtrigger.EventTrigger:
 		return item.Labels
 	case *workflow.Workflow:
+		return item.Labels
+	case *workflowrun.WorkflowRun:
 		return item.Labels
 	default:
 		return nil

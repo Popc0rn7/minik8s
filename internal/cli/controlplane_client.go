@@ -23,6 +23,7 @@ import (
 	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
 	"minik8s/internal/workflow"
+	"minik8s/internal/workflowrun"
 )
 
 type controlPlaneClient struct {
@@ -484,6 +485,40 @@ func (c *controlPlaneClient) GetWorkflow(ctx context.Context, name, namespace st
 
 func (c *controlPlaneClient) DeleteWorkflow(ctx context.Context, name, namespace string) error {
 	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "workflows", name))
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
+}
+
+func (c *controlPlaneClient) ListWorkflowRuns(ctx context.Context, namespace string) ([]*workflowrun.WorkflowRun, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "workflowruns"))
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []*workflowrun.WorkflowRun `json:"items"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (c *controlPlaneClient) GetWorkflowRun(ctx context.Context, name, namespace string) (*workflowrun.WorkflowRun, error) {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "workflowruns", name))
+	if err != nil {
+		return nil, err
+	}
+	var run workflowrun.WorkflowRun
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, http.StatusOK, &run); err != nil {
+		return nil, err
+	}
+	return &run, nil
+}
+
+func (c *controlPlaneClient) DeleteWorkflowRun(ctx context.Context, name, namespace string) error {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "workflowruns", name))
 	if err != nil {
 		return err
 	}

@@ -1,7 +1,7 @@
 kind: Function
 apiVersion: v1
 metadata:
-  name: runtime-diagnose
+  name: compose-report
   labels:
     app: harbor-incident-triage
 spec:
@@ -30,28 +30,21 @@ spec:
     
     
     def main(event):
-        text = str(event.get("normalizedText", ""))
-        diagnosis = ["Inspect container logs, restart count, exit code, and recent Pod events."]
-        if "oomkilled" in text:
-            diagnosis.append("OOMKilled indicates the memory limit or memory peak should be checked.")
-        if "crashloop" in text:
-            diagnosis.append("CrashLoopBackOff usually points to entrypoint, env, dependency, or startup probe issues.")
-        if "permission denied" in text:
-            diagnosis.append("Check volume permissions, image user, and security context settings.")
-        if "exit code" in text:
-            diagnosis.append("Map the exit code to the process failure path and inspect the previous container log.")
         out = dict(event)
         out.update(
             {
                 "ok": True,
                 "workflow": "harbor-incident-triage",
-                "step": "runtime_diagnose",
-                "diagnosisType": "runtime",
-                "diagnosis": diagnosis,
-                "notified": bool(out.get("notified", False)),
+                "step": "compose_report",
+                "summary": {
+                    "category": out.get("category", "unknown"),
+                    "severity": out.get("severity", "info"),
+                    "notified": bool(out.get("notified", False)),
+                    "diagnosisType": out.get("diagnosisType", "unknown"),
+                },
             }
         )
-        return append_trace(out, "runtime_diagnose")
+        return append_trace(out, "compose_report")
     
     
     def handler(event):

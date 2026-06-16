@@ -13,9 +13,14 @@ type FunctionRef struct {
 	Name string `json:"name" yaml:"name"`
 }
 
+type WorkflowRef struct {
+	Name string `json:"name" yaml:"name"`
+}
+
 type EventTriggerSpec struct {
 	Subject      string      `json:"subject" yaml:"subject"`
-	FunctionRef  FunctionRef `json:"functionRef" yaml:"functionRef"`
+	FunctionRef  FunctionRef `json:"functionRef,omitempty" yaml:"functionRef,omitempty"`
+	WorkflowRef  WorkflowRef `json:"workflowRef,omitempty" yaml:"workflowRef,omitempty"`
 	ReplySubject string      `json:"replySubject,omitempty" yaml:"replySubject,omitempty"`
 }
 

@@ -17,6 +17,12 @@ spec:
   - name: summarize
     functionRef:
       name: summarize
+    next: compose-report
   - name: answer
     functionRef:
       name: answer
+    next: compose-report
+  - name: compose-report
+    functionRef:
+      name: compose-report
+    end: true

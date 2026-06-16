@@ -24,6 +24,7 @@ import (
 	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
 	"minik8s/internal/workflow"
+	"minik8s/internal/workflowrun"
 )
 
 // NewRootCommand builds the Cobra command tree for the minik8s runtime/admin binary.
@@ -328,8 +329,17 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 				if err := app.delete(cmd.Context(), []string{"workflow", ref.name, "-n", app.namespace}, out); err != nil {
 					return err
 				}
+			case resourceWorkflowRuns:
+				client, err := app.controlPlaneClient()
+				if err != nil {
+					return err
+				}
+				if err := client.DeleteWorkflowRun(cmd.Context(), ref.name, app.namespace); err != nil {
+					return err
+				}
+				return writes(out, cliui.SuccessLine("workflowrun/%s deleted", ref.name))
 			default:
-				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, jobs, nodes, functions, eventtriggers, and workflows")
+				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, jobs, nodes, functions, eventtriggers, workflows, and workflowruns")
 			}
 			return nil
 		},
@@ -761,6 +771,7 @@ const (
 	resourceFunctions     resourceName = "functions"
 	resourceEventTriggers resourceName = "eventtriggers"
 	resourceWorkflows     resourceName = "workflows"
+	resourceWorkflowRuns  resourceName = "workflowruns"
 )
 
 type resourceRef struct {
@@ -813,6 +824,8 @@ func normalizeResource(resource string) (resourceName, error) {
 		return resourceEventTriggers, nil
 	case "workflow", "workflows", "wf":
 		return resourceWorkflows, nil
+	case "workflowrun", "workflowruns", "wfr":
+		return resourceWorkflowRuns, nil
 	default:
 		return "", fmt.Errorf("unsupported resource %q", resource)
 	}
@@ -1024,6 +1037,26 @@ func (a *App) getResource(ctx context.Context, ref resourceRef, output string, o
 			return writeObject(out, output, map[string]any{"kind": "WorkflowList", "apiVersion": "v1", "items": workflows})
 		}
 		return writeWorkflowTable(out, workflows)
+	case resourceWorkflowRuns:
+		if ref.name != "" {
+			run, err := client.GetWorkflowRun(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, run)
+			}
+			return writeWorkflowRunTable(out, []*workflowrun.WorkflowRun{run})
+		}
+		runs, err := client.ListWorkflowRuns(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortWorkflowRunList(runs)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "WorkflowRunList", "apiVersion": "v1", "items": runs})
+		}
+		return writeWorkflowRunTable(out, runs)
 	default:
 		return fmt.Errorf("unsupported resource %q", ref.resource)
 	}
@@ -1161,6 +1194,12 @@ func (a *App) describeResource(ctx context.Context, ref resourceRef, out io.Writ
 			return err
 		}
 		return describeWorkflow(out, wf)
+	case resourceWorkflowRuns:
+		run, err := client.GetWorkflowRun(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeWorkflowRun(out, run)
 	default:
 		return fmt.Errorf("unsupported resource %q", ref.resource)
 	}
@@ -1273,6 +1312,15 @@ func sortWorkflowList(workflows []*workflow.Workflow) {
 			return workflows[i].Name < workflows[j].Name
 		}
 		return workflows[i].Namespace < workflows[j].Namespace
+	})
+}
+
+func sortWorkflowRunList(runs []*workflowrun.WorkflowRun) {
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].Namespace == runs[j].Namespace {
+			return runs[i].Name < runs[j].Name
+		}
+		return runs[i].Namespace < runs[j].Namespace
 	})
 }
 
@@ -1454,7 +1502,7 @@ func writeNodeTable(out io.Writer, nodes []node.Node) error {
 		cliui.PadRight("PODCIDR", 18),
 		cliui.PadRight("CPU", 8),
 		cliui.PadRight("MEMORY", 10),
-		"AGE",
+		"STARTED",
 	); err != nil {
 		return err
 	}
@@ -1509,7 +1557,7 @@ func writeEventTriggerTable(out io.Writer, triggers []*eventtrigger.EventTrigger
 	if err := writef(out, "%s %s %s %s %s\n",
 		cliui.PadRight("EVENTTRIGGER", 31),
 		cliui.PadRight("SUBJECT", 24),
-		cliui.PadRight("FUNCTION", 18),
+		cliui.PadRight("TARGET", 18),
 		cliui.PadRight("NAMESPACE", 14),
 		"LABELS",
 	); err != nil {
@@ -1520,7 +1568,7 @@ func writeEventTriggerTable(out io.Writer, triggers []*eventtrigger.EventTrigger
 		if err := writef(out, "%s %s %s %s %s\n",
 			cliui.PadRight(name, 31),
 			cliui.PadRight(trigger.Spec.Subject, 24),
-			cliui.PadRight(trigger.Spec.FunctionRef.Name, 18),
+			cliui.PadRight(formatEventTriggerTarget(trigger), 18),
 			cliui.PadRight(trigger.Namespace, 14),
 			formatLabels(trigger.Labels),
 		); err != nil {
@@ -1528,6 +1576,13 @@ func writeEventTriggerTable(out io.Writer, triggers []*eventtrigger.EventTrigger
 		}
 	}
 	return nil
+}
+
+func formatEventTriggerTarget(trigger *eventtrigger.EventTrigger) string {
+	if trigger.Spec.WorkflowRef.Name != "" {
+		return "workflow/" + trigger.Spec.WorkflowRef.Name
+	}
+	return "function/" + trigger.Spec.FunctionRef.Name
 }
 
 func writeWorkflowTable(out io.Writer, workflows []*workflow.Workflow) error {
@@ -1546,6 +1601,31 @@ func writeWorkflowTable(out io.Writer, workflows []*workflow.Workflow) error {
 			cliui.PadRight(fmt.Sprintf("%d", len(wf.Spec.Steps)), 8),
 			cliui.PadRight(wf.Namespace, 14),
 			formatLabels(wf.Labels),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeWorkflowRunTable(out io.Writer, runs []*workflowrun.WorkflowRun) error {
+	if err := writef(out, "%s %s %s %s %s\n",
+		cliui.PadRight("WORKFLOWRUN", 31),
+		cliui.PadRight("WORKFLOW", 24),
+		cliui.PadRight("PHASE", 12),
+		cliui.PadRight("NAMESPACE", 14),
+		"AGE",
+	); err != nil {
+		return err
+	}
+	for _, run := range runs {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[wfr]"), run.Name)
+		if err := writef(out, "%s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(run.Spec.WorkflowRef.Name, 24),
+			cliui.PadRight(emptyDash(run.Status.Phase), 12),
+			cliui.PadRight(run.Namespace, 14),
+			formatTime(run.Status.StartedAt),
 		); err != nil {
 			return err
 		}
@@ -1775,7 +1855,7 @@ func describeEventTrigger(out io.Writer, trigger *eventtrigger.EventTrigger) err
 		fmt.Sprintf("Name: %s", trigger.Name),
 		fmt.Sprintf("Namespace: %s", trigger.Namespace),
 		fmt.Sprintf("Subject: %s", trigger.Spec.Subject),
-		fmt.Sprintf("Function: %s", trigger.Spec.FunctionRef.Name),
+		fmt.Sprintf("Target: %s", formatEventTriggerTarget(trigger)),
 		fmt.Sprintf("ReplySubject: %s", emptyDash(trigger.Spec.ReplySubject)),
 		fmt.Sprintf("Active: %t", trigger.Status.Active),
 		fmt.Sprintf("LastEventTime: %s", emptyDash(trigger.Status.LastEventTime)),
@@ -1793,7 +1873,7 @@ func describeEventTrigger(out io.Writer, trigger *eventtrigger.EventTrigger) err
 func describeWorkflow(out io.Writer, wf *workflow.Workflow) error {
 	steps := make([]string, 0, len(wf.Spec.Steps))
 	for _, step := range wf.Spec.Steps {
-		steps = append(steps, fmt.Sprintf("%s=%s branches=%s", step.Name, step.FunctionRef.Name, formatWorkflowBranches(step.Branches)))
+		steps = append(steps, fmt.Sprintf("%s=%s branches=%s next=%s end=%t", step.Name, step.FunctionRef.Name, formatWorkflowBranches(step.Branches), emptyDash(step.Next), step.End))
 	}
 	lines := []string{
 		fmt.Sprintf("Name: %s", wf.Name),
@@ -1811,6 +1891,38 @@ func describeWorkflow(out io.Writer, wf *workflow.Workflow) error {
 		}
 	}
 	return nil
+}
+
+func describeWorkflowRun(out io.Writer, run *workflowrun.WorkflowRun) error {
+	lines := []string{
+		fmt.Sprintf("Name: %s", run.Name),
+		fmt.Sprintf("Namespace: %s", run.Namespace),
+		fmt.Sprintf("Workflow: %s", run.Spec.WorkflowRef.Name),
+		fmt.Sprintf("Status: %s", emptyDash(run.Status.Phase)),
+		fmt.Sprintf("StartedAt: %s", formatTime(run.Status.StartedAt)),
+		fmt.Sprintf("FinishedAt: %s", formatTime(run.Status.FinishedAt)),
+		fmt.Sprintf("Output: %s", emptyDash(run.Status.Output)),
+		fmt.Sprintf("Error: %s", emptyDash(run.Status.Error)),
+		fmt.Sprintf("Steps: %s", formatWorkflowRunSteps(run.Status.Steps)),
+		fmt.Sprintf("Labels: %s", formatLabels(run.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func formatWorkflowRunSteps(steps []workflow.WorkflowStepStatus) string {
+	if len(steps) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(steps))
+	for _, step := range steps {
+		parts = append(parts, fmt.Sprintf("%s=%s(%s)", step.Name, step.Function, step.Phase))
+	}
+	return strings.Join(parts, ",")
 }
 
 func formatHPATarget(autoscaler *hpa.HorizontalPodAutoscaler) string {

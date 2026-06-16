@@ -94,6 +94,43 @@ spec:
 	assert.Equal(t, "echo", trigger.Spec.FunctionRef.Name)
 }
 
+func TestLoadEventTriggerFromYAMLAcceptsWorkflowRef(t *testing.T) {
+	data := []byte(`
+kind: EventTrigger
+metadata:
+  name: incident-events
+spec:
+  subject: minik8s.incident
+  workflowRef:
+    name: incident-triage
+`)
+
+	trigger, err := LoadEventTriggerFromYAML(data)
+
+	require.NoError(t, err)
+	assert.Equal(t, "incident-triage", trigger.Spec.WorkflowRef.Name)
+	assert.Empty(t, trigger.Spec.FunctionRef.Name)
+}
+
+func TestLoadEventTriggerFromYAMLRejectsMultipleTargets(t *testing.T) {
+	data := []byte(`
+kind: EventTrigger
+metadata:
+  name: invalid-events
+spec:
+  subject: minik8s.invalid
+  functionRef:
+    name: echo
+  workflowRef:
+    name: incident-triage
+`)
+
+	_, err := LoadEventTriggerFromYAML(data)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exactly one of functionRef.name or workflowRef.name")
+}
+
 func TestLoadWorkflowFromYAMLDefaultsAndValidates(t *testing.T) {
 	data := []byte(`
 kind: Workflow
@@ -144,6 +181,33 @@ spec:
 	require.Len(t, workflow.Spec.Steps[0].Branches, 1)
 	assert.Equal(t, "summary", workflow.Spec.Steps[0].Branches[0].Contains)
 	assert.Equal(t, "summarize", workflow.Spec.Steps[0].Branches[0].Next)
+}
+
+func TestLoadWorkflowFromYAMLParsesNextAndEnd(t *testing.T) {
+	data := []byte(`
+kind: Workflow
+metadata:
+  name: merge-chain
+spec:
+  steps:
+  - name: route
+    functionRef:
+      name: route
+    next: compose
+  - name: compose
+    functionRef:
+      name: compose-report
+    end: true
+`)
+
+	workflow, err := LoadWorkflowFromYAML(data)
+
+	require.NoError(t, err)
+	require.Len(t, workflow.Spec.Steps, 2)
+	assert.Equal(t, "compose", workflow.Spec.Steps[0].Next)
+	assert.False(t, workflow.Spec.Steps[0].End)
+	assert.Equal(t, "compose-report", workflow.Spec.Steps[1].FunctionRef.Name)
+	assert.True(t, workflow.Spec.Steps[1].End)
 }
 
 func TestLoadFunctionFromYAMLRejectsInvalidScaleBounds(t *testing.T) {

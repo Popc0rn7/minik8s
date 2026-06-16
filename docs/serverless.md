@@ -19,7 +19,10 @@ addon 机制上的教学版闭环。已覆盖：
 - idle timeout 后 scale-to-0。
 - 请求并发升高时，Activator 根据 in-flight 请求数和 `targetConcurrency` 计算目标副本数，
   并把 ReplicaSet 扩到 `maxReplicas` 范围内。
-- Workflow 支持顺序链和基于输出的 contains/regex 分支。
+- Workflow 支持顺序链、基于输出的 contains/regex 分支、`next` 跳转和 `end` 终止，
+  可表达教学版“条件状态机 + merge”。
+- Workflow invoke 和 EventTrigger->Workflow 会创建 `WorkflowRun`，记录单次执行的输入、
+  phase、输出、错误和 step trace。
 - Function update 会切换 revision，delete 会清理受管 ReplicaSet、Service 和函数 Pod。
 
 未覆盖或只做了最小语义：
@@ -28,7 +31,8 @@ addon 机制上的教学版闭环。已覆盖：
   用户预先构建并让节点可拉取。
 - 没有 Knative 级别的 Route、Revision 流量切分、灰度发布和历史 revision 管理。
 - EventTrigger 没有 ack/retry、dead-letter、CloudEvents 语义和订阅状态可视化。
-- Workflow 没有复杂 DAG 自动执行、并行节点、重试、补偿和持久化执行 trace。
+- Workflow 没有复杂 DAG 自动执行、并行节点、fan-out/fan-in、重试、补偿和 durable
+  execution；`WorkflowRun` 是执行记录，不是后台恢复执行引擎。
 - 当前样例是文本处理函数，不是 Handout 鼓励的模型类复杂 Serverless 应用。
 
 ## 一个 Function 调用到来时的路径
@@ -161,7 +165,7 @@ port: 8080
 
 ## EventTrigger 的路径
 
-EventTrigger 绑定一个 NATS subject 和一个 Function：
+EventTrigger 绑定一个 NATS subject 和一个目标。目标可以是 Function：
 
 ```yaml
 kind: EventTrigger
@@ -186,11 +190,32 @@ minik8s.echo
 
 这保持了 HTTP invoke、事件触发和 Workflow step 的路径一致。
 
+EventTrigger 也可以指向 Workflow：
+
+```yaml
+kind: EventTrigger
+spec:
+  subject: minik8s.incident.created
+  replySubject: minik8s.incident.reply
+  workflowRef:
+    name: harbor-incident-triage
+```
+
+这种情况下 controller 会创建一个 `WorkflowRun`，再同步执行 Workflow。Workflow 的每个
+step 仍通过 Function invocation bus 调用 Function：
+
+```text
+NATS event -> EventTrigger controller -> WorkflowRun -> WorkflowExecutor
+  -> NATS-backed Function steps -> Activator -> Function Pods
+```
+
 ## Workflow 的路径
 
-Workflow executor 读取 Workflow 的 step 列表，并按顺序执行。每个 step 调用一个
-Function，前一个 step 的输出作为后一个 step 的输入。分支通过 contains/regex 匹配函数
-输出决定下一个 step。
+Workflow executor 读取 Workflow 的 step 列表，并按同步状态机执行。每个 step 调用一个
+Function，前一个 step 的输出作为后一个 step 的输入。执行完 step 后按顺序选择下一步：
+先看 contains/regex 分支是否命中，再看 `step.next`，再看 `step.end`，最后才落到 YAML
+中的下一个 step。这个模型能表达“route -> 某个诊断分支 -> compose/merge -> end”，但不做
+真正并行 DAG。
 
 当前 Workflow 不是后台自动调度执行，而是通过：
 
@@ -198,7 +223,30 @@ Function，前一个 step 的输出作为后一个 step 的输入。分支通过
 ./minik8s invoke workflow text-branch --data "..."
 ```
 
-同步执行一次 workflow。每个 step 也通过 `NATSInvoker` 进入统一 invocation subject。
+同步执行一次 workflow。Harbor 使用 Kubernetes-like subresource：
+
+```text
+POST /api/v1/namespaces/<namespace>/workflows/<name>/invoke
+```
+
+每个 step 也通过 `NATSInvoker` 进入统一 invocation subject：
+
+```text
+HTTP Workflow invoke -> NATS-backed Function steps -> Activator -> Function Pods
+```
+
+每次 Harbor Workflow invoke 都会创建一个 `WorkflowRun`：
+
+```text
+POST /api/v1/namespaces/<namespace>/workflows/<name>/invoke
+  -> create WorkflowRun
+  -> execute Workflow
+  -> update WorkflowRun status
+  -> return final InvocationResponse
+```
+
+CLI 可用 `get/describe/delete workflowruns` 查看和清理这些记录。Workflow 对象自身的
+`status` 仍保留最近一次执行摘要，便于 `describe workflow` 快速查看。
 
 ## 与 Kubernetes/Knative 的对比
 
@@ -302,14 +350,14 @@ Minik8s 没有 sidecar queue-proxy。所有并发统计都在 Activator 内存�
 
 ### 6. Workflow 是同步解释器，不是持久化 DAG 引擎
 
-当前 Workflow 支持顺序链和条件分支，适合展示“函数链间通信”。但它不是完整 workflow
-engine：
+当前 Workflow 支持顺序链、条件分支、显式 next、end、merge step 和 `WorkflowRun` 执行
+记录，适合展示“函数链间通信”。但它不是完整 workflow engine：
 
 - 没有并行节点。
-- 没有后台自动触发。
+- 没有 fan-out/fan-in。
 - 没有 step 级重试、超时、补偿。
 - 没有 durable execution。
-- 没有完整执行历史。
+- `WorkflowRun` 记录执行结果和 step trace，但控制面重启后不会恢复正在执行的 run。
 
 这与 AWS Step Functions、Knative Workflow 或 Argo Workflows 的能力边界有明显差距。
 
@@ -371,6 +419,7 @@ Minik8s 当前 Serverless 实现已经具备一个可演示、可解释的控制
 Function -> ReplicaSet/Service -> cold start -> invoke -> scale-to-0
 EventTrigger -> NATS -> Function
 Workflow -> Function chain / branch
+EventTrigger -> WorkflowRun -> Workflow -> Function chain
 Function update/delete -> revision 切换和资源清理
 ```
 

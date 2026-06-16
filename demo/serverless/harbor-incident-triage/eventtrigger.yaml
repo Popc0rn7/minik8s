@@ -6,5 +6,5 @@ metadata:
     app: harbor-incident-triage
 spec:
   subject: minik8s.incident.created
-  functionRef:
-    name: normalize-input
+  workflowRef:
+    name: harbor-incident-triage

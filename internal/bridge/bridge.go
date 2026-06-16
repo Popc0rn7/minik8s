@@ -24,6 +24,7 @@ type Config struct {
 	FunctionStore      store.FunctionStore
 	EventTriggerStore  store.EventTriggerStore
 	WorkflowStore      store.WorkflowStore
+	WorkflowRunStore   store.WorkflowRunStore
 	Navigator          navigator.Navigator
 	NodeTTL            time.Duration
 	ClusterCIDR        string
@@ -49,6 +50,7 @@ type Bridge struct {
 	functionStore      store.FunctionStore
 	eventTriggerStore  store.EventTriggerStore
 	workflowStore      store.WorkflowStore
+	workflowRunStore   store.WorkflowRunStore
 	navigator          navigator.Navigator
 	nodeTTL            time.Duration
 	clusterCIDR        string
@@ -112,6 +114,10 @@ func New(config Config) *Bridge {
 	if workflowStore == nil {
 		workflowStore = store.NewInMemoryWorkflowStore()
 	}
+	workflowRunStore := config.WorkflowRunStore
+	if workflowRunStore == nil {
+		workflowRunStore = store.NewInMemoryWorkflowRunStore()
+	}
 	podNavigator := config.Navigator
 	if podNavigator == nil {
 		podNavigator = navigator.NewNaiveNavigator()
@@ -133,6 +139,7 @@ func New(config Config) *Bridge {
 		functionStore:      functionStore,
 		eventTriggerStore:  eventTriggerStore,
 		workflowStore:      workflowStore,
+		workflowRunStore:   workflowRunStore,
 		navigator:          podNavigator,
 		nodeTTL:            nodeTTL,
 		clusterCIDR:        config.ClusterCIDR,
@@ -161,6 +168,7 @@ func (k *Bridge) Handler() http.Handler {
 		FunctionStore:      k.functionStore,
 		EventTriggerStore:  k.eventTriggerStore,
 		WorkflowStore:      k.workflowStore,
+		WorkflowRunStore:   k.workflowRunStore,
 		Navigator:          k.navigator,
 		NodeTTL:            k.nodeTTL,
 		ClusterCIDR:        k.clusterCIDR,
@@ -209,6 +217,7 @@ func (k *Bridge) RefreshNodeLiveness(ctx context.Context) ([]store.NodeTransitio
 		FunctionStore:      k.functionStore,
 		EventTriggerStore:  k.eventTriggerStore,
 		WorkflowStore:      k.workflowStore,
+		WorkflowRunStore:   k.workflowRunStore,
 		Navigator:          k.navigator,
 		NodeTTL:            k.nodeTTL,
 		ClusterCIDR:        k.clusterCIDR,
@@ -313,6 +322,10 @@ func (k *Bridge) EventTriggerStore() store.EventTriggerStore {
 
 func (k *Bridge) WorkflowStore() store.WorkflowStore {
 	return k.workflowStore
+}
+
+func (k *Bridge) WorkflowRunStore() store.WorkflowRunStore {
+	return k.workflowRunStore
 }
 
 func (k *Bridge) NodeTTL() time.Duration {

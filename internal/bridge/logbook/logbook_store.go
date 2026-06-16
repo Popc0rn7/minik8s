@@ -29,6 +29,7 @@ const (
 	functionPrefix     = "/registry/functions/"
 	eventTriggerPrefix = "/registry/eventtriggers/"
 	workflowPrefix     = "/registry/workflows/"
+	workflowRunPrefix  = "/registry/workflowruns/"
 	defaultOpTTL       = 5 * time.Second
 )
 

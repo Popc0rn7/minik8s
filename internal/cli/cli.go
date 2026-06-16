@@ -61,6 +61,7 @@ type Config struct {
 	FunctionStore     store.FunctionStore
 	EventTriggerStore store.EventTriggerStore
 	WorkflowStore     store.WorkflowStore
+	WorkflowRunStore  store.WorkflowRunStore
 	Bridge            *bridge.Bridge
 	Network           nodeSailer.PodNetworkManager
 	ServiceProxy      kubeproxy.Proxy
@@ -85,6 +86,7 @@ type App struct {
 	functionStore     store.FunctionStore
 	eventTriggerStore store.EventTriggerStore
 	workflowStore     store.WorkflowStore
+	workflowRunStore  store.WorkflowRunStore
 	controlBridge     *bridge.Bridge
 	network           nodeSailer.PodNetworkManager
 	serviceProxy      kubeproxy.Proxy
@@ -145,6 +147,10 @@ func New(config Config) *App {
 	if workflowStore == nil {
 		workflowStore = store.NewInMemoryWorkflowStore()
 	}
+	workflowRunStore := config.WorkflowRunStore
+	if workflowRunStore == nil {
+		workflowRunStore = store.NewInMemoryWorkflowRunStore()
+	}
 	serviceProxy := config.ServiceProxy
 	controlBridge := config.Bridge
 	if controlBridge == nil {
@@ -161,6 +167,7 @@ func New(config Config) *App {
 			FunctionStore:      functionStore,
 			EventTriggerStore:  eventTriggerStore,
 			WorkflowStore:      workflowStore,
+			WorkflowRunStore:   workflowRunStore,
 			BootstrapTokenPath: DefaultBootstrapTokenPath(),
 		})
 	}
@@ -178,6 +185,7 @@ func New(config Config) *App {
 		functionStore:     functionStore,
 		eventTriggerStore: eventTriggerStore,
 		workflowStore:     workflowStore,
+		workflowRunStore:  workflowRunStore,
 		controlBridge:     controlBridge,
 		network:           network,
 		serviceProxy:      serviceProxy,
@@ -1817,7 +1825,7 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 		}()
 		go activator.RunScaler(ctx, 2*time.Second)
 		invoker := bridgeServerless.NewNATSInvoker(nil, natsURL, bridgeServerless.InvokeTimeoutFromEnv())
-		go bridgeServerless.NewControllerWithInvoker(a.controlBridge.FunctionStore(), a.controlBridge.EventTriggerStore(), natsURL, invoker).Run(ctx, 5*time.Second)
+		go bridgeServerless.NewControllerWithInvoker(a.controlBridge.FunctionStore(), a.controlBridge.EventTriggerStore(), a.controlBridge.WorkflowStore(), a.controlBridge.WorkflowRunStore(), natsURL, invoker).Run(ctx, 5*time.Second)
 	}
 	if err := writes(out, cliui.InfoLine("bridge listening on %s", options.listen)); err != nil {
 		return err
@@ -3503,6 +3511,13 @@ func DefaultWorkflowStatePath() string {
 		return filepath.Join(dir, "workflows.json")
 	}
 	return filepath.Join(".minik8s", "state", "workflows.json")
+}
+
+func DefaultWorkflowRunStatePath() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "workflowruns.json")
+	}
+	return filepath.Join(".minik8s", "state", "workflowruns.json")
 }
 
 // DefaultCNIBinDir returns the default CNI plugin directory.

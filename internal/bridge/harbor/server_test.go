@@ -118,6 +118,7 @@ func TestHarborDiscoveryIncludesServices(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"name":"functions"`)
 	assert.Contains(t, rec.Body.String(), `"name":"eventtriggers"`)
 	assert.Contains(t, rec.Body.String(), `"name":"workflows"`)
+	assert.Contains(t, rec.Body.String(), `"name":"workflowruns"`)
 }
 
 func TestHarborClusterConfigReflectsDNSEnabled(t *testing.T) {
@@ -162,7 +163,19 @@ func TestHarborServerlessCRUDAndInvoke(t *testing.T) {
 		FunctionStore:     store.NewInMemoryFunctionStore(),
 		EventTriggerStore: store.NewInMemoryEventTriggerStore(),
 		WorkflowStore:     store.NewInMemoryWorkflowStore(),
-		FunctionInvoker:   fakeFunctionInvoker{output: "hello"},
+		WorkflowRunStore:  store.NewInMemoryWorkflowRunStore(),
+		FunctionInvoker: fakeFunctionInvoker{handler: func(name, input string) (string, error) {
+			switch name {
+			case "route":
+				return `{"branch":"summary"}`, nil
+			case "summarize":
+				return input + "|summarize", nil
+			case "compose":
+				return input + "|compose", nil
+			default:
+				return "hello", nil
+			}
+		}},
 		HTTPClient: &http.Client{Transport: harborRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -217,10 +230,56 @@ func TestHarborServerlessCRUDAndInvoke(t *testing.T) {
 	workflowBody := `{
 		"kind":"Workflow",
 		"metadata":{"name":"echo-chain","namespace":"default"},
-		"spec":{"steps":[{"name":"first","functionRef":{"name":"echo"}}]}
+		"spec":{"steps":[
+			{"name":"route","functionRef":{"name":"route"},"branches":[{"contains":"summary","next":"summarize"}]},
+			{"name":"summarize","functionRef":{"name":"summarize"},"next":"compose"},
+			{"name":"compose","functionRef":{"name":"compose"},"end":true}
+		]}
 	}`
 	workflow := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/workflows", workflowBody)
 	require.Equal(t, http.StatusCreated, workflow.Code, workflow.Body.String())
+
+	workflowInvoke := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/workflows/echo-chain/invoke", `{"data":"start"}`)
+	require.Equal(t, http.StatusOK, workflowInvoke.Code, workflowInvoke.Body.String())
+	var workflowResponse function.InvocationResponse
+	require.NoError(t, json.Unmarshal(workflowInvoke.Body.Bytes(), &workflowResponse))
+	assert.Equal(t, "Succeeded", workflowResponse.Phase)
+	assert.Equal(t, `{"branch":"summary"}|summarize|compose`, workflowResponse.Output)
+	updatedWorkflow := serve(t, srv, http.MethodGet, "/api/v1/namespaces/default/workflows/echo-chain", "")
+	require.Equal(t, http.StatusOK, updatedWorkflow.Code, updatedWorkflow.Body.String())
+	assert.Contains(t, updatedWorkflow.Body.String(), `"phase":"Succeeded"`)
+	assert.Contains(t, updatedWorkflow.Body.String(), `"name":"route"`)
+	assert.Contains(t, updatedWorkflow.Body.String(), `"name":"summarize"`)
+	assert.Contains(t, updatedWorkflow.Body.String(), `"name":"compose"`)
+	workflowRuns := serve(t, srv, http.MethodGet, "/api/v1/namespaces/default/workflowruns", "")
+	require.Equal(t, http.StatusOK, workflowRuns.Code, workflowRuns.Body.String())
+	assert.Contains(t, workflowRuns.Body.String(), `"kind":"WorkflowRunList"`)
+	assert.Contains(t, workflowRuns.Body.String(), `"workflowRef":{"name":"echo-chain"}`)
+	assert.Contains(t, workflowRuns.Body.String(), `"phase":"Succeeded"`)
+	var runList struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Status struct {
+				Steps []struct {
+					Name string `json:"name"`
+				} `json:"steps"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal(workflowRuns.Body.Bytes(), &runList))
+	require.Len(t, runList.Items, 1)
+	assert.Equal(t, []string{"route", "summarize", "compose"}, []string{
+		runList.Items[0].Status.Steps[0].Name,
+		runList.Items[0].Status.Steps[1].Name,
+		runList.Items[0].Status.Steps[2].Name,
+	})
+	workflowRun := serve(t, srv, http.MethodGet, "/api/v1/namespaces/default/workflowruns/"+runList.Items[0].Metadata.Name, "")
+	require.Equal(t, http.StatusOK, workflowRun.Code, workflowRun.Body.String())
+	assert.Contains(t, workflowRun.Body.String(), `"phase":"Succeeded"`)
+	workflowRunDelete := serve(t, srv, http.MethodDelete, "/api/v1/namespaces/default/workflowruns/"+runList.Items[0].Metadata.Name, "")
+	require.Equal(t, http.StatusOK, workflowRunDelete.Code, workflowRunDelete.Body.String())
 
 	list := serve(t, srv, http.MethodGet, "/api/v1/namespaces/default/functions", "")
 	require.Equal(t, http.StatusOK, list.Code, list.Body.String())
@@ -237,11 +296,15 @@ func (f harborRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error
 }
 
 type fakeFunctionInvoker struct {
-	output string
-	err    error
+	output  string
+	err     error
+	handler func(name, input string) (string, error)
 }
 
 func (f fakeFunctionInvoker) InvokeFunction(ctx context.Context, namespace, name, input string) (string, error) {
+	if f.handler != nil {
+		return f.handler(name, input)
+	}
 	return f.output, f.err
 }
 

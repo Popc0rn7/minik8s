@@ -1,7 +1,7 @@
 kind: Function
 apiVersion: v1
 metadata:
-  name: route
+  name: compose-report
   labels:
     app: serverless-demo
 spec:
@@ -14,7 +14,4 @@ spec:
   idleTimeoutSeconds: 30
   code: |
     def handler(event):
-      text = event.lower()
-      if "summary" in text or "summarize" in text:
-        return "summary:" + event
-      return "qa:" + event
+      return "report:" + event

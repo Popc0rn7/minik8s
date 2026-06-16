@@ -1899,7 +1899,7 @@ func TestCLIGetNodesShowsHeartbeatNodes(t *testing.T) {
 	assert.Contains(t, out.String(), "NODE")
 	assert.Contains(t, out.String(), "ROLE")
 	assert.Contains(t, out.String(), "STATUS")
-	assert.Contains(t, out.String(), "AGE")
+	assert.Contains(t, out.String(), "STARTED")
 	assert.Contains(t, out.String(), "node-a")
 	assert.Contains(t, out.String(), "Worker")
 	assert.Contains(t, out.String(), "Ready")

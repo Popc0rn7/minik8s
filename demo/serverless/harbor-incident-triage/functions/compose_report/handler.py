@@ -1,0 +1,41 @@
+import json
+import sys
+
+
+def compact(data):
+    return json.dumps(data, separators=(",", ":"), sort_keys=True)
+
+
+def append_trace(event, step):
+    trace = list(event.get("trace", []))
+    trace.append(step)
+    event["trace"] = trace
+    event["executedSteps"] = trace
+    return event
+
+
+def main(event):
+    out = dict(event)
+    out.update(
+        {
+            "ok": True,
+            "workflow": "harbor-incident-triage",
+            "step": "compose_report",
+            "summary": {
+                "category": out.get("category", "unknown"),
+                "severity": out.get("severity", "info"),
+                "notified": bool(out.get("notified", False)),
+                "diagnosisType": out.get("diagnosisType", "unknown"),
+            },
+        }
+    )
+    return append_trace(out, "compose_report")
+
+
+def handler(event):
+    payload = json.loads(event or "{}")
+    return compact(main(payload))
+
+
+if __name__ == "__main__":
+    print(json.dumps(main(json.load(sys.stdin)), indent=2, sort_keys=True))

@@ -384,8 +384,10 @@ func DefaultAndValidateEventTrigger(trigger *eventtrigger.EventTrigger) error {
 	if strings.TrimSpace(trigger.Spec.Subject) == "" {
 		return fmt.Errorf("spec.subject is required")
 	}
-	if strings.TrimSpace(trigger.Spec.FunctionRef.Name) == "" {
-		return fmt.Errorf("spec.functionRef.name is required")
+	hasFunction := strings.TrimSpace(trigger.Spec.FunctionRef.Name) != ""
+	hasWorkflow := strings.TrimSpace(trigger.Spec.WorkflowRef.Name) != ""
+	if hasFunction == hasWorkflow {
+		return fmt.Errorf("spec requires exactly one of functionRef.name or workflowRef.name")
 	}
 	return nil
 }

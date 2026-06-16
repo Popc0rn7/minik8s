@@ -145,7 +145,9 @@
 - [x] Function 可映射为独立 Pod 后端：Function controller 创建 `fn-*`
   ReplicaSet 和 Service，Activator 负责 HTTP invoke、冷启动和请求转发。
 - [x] Workflow 可通过 `invoke workflow` 运行顺序链，并支持基于输出的 contains/regex
-  分支跳转。
+  分支跳转、显式 `next`、`end` 和 merge step。
+- [x] Workflow invoke 和 EventTrigger->Workflow 会创建 `WorkflowRun` 记录，保存本次
+  输入、phase、输出、错误和已执行 step trace；`get/describe/delete workflowruns` 已接入。
 - [x] Serverless scale-to-0 和并发扩容已有最小实现：空闲超时缩到 0，请求到来冷启动，
   inflight 超过 `targetConcurrency` 时扩容到 `maxReplicas` 内。
 - [x] Serverless 调用控制流已统一经 NATS：HTTP invoke、EventTrigger 和 Workflow step
@@ -153,7 +155,8 @@
   worker 调用 Activator 转发到函数 Pod。
 - [x] `manifest/function/` 和 `docs/testcase/serverless.md` 提供 P0/P1 展示材料。
 - [ ] EventTrigger ack/retry、dead-letter、订阅状态可视化尚未实现。
-- [ ] Workflow 复杂 DAG 自动执行、并行节点、重试策略尚未实现。
+- [ ] Workflow 复杂 DAG 自动执行、并行节点、fan-out/fan-in、重试策略和尚未实现的
+  durable execution 仍需补齐。
 - [ ] 函数 zip/代码文件上传、update 的完整语义尚未实现；当前以 YAML 内联代码为主。
 - [ ] 结合模型类 workload 的复杂应用未实现。
 

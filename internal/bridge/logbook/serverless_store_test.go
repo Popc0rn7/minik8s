@@ -11,6 +11,7 @@ import (
 	"minik8s/internal/function"
 	"minik8s/internal/pod"
 	"minik8s/internal/workflow"
+	"minik8s/internal/workflowrun"
 )
 
 func TestFunctionStoresCRUD(t *testing.T) {
@@ -135,6 +136,45 @@ func exerciseWorkflowStore(t *testing.T, store WorkflowStore) {
 	assert.ErrorIs(t, err, ErrWorkflowNotFound)
 }
 
+func TestWorkflowRunStoresCRUD(t *testing.T) {
+	t.Run("memory", func(t *testing.T) {
+		exerciseWorkflowRunStore(t, NewInMemoryWorkflowRunStore())
+	})
+	t.Run("file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "workflowruns.json")
+		store, err := NewFileWorkflowRunStore(path)
+		require.NoError(t, err)
+		exerciseWorkflowRunStore(t, store)
+	})
+}
+
+func exerciseWorkflowRunStore(t *testing.T, store WorkflowRunStore) {
+	t.Helper()
+	run := &workflowrun.WorkflowRun{
+		ObjectMeta: workflowRunMeta("echo-chain-1"),
+		Spec: workflowrun.WorkflowRunSpec{
+			WorkflowRef: workflowrun.WorkflowRef{Name: "echo-chain"},
+			Input:       "hello",
+		},
+	}
+
+	require.NoError(t, store.Create(run))
+	assert.ErrorIs(t, store.Create(run), ErrWorkflowRunAlreadyExists)
+	got, err := store.Get("echo-chain-1", "default")
+	require.NoError(t, err)
+	assert.Equal(t, "WorkflowRun", got.Kind)
+	got.Status.Phase = "Succeeded"
+	got.Status.Output = "hello"
+	require.NoError(t, store.Update(got))
+	items, err := store.List("default", nil)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "Succeeded", items[0].Status.Phase)
+	require.NoError(t, store.Delete("echo-chain-1", "default"))
+	_, err = store.Get("echo-chain-1", "default")
+	assert.ErrorIs(t, err, ErrWorkflowRunNotFound)
+}
+
 func functionMeta(name string) pod.ObjectMeta {
 	return pod.ObjectMeta{Name: name, Namespace: "default", Labels: map[string]string{"app": "serverless"}}
 }
@@ -144,5 +184,9 @@ func eventTriggerMeta(name string) pod.ObjectMeta {
 }
 
 func workflowMeta(name string) pod.ObjectMeta {
+	return pod.ObjectMeta{Name: name, Namespace: "default"}
+}
+
+func workflowRunMeta(name string) pod.ObjectMeta {
 	return pod.ObjectMeta{Name: name, Namespace: "default"}
 }

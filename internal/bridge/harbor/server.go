@@ -35,6 +35,7 @@ import (
 	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
 	"minik8s/internal/workflow"
+	"minik8s/internal/workflowrun"
 	podyaml "minik8s/pkg/yaml"
 )
 
@@ -51,6 +52,7 @@ type Config struct {
 	FunctionStore      store.FunctionStore
 	EventTriggerStore  store.EventTriggerStore
 	WorkflowStore      store.WorkflowStore
+	WorkflowRunStore   store.WorkflowRunStore
 	Navigator          navigator.Navigator
 	NodeTTL            time.Duration
 	NetRegistry        *netregistry.Store
@@ -83,6 +85,7 @@ type Server struct {
 	functions          store.FunctionStore
 	eventTriggers      store.EventTriggerStore
 	workflows          store.WorkflowStore
+	workflowRuns       store.WorkflowRunStore
 	navigator          navigator.Navigator
 	nodeTTL            time.Duration
 	netRegistry        *netregistry.Store
@@ -159,6 +162,10 @@ func New(config Config) *Server {
 	if workflowStore == nil {
 		workflowStore = store.NewInMemoryWorkflowStore()
 	}
+	workflowRunStore := config.WorkflowRunStore
+	if workflowRunStore == nil {
+		workflowRunStore = store.NewInMemoryWorkflowRunStore()
+	}
 	podNavigator := config.Navigator
 	if podNavigator == nil {
 		podNavigator = navigator.NewNaiveNavigator()
@@ -210,6 +217,7 @@ func New(config Config) *Server {
 		functions:          functionStore,
 		eventTriggers:      eventTriggerStore,
 		workflows:          workflowStore,
+		workflowRuns:       workflowRunStore,
 		navigator:          podNavigator,
 		nodeTTL:            nodeTTL,
 		netRegistry:        netRegistryStore,
@@ -358,6 +366,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"kind":       "Workflow",
 				"verbs":      []string{"get", "list", "create", "update", "delete"},
 			}, {
+				"name":       "workflowruns",
+				"namespaced": true,
+				"kind":       "WorkflowRun",
+				"verbs":      []string{"get", "list", "create", "update", "delete"},
+			}, {
 				"name":       "pods.metrics.k8s.io",
 				"namespaced": true,
 				"kind":       "PodMetrics",
@@ -430,6 +443,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.handleEventTriggers(w, r, namespace, parts[5:])
 		case "workflows":
 			s.handleWorkflows(w, r, namespace, parts[5:])
+		case "workflowruns":
+			s.handleWorkflowRuns(w, r, namespace, parts[5:])
 		case "configmaps":
 			s.handleConfigMaps(w, r, namespace, parts[5:])
 		case "serviceaccounts":
@@ -1899,13 +1914,94 @@ func (s *Server) handleWorkflowInvoke(w http.ResponseWriter, r *http.Request, na
 		})
 		return
 	}
+	run := &workflowrun.WorkflowRun{
+		ObjectMeta: pod.ObjectMeta{
+			Name:      workflowRunName(name),
+			Namespace: namespace,
+			Labels:    map[string]string{"minik8s.io/workflow": name},
+		},
+		Spec: workflowrun.WorkflowRunSpec{
+			WorkflowRef: workflowrun.WorkflowRef{Name: name},
+			Input:       req.Data,
+		},
+		Status: workflowrun.WorkflowRunStatus{Phase: "Pending", StartedAt: time.Now().UTC()},
+	}
+	if err := s.workflowRuns.Create(run); err != nil {
+		writeStoreError(w, err, "workflowruns", run.Name)
+		return
+	}
 	executor := bridgeServerless.NewWorkflowExecutor(s.workflows, s.functionInvoker)
-	resp, err := executor.Invoke(r.Context(), namespace, name, req.Data)
+	resp, err := executor.InvokeWithRun(r.Context(), namespace, name, req.Data, run)
+	_ = s.workflowRuns.Update(run)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, resp)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleWorkflowRuns(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
+	name := ""
+	if len(parts) > 0 {
+		name = parts[0]
+	}
+	if len(parts) > 1 {
+		writeStatus(w, http.StatusNotFound, "NotFound", "workflowrun path not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		run, err := readWorkflowRun(r.Body, namespace, "")
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.workflowRuns.Create(run); err != nil {
+			writeStoreError(w, err, "workflowruns", run.Name)
+			return
+		}
+		writeJSON(w, http.StatusCreated, run)
+	case http.MethodGet:
+		if name == "" {
+			items, err := s.workflowRuns.List(namespace, nil)
+			if err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+				return
+			}
+			sortWorkflowRuns(items)
+			writeJSON(w, http.StatusOK, map[string]any{"kind": "WorkflowRunList", "apiVersion": "v1", "items": items})
+			return
+		}
+		run, err := s.workflowRuns.Get(name, namespace)
+		if err != nil {
+			writeStoreError(w, err, "workflowruns", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, run)
+	case http.MethodPut:
+		run, err := readWorkflowRun(r.Body, namespace, name)
+		if err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		if err := s.workflowRuns.Update(run); err != nil {
+			writeStoreError(w, err, "workflowruns", name)
+			return
+		}
+		writeJSON(w, http.StatusOK, run)
+	case http.MethodDelete:
+		if err := s.workflowRuns.Delete(name, namespace); err != nil {
+			writeStoreError(w, err, "workflowruns", name)
+			return
+		}
+		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("workflowrun %q deleted", name))
+	default:
+		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
+	}
+}
+
+func workflowRunName(workflowName string) string {
+	return fmt.Sprintf("%s-%d", workflowName, time.Now().UTC().UnixNano())
 }
 
 func (s *Server) handleHPAs(w http.ResponseWriter, r *http.Request, namespace string, parts []string) {
@@ -2266,6 +2362,38 @@ func readWorkflow(r io.Reader, namespace, name string) (*workflow.Workflow, erro
 	return &wf, nil
 }
 
+func readWorkflowRun(r io.Reader, namespace, name string) (*workflowrun.WorkflowRun, error) {
+	var run workflowrun.WorkflowRun
+	if err := decodeObject(r, &run); err != nil {
+		return nil, err
+	}
+	if run.Kind != "" && run.Kind != "WorkflowRun" {
+		return nil, fmt.Errorf("kind must be WorkflowRun, got %q", run.Kind)
+	}
+	if run.Kind == "" {
+		run.Kind = "WorkflowRun"
+	}
+	if namespace != "" {
+		run.Namespace = namespace
+	}
+	if run.Namespace == "" {
+		run.Namespace = "default"
+	}
+	if name != "" {
+		run.Name = name
+	}
+	if strings.TrimSpace(run.Name) == "" {
+		run.Name = workflowRunName(run.Spec.WorkflowRef.Name)
+	}
+	if strings.TrimSpace(run.Spec.WorkflowRef.Name) == "" {
+		return nil, fmt.Errorf("spec.workflowRef.name is required")
+	}
+	if run.Labels == nil {
+		run.Labels = map[string]string{}
+	}
+	return &run, nil
+}
+
 func (s *Server) syncServices(ctx context.Context) error {
 	ctrl := captain.NewServiceController(s.pods, s.services)
 	return ctrl.Sync(ctx)
@@ -2447,6 +2575,15 @@ func sortWorkflows(workflows []*workflow.Workflow) {
 	})
 }
 
+func sortWorkflowRuns(runs []*workflowrun.WorkflowRun) {
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].Namespace == runs[j].Namespace {
+			return runs[i].Name < runs[j].Name
+		}
+		return runs[i].Namespace < runs[j].Namespace
+	})
+}
+
 func sortHPAs(hpas []*hpa.HorizontalPodAutoscaler) {
 	sort.Slice(hpas, func(i, j int) bool {
 		if hpas[i].Namespace == hpas[j].Namespace {
@@ -2523,6 +2660,10 @@ func writeStoreError(w http.ResponseWriter, err error, resource, name string) {
 	case errors.Is(err, store.ErrWorkflowNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
 	case errors.Is(err, store.ErrWorkflowAlreadyExists):
+		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
+	case errors.Is(err, store.ErrWorkflowRunNotFound):
+		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))
+	case errors.Is(err, store.ErrWorkflowRunAlreadyExists):
 		writeStatus(w, http.StatusConflict, "AlreadyExists", fmt.Sprintf("%s %q already exists", resource, name))
 	case errors.Is(err, store.ErrNodeNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("%s %q not found", resource, name))

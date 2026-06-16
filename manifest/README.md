@@ -39,9 +39,11 @@ EventTrigger, Workflow, and the Kubernetes-compatible CNI bootstrap objects.
 | `function/function_route.yaml` | Python Function that routes text to summary or QA branches. |
 | `function/function_summary.yaml` | Python summary branch Function. |
 | `function/function_answer.yaml` | Python answer branch Function. |
+| `function/function_compose_report.yaml` | Python merge Function for the text Workflow demo. |
 | `function/eventtrigger_echo.yaml` | EventTrigger object for the echo Function with a reply subject. |
+| `function/eventtrigger_text_branch.yaml` | EventTrigger object that targets the `text-branch` Workflow and records WorkflowRuns. |
 | `function/workflow_echo.yaml` | Minimal sequential Workflow object for the echo Function. |
-| `function/workflow_text_branch.yaml` | Branching Workflow that runs route -> summarize or route -> answer. |
+| `function/workflow_text_branch.yaml` | Branching Workflow that runs route -> summarize/answer -> compose-report. |
 
 ## Overlap and cleanup notes
 

@@ -8,7 +8,7 @@ spec:
   runtime: python
   handler: handler
   port: 8080
-  minReplicas: 0
+  minReplicas: 1
   maxReplicas: 3
   targetConcurrency: 5
   idleTimeoutSeconds: 30

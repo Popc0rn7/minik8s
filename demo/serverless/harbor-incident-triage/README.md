@@ -9,7 +9,7 @@ large model dependency.
 The demo is a realistic operations workflow rather than a hello-world function.
 It shows Function objects, Python runtime, Harbor HTTP invoke, EventTrigger,
 Workflow chaining, branch routing, function-to-function JSON handoff,
-scale-to-0, and concurrent request autoscaling.
+WorkflowRun execution records, EventTrigger-to-Workflow, and a final merge step.
 
 ```text
                          Harbor Incident Triage
@@ -43,22 +43,25 @@ Client / Event
      +--> category=build    --> build-diagnose
      +--> category=app      --> app-diagnose
      +--> category=unknown  --> quick-reply
-                                  |
-                                  v
-                           final JSON report
+     |
+     v
++-------------------+
+| compose-report    |
+| Function          |
++-------------------+
+     |
+     v
+final JSON report
 ```
 
 ## Current Workflow Boundary
 
 Minik8s currently supports `kind: Workflow` with ordered `spec.steps` and
-branch rules based on `contains` or `regex`. It does not yet support
-`ServerlessWorkflow`, `states`, explicit `next`, parallel fan-out, join,
-detached steps, or `WorkflowRun`.
-
-Because branch targets do not rejoin later steps in the current executor, each
-diagnosis Function returns the final report directly. A future engine with
-explicit `next` and join support could split report composition into a separate
-`compose-report` step.
+branch rules based on `contains` or `regex`, plus explicit `next`, `end`, and
+per-invocation `WorkflowRun` records. This demo uses a condition-state-machine
+shape: one branch is selected, then all branches rejoin at `compose-report`.
+It still does not implement full DAG parallel fan-out/fan-in, retries, or a
+`ServerlessWorkflow`/Argo-compatible schema.
 
 ## Files
 
@@ -248,9 +251,8 @@ one of them, not from the Workflow YAML.
 - **Wait for controllers**: after `apply-functions.sh`, wait a few seconds and
   check `./kubectl get replicasets`; `fn-*` ReplicaSets should exist before
   invoking the Workflow.
-- **Do not expect WorkflowRun**: inspect execution through
-  `./kubectl describe workflow harbor-incident-triage`, Function status,
-  ReplicaSets, Pods, and bridge logs.
+- **Inspect WorkflowRun for trace**: use `./kubectl get workflowruns` and
+  `./kubectl describe workflowrun <name>` for per-invocation execution history.
 
 ## Single-Node Quick Start
 
@@ -288,7 +290,7 @@ Each Function uses the current Minik8s Function spec:
 runtime: python
 handler: handler
 port: 8080
-minReplicas: 0
+minReplicas: 1
 maxReplicas: 5
 targetConcurrency: 1
 idleTimeoutSeconds: 30
@@ -318,6 +320,7 @@ spec:
   - name: normalize-input
     functionRef:
       name: normalize-input
+    next: tiny-log-classifier
   - name: tiny-log-classifier
     functionRef:
       name: tiny-log-classifier
@@ -326,10 +329,18 @@ spec:
       next: notify-captain
     - contains: '"category":"network"'
       next: network-diagnose
+  - name: network-diagnose
+    functionRef:
+      name: network-diagnose
+    next: compose-report
+  - name: compose-report
+    functionRef:
+      name: compose-report
+    end: true
 ```
 
 The `critical` branch is intentionally first. Critical incidents notify the
-captain and return a category-aware diagnosis in the same Function.
+captain, then rejoin at `compose-report` like the diagnosis branches.
 
 ## Invoke
 
@@ -353,33 +364,32 @@ Equivalent explicit command:
 Expected branch evidence:
 
 ```text
-network-incident.json   -> category=network, executedSteps contains network_diagnose
-build-incident.json     -> category=build, executedSteps contains build_diagnose
-runtime-incident.json   -> category=runtime, executedSteps contains runtime_diagnose
-app-incident.json       -> category=app, executedSteps contains app_diagnose
-critical-incident.json  -> severity=critical, notified=true, executedSteps contains notify_captain
-low-risk-incident.json  -> category=unknown, executedSteps contains quick_reply
+network-incident.json   -> category=network, executedSteps ends with compose_report
+build-incident.json     -> category=build, executedSteps ends with compose_report
+runtime-incident.json   -> category=runtime, executedSteps ends with compose_report
+app-incident.json       -> category=app, executedSteps ends with compose_report
+critical-incident.json  -> severity=critical, notified=true, then compose_report
+low-risk-incident.json  -> category=unknown, quick_reply, then compose_report
 ```
 
 Show the last Workflow output:
 
 ```bash
 ../../../kubectl describe workflow harbor-incident-triage
+../../../kubectl get workflowruns
 ```
 
 ## Event Trigger
 
-The EventTrigger demonstrates the event path by binding NATS subject
-`minik8s.incident.created` to the entry Function `normalize-input`:
+The EventTrigger binds NATS subject `minik8s.incident.created` directly to the
+Workflow:
 
 ```bash
-../../../minik8s publish minik8s.incident.created \
-  --data "$(cat inputs/low-risk-incident.json)"
-../../../kubectl describe function normalize-input
+../../../minik8s request minik8s.incident.created \
+  --data "$(cat inputs/low-risk-incident.json)" \
+  --timeout 30s
+../../../kubectl get workflowruns
 ```
-
-Current EventTrigger objects bind to Functions, not Workflows. The full branch
-chain is therefore demonstrated with `invoke workflow`.
 
 ## One-Shot Demo
 

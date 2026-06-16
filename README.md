@@ -239,9 +239,10 @@ Workflow 都建模为一等资源，接入 YAML loader、Harbor API、CLI、file
 Bridge 会启动 NATS 依赖、invocation worker 和 serverless controller，CLI invoke 通过
 NATS request/reply 触发后端 Function Pod。
 
-当前版本覆盖 Function CRUD/invoke、EventTrigger 订阅 NATS subject 并触发 Function、
-Workflow 顺序步骤与基于输出的简单分支、冷启动、按并发扩容和空闲后缩到 0。它仍是
-简化实现：事件 ack/retry/dead-letter、完整 DAG、持久运行历史、Kubernetes 级别的
+当前版本覆盖 Function CRUD/invoke、EventTrigger 订阅 NATS subject 并触发 Function 或
+Workflow、Workflow invoke subresource、WorkflowRun 执行记录、顺序步骤与基于输出的
+条件跳转/merge、冷启动、按并发扩容和空闲后缩到 0。它仍是简化实现：事件
+ack/retry/dead-letter、完整 DAG、durable execution、Kubernetes 级别的
 Knative/Serverless 语义尚未实现。
 
 > Image: Serverless resource model
@@ -329,7 +330,7 @@ Job 创建独立 submitter Pod/Service，由 submitter 通过 SSH/SCP 提交到�
 尚未实现或不应作为当前版本承诺：
 
 - 完整 Kubernetes Ingress 语义、TLS、外部 DNS controller 和 DNS route 的强一致更新。
-- Serverless 的事件 ack/retry/dead-letter、完整 DAG 和持久运行历史。
+- Serverless 的事件 ack/retry/dead-letter、完整 DAG 和 durable execution。
 - PV/PVC 持久化卷、Security Context。
 - 完整 Kubernetes API machinery，例如 watch、resourceVersion、admission、
   RBAC、EndpointSlice、完整 probe 语义和资源感知调度。

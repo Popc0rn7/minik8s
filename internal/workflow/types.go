@@ -22,6 +22,8 @@ type WorkflowStep struct {
 	Name        string                   `json:"name" yaml:"name"`
 	FunctionRef eventtrigger.FunctionRef `json:"functionRef" yaml:"functionRef"`
 	Branches    []WorkflowBranch         `json:"branches,omitempty" yaml:"branches,omitempty"`
+	Next        string                   `json:"next,omitempty" yaml:"next,omitempty"`
+	End         bool                     `json:"end,omitempty" yaml:"end,omitempty"`
 }
 
 type WorkflowBranch struct {
