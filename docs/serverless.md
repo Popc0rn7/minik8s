@@ -35,6 +35,160 @@ addon 机制上的教学版闭环。已覆盖：
   execution；`WorkflowRun` 是执行记录，不是后台恢复执行引擎。
 - 当前样例是文本处理函数，不是 Handout 鼓励的模型类复杂 Serverless 应用。
 
+## 建议展示流程
+
+答辩时建议只展示一条主线：Harbor incident triage demo。它能在一个例子里串起
+Function、EventTrigger、Workflow、WorkflowRun、NATS invocation bus、Activator、冷启动和
+最终 merge。不要把它说成完整 Argo DAG 或 Kubernetes 原生 Workflow；准确表述是：
+“Workflow invoke subresource + 条件状态机 + per-invocation WorkflowRun 记录”。
+
+### 1. 先展示资源模型
+
+从 node-1 进入 demo 目录：
+
+```bash
+cd /opt/minik8s/demo/serverless/harbor-incident-triage
+```
+
+应用所有 Function、Workflow 和 EventTrigger：
+
+```bash
+./scripts/apply-functions.sh
+./scripts/apply-workflow.sh
+../../../kubectl get functions
+../../../kubectl get workflows
+../../../kubectl get eventtriggers
+../../../kubectl get replicasets
+```
+
+讲解重点：
+
+- 每个 `Function` 都有对应的 `fn-*` ReplicaSet 和 Service，说明函数不是在 executor
+  里直接运行，而是落到 Kubernetes-like 后端对象。
+- `Workflow` 只描述状态机步骤：normalize -> classify -> branch -> compose-report。
+- `EventTrigger` 的 target 是 `workflow/harbor-incident-triage`，不是单个 Function。
+- `fn-*` ReplicaSet 可以是 0 或 1，取决于 `minReplicas` 和最近调用；冷启动由 Activator
+  补齐。
+
+### 2. 展示 HTTP Workflow invoke 闭环
+
+先跑一条普通分支，例如 app 分支：
+
+```bash
+./scripts/invoke-app.sh
+../../../kubectl describe workflow harbor-incident-triage
+../../../kubectl get workflowruns
+```
+
+需要指出的证据：
+
+- CLI 返回的是最终 JSON，而不是某个中间 step 输出。
+- `executedSteps` 应类似：
+  `normalize_input -> tiny_log_classifier -> app_diagnose -> compose_report`。
+- `describe workflow` 显示最近一次执行摘要；`get workflowruns` 显示每次 invoke 都有独立
+  run 记录。
+
+再展示 critical 分支：
+
+```bash
+./scripts/invoke-critical.sh
+../../../kubectl get workflowruns
+```
+
+讲解重点：
+
+- `tiny-log-classifier` 输出命中 `"severity":"critical"`，优先跳到 `notify-captain`。
+- `notify-captain` 不是终点，它通过 `next: compose-report` 汇合到最终报告。
+- 这证明当前 P0 支持“分支选择一条诊断流 + merge”，但没有并行 fan-out/fan-in。
+
+### 3. 展示 WorkflowRun trace
+
+取最新一条 run 查看详情：
+
+```bash
+RUN=$(../../../kubectl get workflowruns | awk 'NR==2 {print $2}')
+../../../kubectl describe workflowrun "$RUN"
+```
+
+如果表格排序不是最新优先，可以直接从 `get workflowruns` 里复制一个 run 名称。展示时关注：
+
+- `Workflow: harbor-incident-triage`
+- `Status: Succeeded`
+- `Output:` 是最终 compose-report JSON
+- `Steps:` 包含真实执行过的 step，不包含未选中的分支
+
+讲解口径：
+
+```text
+Workflow status 是最近一次摘要；WorkflowRun 是每次 invoke 的执行记录。
+这解决了并发 invoke 都覆盖 Workflow.status 的语义问题，但它还不是 durable execution 引擎。
+```
+
+### 4. 展示 EventTrigger -> Workflow
+
+用 NATS request/reply 触发同一个 Workflow：
+
+```bash
+../../../minik8s request minik8s.incident.created \
+  --data "$(cat inputs/low-risk-incident.json)" \
+  --timeout 30s
+../../../kubectl get workflowruns
+```
+
+讲解重点：
+
+- 事件入口不是绕过 WorkflowExecutor，而是：
+  ```text
+  NATS event -> EventTrigger controller -> WorkflowRun -> WorkflowExecutor
+    -> NATS-backed Function steps -> Activator -> Function Pods
+  ```
+- 返回值仍是最终 JSON，说明事件入口和 HTTP invoke 入口共享同一套 Workflow 执行语义。
+
+### 5. 展示 NATS 和 Activator 位置
+
+用这张路径作为讲解主图：
+
+```text
+HTTP Workflow invoke / NATS Event
+  -> Harbor subresource or EventTrigger controller
+  -> WorkflowRun
+  -> WorkflowExecutor
+  -> NATS request minik8s.serverless.invoke
+  -> invocation worker
+  -> Activator
+  -> Function Pod /invoke
+  -> NATS reply
+  -> final JSON response
+```
+
+如果现场时间足够，可以补一个冷启动/缩零证据：
+
+```bash
+../../../kubectl get replicasets
+./scripts/invoke-network.sh
+../../../kubectl get replicasets
+sleep 40
+../../../kubectl get replicasets
+```
+
+讲解口径：
+
+- 冷启动和缩零是 Function/Activator 能力，不是 Workflow 特有能力。
+- Workflow step 复用同一条 Function invocation bus，所以每个 step 都能触发冷启动。
+
+### 6. 推荐现场顺序
+
+最稳妥的 5 分钟顺序：
+
+1. `get functions/workflows/eventtriggers/replicasets`：证明资源都在控制面。
+2. `invoke-app.sh`：证明 HTTP Workflow invoke 能走 app 分支并 merge。
+3. `invoke-critical.sh`：证明 branch precedence 和 notify 后 merge。
+4. `get/describe workflowrun`：证明每次执行有独立 trace。
+5. `minik8s request minik8s.incident.created ...`：证明 EventTrigger 可以触发完整 Workflow。
+
+不要现场重点展示 fan-out/fan-in、重试、WorkflowRun 恢复执行或生产级 eventing；这些仍是
+后续工作，答辩时主动说明边界更可信。
+
 ## 一个 Function 调用到来时的路径
 
 以如下命令为例：
@@ -319,7 +473,7 @@ desired = clamp(desired, 1, maxReplicas)
 这比 Knative KPA/HPA/KEDA 简单很多。它没有稳定窗口、panic window、并发采样聚合、RPS
 指标、queue depth 指标，也没有 metrics server 或 Prometheus 参与。
 
-真机测试中，`slow-echo` 在 `targetConcurrency: 1`、20 并发请求下可扩到
+真机测试中，`slow-echo` 在 `targetConcurrency: 1`、9 并发请求下可扩到
 `maxReplicas: 3`，请求全部返回对应输入。这说明“并发请求可处理”和“按并发自动扩容到
 >1”需要同时验证；只看请求成功数不足以证明 Serverless 扩容语义。
 
@@ -402,7 +556,7 @@ CRUD，但真机测试才能暴露控制循环之间的时间关系。
    增加 ack/retry、dead-letter、LastEventTime、LastError 和订阅健康状态。
 
 5. 扩展 Workflow  
-   支持 DAG、并行节点、step 级状态、失败重试和持久化执行历史。
+   支持 DAG、并行节点、fan-out/fan-in、step 级状态、失败重试和 durable execution。
 
 6. 改进函数打包模型  
    支持代码文件、zip 包或镜像引用；为复杂模型类应用提供依赖和模型文件管理路径。
