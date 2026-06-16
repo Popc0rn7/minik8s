@@ -1816,7 +1816,7 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 			}
 		}()
 		go activator.RunScaler(ctx, 2*time.Second)
-		invoker := bridgeServerless.NewNATSInvoker(nil, natsURL, 30*time.Second)
+		invoker := bridgeServerless.NewNATSInvoker(nil, natsURL, bridgeServerless.InvokeTimeoutFromEnv())
 		go bridgeServerless.NewControllerWithInvoker(a.controlBridge.FunctionStore(), a.controlBridge.EventTriggerStore(), natsURL, invoker).Run(ctx, 5*time.Second)
 	}
 	if err := writes(out, cliui.InfoLine("bridge listening on %s", options.listen)); err != nil {

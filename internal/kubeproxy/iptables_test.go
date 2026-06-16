@@ -132,6 +132,27 @@ func TestIPTablesProxyDeleteServiceIgnoresMissingRules(t *testing.T) {
 	assert.Contains(t, joined, "-t nat -X MK8S-SVC-")
 }
 
+func TestIPTablesProxyDeleteServiceSkipsEmptyClusterIPRules(t *testing.T) {
+	runner := &recordingRunner{}
+	proxy := NewIPTablesProxy(runner.Run)
+	svc := &service.Service{
+		ObjectMeta: pod.ObjectMeta{Name: "fn-echo", Namespace: "default"},
+		Spec: service.ServiceSpec{
+			Type:  service.ServiceTypeClusterIP,
+			Ports: []service.ServicePort{{Protocol: "TCP", Port: 8080, TargetPort: 8080}},
+		},
+	}
+
+	require.NoError(t, proxy.DeleteService(context.Background(), svc))
+
+	joined := strings.Join(runner.commands, "\n")
+	assert.NotContains(t, joined, "-d  --dport")
+	assert.NotContains(t, joined, "-D PREROUTING")
+	assert.NotContains(t, joined, "-D OUTPUT")
+	assert.Contains(t, joined, "-t nat -F MK8S-SVC-")
+	assert.Contains(t, joined, "-t nat -X MK8S-SVC-")
+}
+
 func TestIPTablesProxyDeleteServiceRemovesDuplicateEntryRules(t *testing.T) {
 	deleteAttempts := 0
 	var commands []string

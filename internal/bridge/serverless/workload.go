@@ -27,7 +27,7 @@ func FunctionServiceName(fn *function.Function) string {
 }
 
 func FunctionRevision(fn *function.Function) string {
-	sum := sha256.Sum256([]byte(fn.Spec.Runtime + "\x00" + fn.Spec.Handler + "\x00" + fn.Spec.Code + "\x00" + fn.Spec.Image + "\x00" + fn.Spec.ImageTag + "\x00" + fmt.Sprint(fn.Spec.Port) + "\x00" + revisionEnv(fn.Spec.Env)))
+	sum := sha256.Sum256([]byte(fn.Spec.Runtime + "\x00" + fn.Spec.Handler + "\x00" + fn.Spec.Code + "\x00" + fn.Spec.Image + "\x00" + fn.Spec.ImageTag + "\x00" + revisionList(fn.Spec.Command) + "\x00" + revisionList(fn.Spec.Args) + "\x00" + fmt.Sprint(fn.Spec.Port) + "\x00" + revisionEnv(fn.Spec.Env)))
 	return hex.EncodeToString(sum[:])[:12]
 }
 
@@ -70,6 +70,8 @@ func functionContainer(fn *function.Function) pod.ContainerSpec {
 			Name:     "function-runtime",
 			Image:    fn.Spec.Image,
 			ImageTag: fn.Spec.ImageTag,
+			Command:  copyStringSlice(fn.Spec.Command),
+			Args:     copyStringSlice(fn.Spec.Args),
 			Ports:    ports,
 			Env:      copyEnv(fn.Spec.Env),
 		}
@@ -135,12 +137,22 @@ func copyEnv(in []pod.EnvVar) []pod.EnvVar {
 	return out
 }
 
+func copyStringSlice(in []string) []string {
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
 func revisionEnv(env []pod.EnvVar) string {
 	parts := make([]string, 0, len(env))
 	for _, item := range env {
 		parts = append(parts, item.Name+"="+item.Value)
 	}
 	return strings.Join(parts, "\x00")
+}
+
+func revisionList(items []string) string {
+	return strings.Join(items, "\x00")
 }
 
 const pythonRuntimeServer = `import importlib.util, json, os, sys, tempfile

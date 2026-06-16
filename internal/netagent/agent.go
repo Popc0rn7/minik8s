@@ -271,6 +271,9 @@ func isFDBMissing(err error) bool {
 var errNoFDBEntry = errors.New("fdb entry missing")
 
 func run(name string, args ...string) error {
+	if name == "iptables" {
+		args = append([]string{"-w", "5"}, args...)
+	}
 	cmd := exec.Command(name, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

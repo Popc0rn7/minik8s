@@ -50,6 +50,8 @@ func TestBuildFunctionReplicaSetUsesContainerRuntimeImage(t *testing.T) {
 	fn.Spec.Image = "minik8s/sam-cpu"
 	fn.Spec.ImageTag = "demo"
 	fn.Spec.Port = 9090
+	fn.Spec.Command = []string{"python"}
+	fn.Spec.Args = []string{"/app/image_workflow.py"}
 	fn.Spec.Env = []pod.EnvVar{{Name: "ARTIFACT_STORE_URL", Value: "http://artifact-store:8080"}}
 
 	rs := BuildFunctionReplicaSet(fn)
@@ -59,12 +61,27 @@ func TestBuildFunctionReplicaSetUsesContainerRuntimeImage(t *testing.T) {
 	assert.Equal(t, "function-runtime", container.Name)
 	assert.Equal(t, "minik8s/sam-cpu", container.Image)
 	assert.Equal(t, "demo", container.ImageTag)
-	assert.Empty(t, container.Command)
+	assert.Equal(t, []string{"python"}, container.Command)
+	assert.Equal(t, []string{"/app/image_workflow.py"}, container.Args)
 	require.Len(t, container.Env, 1)
 	assert.Equal(t, "ARTIFACT_STORE_URL", container.Env[0].Name)
 	assert.Equal(t, "http://artifact-store:8080", container.Env[0].Value)
 	require.Len(t, container.Ports, 1)
 	assert.Equal(t, int32(9090), container.Ports[0].ContainerPort)
+}
+
+func TestFunctionRevisionIncludesContainerCommand(t *testing.T) {
+	fn := testFunction("extract-metadata", "")
+	fn.Spec.Runtime = "container"
+	fn.Spec.Image = "minik8s/sam-cpu"
+	fn.Spec.ImageTag = "demo"
+	fn.Spec.Command = []string{"python"}
+	fn.Spec.Args = []string{"/app/image_workflow.py"}
+	first := FunctionRevision(fn)
+
+	fn.Spec.Args[0] = "/app/app.py"
+
+	assert.NotEqual(t, first, FunctionRevision(fn))
 }
 
 func TestFunctionRevisionIncludesContainerImage(t *testing.T) {

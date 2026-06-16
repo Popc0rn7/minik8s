@@ -32,6 +32,7 @@ func TestFunctionControllerSyncsReplicaSetAndService(t *testing.T) {
 	svc, err := services.Get("fn-echo", "default")
 	require.NoError(t, err)
 	assert.Equal(t, FunctionRevision(fn), svc.Spec.Selector.MatchLabels[FunctionRevisionLabel])
+	assert.Equal(t, "10.96.0.1", svc.Status.ClusterIP)
 
 	fn.Spec.Code = "def handler(event):\n  return 'v2:' + event\n"
 	require.NoError(t, functions.Update(fn))
@@ -43,6 +44,7 @@ func TestFunctionControllerSyncsReplicaSetAndService(t *testing.T) {
 	svc, err = services.Get("fn-echo", "default")
 	require.NoError(t, err)
 	assert.Equal(t, FunctionRevision(fn), svc.Spec.Selector.MatchLabels[FunctionRevisionLabel])
+	assert.Equal(t, "10.96.0.1", svc.Status.ClusterIP)
 	require.NoError(t, pods.Create(functionControllerPod("fn-echo-1", "echo", "old-revision")))
 	require.NoError(t, pods.Create(functionControllerPod("fn-echo-2", "echo", FunctionRevision(fn))))
 

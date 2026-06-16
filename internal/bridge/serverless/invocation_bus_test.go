@@ -29,6 +29,7 @@ func TestNATSInvokerSendsInvocationMessage(t *testing.T) {
 	assert.Equal(t, "echo", msg.Function)
 	assert.Equal(t, "hello", msg.Data)
 	assert.NotEmpty(t, msg.RequestID)
+	assert.Equal(t, time.Second, client.timeout)
 }
 
 func TestNATSInvokerReturnsFailedResultAsError(t *testing.T) {
@@ -54,16 +55,33 @@ func TestInvocationResponseRoundTrip(t *testing.T) {
 	assert.Equal(t, "ok", result.Output)
 }
 
+func TestInvokeTimeoutFromEnv(t *testing.T) {
+	t.Run("configured", func(t *testing.T) {
+		t.Setenv(InvokeTimeoutEnv, "5m")
+		assert.Equal(t, 5*time.Minute, InvokeTimeoutFromEnv())
+	})
+	t.Run("invalid", func(t *testing.T) {
+		t.Setenv(InvokeTimeoutEnv, "bad")
+		assert.Equal(t, DefaultInvokeTimeout, InvokeTimeoutFromEnv())
+	})
+	t.Run("default", func(t *testing.T) {
+		t.Setenv(InvokeTimeoutEnv, "")
+		assert.Equal(t, DefaultInvokeTimeout, InvokeTimeoutFromEnv())
+	})
+}
+
 type fakeNATSRequester struct {
 	subject  string
 	payload  []byte
 	response []byte
 	err      error
+	timeout  time.Duration
 }
 
 func (f *fakeNATSRequester) Request(ctx context.Context, rawURL, subject string, payload []byte, timeout time.Duration) ([]byte, error) {
 	f.subject = subject
 	f.payload = payload
+	f.timeout = timeout
 	return f.response, f.err
 }
 

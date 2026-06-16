@@ -9,6 +9,7 @@ import (
 	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/function"
 	"minik8s/internal/replicaset"
+	"minik8s/internal/service"
 )
 
 type FunctionController struct {
@@ -99,15 +100,29 @@ func (c *FunctionController) upsertService(fn *function.Function) error {
 	existing, err := c.services.Get(desired.Name, desired.Namespace)
 	if err == nil {
 		desired.Status = existing.Status
+		if err := c.allocateService(desired); err != nil {
+			return fmt.Errorf("allocating function service %s/%s: %w", desired.Namespace, desired.Name, err)
+		}
 		return c.services.Update(desired)
 	}
 	if !errors.Is(err, store.ErrServiceNotFound) {
 		return fmt.Errorf("getting function service %s/%s: %w", desired.Namespace, desired.Name, err)
 	}
+	if err := c.allocateService(desired); err != nil {
+		return fmt.Errorf("allocating function service %s/%s: %w", desired.Namespace, desired.Name, err)
+	}
 	if err := c.services.Create(desired); err != nil {
 		return fmt.Errorf("creating function service %s/%s: %w", desired.Namespace, desired.Name, err)
 	}
 	return nil
+}
+
+func (c *FunctionController) allocateService(svc *service.Service) error {
+	existing, err := c.services.List("", nil)
+	if err != nil {
+		return fmt.Errorf("listing services: %w", err)
+	}
+	return service.EnsureClusterIP(svc, existing)
 }
 
 func (c *FunctionController) deleteStaleReplicaSets(seen map[string]struct{}) error {

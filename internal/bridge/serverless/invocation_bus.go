@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"minik8s/internal/function"
@@ -12,8 +14,10 @@ import (
 )
 
 const (
-	InvocationSubject = "minik8s.serverless.invoke"
-	InvocationQueue   = "minik8s-serverless-workers"
+	InvocationSubject    = "minik8s.serverless.invoke"
+	InvocationQueue      = "minik8s-serverless-workers"
+	DefaultInvokeTimeout = 30 * time.Second
+	InvokeTimeoutEnv     = "MINIK8S_SERVERLESS_INVOKE_TIMEOUT"
 )
 
 type InvocationMessage struct {
@@ -66,9 +70,21 @@ func NewNATSInvoker(client NATSRequester, natsURL string, timeout time.Duration)
 		client = natsliteClient{}
 	}
 	if timeout == 0 {
-		timeout = 30 * time.Second
+		timeout = DefaultInvokeTimeout
 	}
 	return &NATSInvoker{client: client, natsURL: natsURL, timeout: timeout}
+}
+
+func InvokeTimeoutFromEnv() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(InvokeTimeoutEnv))
+	if raw == "" {
+		return DefaultInvokeTimeout
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil || timeout <= 0 {
+		return DefaultInvokeTimeout
+	}
+	return timeout
 }
 
 func (i *NATSInvoker) InvokeFunction(ctx context.Context, namespace, name, input string) (string, error) {

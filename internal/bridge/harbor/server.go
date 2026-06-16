@@ -194,7 +194,7 @@ func New(config Config) *Server {
 			natsURL = strings.TrimSpace(os.Getenv("MINIK8S_NATS_URL"))
 		}
 		if natsURL != "" {
-			functionInvoker = bridgeServerless.NewNATSInvoker(nil, natsURL, 30*time.Second)
+			functionInvoker = bridgeServerless.NewNATSInvoker(nil, natsURL, bridgeServerless.InvokeTimeoutFromEnv())
 		}
 	}
 	server := &Server{

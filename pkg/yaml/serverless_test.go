@@ -47,6 +47,10 @@ spec:
   runtime: container
   image: minik8s/sam-cpu
   imageTag: demo
+  command:
+  - python
+  args:
+  - /app/image_workflow.py
   port: 8080
   env:
   - name: ARTIFACT_STORE_URL
@@ -59,6 +63,8 @@ spec:
 	assert.Equal(t, "container", fn.Spec.Runtime)
 	assert.Equal(t, "minik8s/sam-cpu", fn.Spec.Image)
 	assert.Equal(t, "demo", fn.Spec.ImageTag)
+	assert.Equal(t, []string{"python"}, fn.Spec.Command)
+	assert.Equal(t, []string{"/app/image_workflow.py"}, fn.Spec.Args)
 	assert.Empty(t, fn.Spec.Code)
 	assert.Equal(t, int32(8080), fn.Spec.Port)
 	assert.Equal(t, int32(5), fn.Spec.MaxReplicas)

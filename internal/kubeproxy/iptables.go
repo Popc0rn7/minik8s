@@ -81,11 +81,13 @@ func (p *IPTablesProxy) DeleteService(ctx context.Context, svc *service.Service)
 	var firstErr error
 	for _, port := range svc.Spec.Ports {
 		proto := normalizedProtocol(port.Protocol)
-		if err := p.deleteRuleUntilMissing(ctx, "PREROUTING", "-p", proto, "-d", svc.Status.ClusterIP, "--dport", fmt.Sprint(port.Port), "-j", chain); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		if err := p.deleteRuleUntilMissing(ctx, "OUTPUT", "-p", proto, "-d", svc.Status.ClusterIP, "--dport", fmt.Sprint(port.Port), "-j", chain); err != nil && firstErr == nil {
-			firstErr = err
+		if svc.Status.ClusterIP != "" {
+			if err := p.deleteRuleUntilMissing(ctx, "PREROUTING", "-p", proto, "-d", svc.Status.ClusterIP, "--dport", fmt.Sprint(port.Port), "-j", chain); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			if err := p.deleteRuleUntilMissing(ctx, "OUTPUT", "-p", proto, "-d", svc.Status.ClusterIP, "--dport", fmt.Sprint(port.Port), "-j", chain); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 		if svc.Spec.Type == service.ServiceTypeNodePort && port.NodePort > 0 {
 			if err := p.deleteRuleUntilMissing(ctx, "PREROUTING", "-p", proto, "--dport", fmt.Sprint(port.NodePort), "-j", chain); err != nil && firstErr == nil {
@@ -173,6 +175,7 @@ func normalizedProtocol(protocol string) string {
 }
 
 func runIPTables(ctx context.Context, args ...string) error {
+	args = append([]string{"-w", "5"}, args...)
 	cmd := exec.CommandContext(ctx, "iptables", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("iptables %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))

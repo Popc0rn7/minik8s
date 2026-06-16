@@ -8,6 +8,10 @@ spec:
   runtime: container
   image: minik8s/sam-cpu
   imageTag: demo
+  command:
+  - python
+  args:
+  - /app/image_workflow.py
   port: 8080
   minReplicas: 0
   maxReplicas: 1

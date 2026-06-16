@@ -19,6 +19,8 @@ type FunctionSpec struct {
 	Code               string       `json:"code" yaml:"code"`
 	Image              string       `json:"image,omitempty" yaml:"image,omitempty"`
 	ImageTag           string       `json:"imageTag,omitempty" yaml:"imageTag,omitempty"`
+	Command            []string     `json:"command,omitempty" yaml:"command,omitempty"`
+	Args               []string     `json:"args,omitempty" yaml:"args,omitempty"`
 	Port               int32        `json:"port,omitempty" yaml:"port,omitempty"`
 	MinReplicas        int32        `json:"minReplicas,omitempty" yaml:"minReplicas,omitempty"`
 	MaxReplicas        int32        `json:"maxReplicas,omitempty" yaml:"maxReplicas,omitempty"`
@@ -56,7 +58,11 @@ func (f Function) DeepCopy() *Function {
 	*out = f
 	out.TypeMeta = f.TypeMeta
 	out.ObjectMeta = f.ObjectMeta.DeepCopy()
+	out.Spec.Command = make([]string, len(f.Spec.Command))
+	out.Spec.Args = make([]string, len(f.Spec.Args))
 	out.Spec.Env = make([]pod.EnvVar, len(f.Spec.Env))
+	copy(out.Spec.Command, f.Spec.Command)
+	copy(out.Spec.Args, f.Spec.Args)
 	copy(out.Spec.Env, f.Spec.Env)
 	return out
 }
