@@ -233,15 +233,16 @@ utilization，多指标取更大的 desired replicas，每轮最多扩缩 1 个�
 
 ### Serverless
 
-Serverless 是当前自选功能的最小闭环。Minik8s 将 Function、EventTrigger 和
+Serverless 是当前自选功能的教学版闭环。Minik8s 将 Function、EventTrigger 和
 Workflow 都建模为一等资源，接入 YAML loader、Harbor API、CLI、file/etcd store 和
-演示 manifest。Function 支持 Python 代码的 HTTP invoke；启用 `serverless` addon 后，
-Bridge 会启动 NATS 依赖和 serverless controller，EventTrigger 可订阅事件并触发对应
-Function；Workflow 当前用于表达函数链对象模型和持久化。
+演示 manifest。Function 支持 Python 与容器镜像运行时；启用 `serverless` addon 后，
+Bridge 会启动 NATS 依赖、invocation worker 和 serverless controller，CLI invoke 通过
+NATS request/reply 触发后端 Function Pod。
 
-这部分边界需要明确：当前版本覆盖 Function CRUD/invoke、EventTrigger 对象与 NATS
-publish 辅助命令、Workflow 对象持久化；尚未实现事件 ack/retry/dead-letter、Workflow
-DAG 自动执行、条件分支运行和完整 scale-to-0/并发扩容。
+当前版本覆盖 Function CRUD/invoke、EventTrigger 订阅 NATS subject 并触发 Function、
+Workflow 顺序步骤与基于输出的简单分支、冷启动、按并发扩容和空闲后缩到 0。它仍是
+简化实现：事件 ack/retry/dead-letter、完整 DAG、持久运行历史、Kubernetes 级别的
+Knative/Serverless 语义尚未实现。
 
 > Image: Serverless resource model
 
@@ -318,6 +319,9 @@ Job 创建独立 submitter Pod/Service，由 submitter 通过 SSH/SCP 提交到�
   host/path gateway；同一 host 下可按 path 转发到不同 Service endpoints。
 - `sailer run --cluster-dns <dns-ip>` 会把 cluster DNS 写入新建 Pod 的 Docker
   sandbox DNS 配置，用于 Pod 内域名访问验收。
+- Serverless Function/EventTrigger/Workflow YAML、API、CLI、file/etcd store、
+  NATS invocation worker、简化冷启动/并发扩容/scale-to-0，以及 SAM image workflow
+  demo。
 - Logbook 状态存储：默认本地 JSON；设置 `MINIK8S_LOGBOOK_ENDPOINTS` 后，
   Pod、Service、ReplicaSet、HPA、DNS、Node 使用 etcd-backed store。
 - 控制面重启后可从 file/etcd 恢复声明对象；worker 继续心跳后状态重新收敛。
@@ -325,7 +329,7 @@ Job 创建独立 submitter Pod/Service，由 submitter 通过 SSH/SCP 提交到�
 尚未实现或不应作为当前版本承诺：
 
 - 完整 Kubernetes Ingress 语义、TLS、外部 DNS controller 和 DNS route 的强一致更新。
-- Serverless 的事件 ack/retry、Workflow 自动执行、scale-to-0。
+- Serverless 的事件 ack/retry/dead-letter、完整 DAG 和持久运行历史。
 - PV/PVC 持久化卷、Security Context。
 - 完整 Kubernetes API machinery，例如 watch、resourceVersion、admission、
   RBAC、EndpointSlice、完整 probe 语义和资源感知调度。
@@ -464,6 +468,110 @@ etcd/Logbook 流程见 [docs/testcase/logbook.md](docs/testcase/logbook.md) 和
 `storage-etcd` 模板；启用 addon 时应先运行 `init` 生成对应 manifests。
 
 默认 etcd 模式下，Pod、Service、ReplicaSet、Node 会写入 `/registry/...` 前缀。
+
+## SAM Serverless Workflow Demo
+
+`demo/serverless/sam` 是当前用于实操的图像处理 Serverless Workflow demo。完整验收
+脚本见 [docs/testcase/serverless-image-workflow.md](docs/testcase/serverless-image-workflow.md)，
+下面是精简主流程。该 demo 使用 `artifact-store` 保存图片、mask、score 和 collage，
+Workflow 之间只传 JSON metadata 与 `artifact://...` 引用。
+
+1. 启动带 serverless addon 的 Minik8s：
+
+```bash
+make build
+./minik8s init --force
+./minik8s bridge \
+  --listen :18080 \
+  --cluster-cidr 10.244.0.0/16 \
+  --node-cidr-mask-size 24 \
+  --addons serverless
+```
+
+另开终端启动 worker：
+
+```bash
+export MINIK8S_HARBOR=http://127.0.0.1:18080
+export MINIK8S_NATS_URL=nats://127.0.0.1:4222
+./minik8s bridge token set minik8s --ttl 24h
+./minik8s sailer join --apiserver "$MINIK8S_HARBOR" --token minik8s -f manifest/node/node_a.yaml
+./minik8s sailer run
+```
+
+再开一个测试终端，确认 NATS/serverless 可用：
+
+```bash
+export MINIK8S_HARBOR=http://127.0.0.1:18080
+export MINIK8S_NATS_URL=nats://127.0.0.1:4222
+./minik8s doctor serverless
+```
+
+2. 构建 SAM demo 镜像。双机演示时，每台 worker 都需要能拉取或 `docker load` 该镜像：
+
+```bash
+docker build -t minik8s/sam-cpu:demo demo/serverless/sam
+```
+
+3. 部署 artifact-store，并记录它的 ClusterIP：
+
+```bash
+./kubectl apply -f manifest/pod/pod_artifact_store.yaml
+./kubectl apply -f manifest/service/service_artifact_store.yaml
+./kubectl get pods
+./kubectl get services
+```
+
+Function manifest 默认通过 `http://10.96.0.1:8080` 访问 artifact-store；如果实际
+ClusterIP 不同，先把 `manifest/function/function_extract_metadata.yaml`、
+`function_sam_segment.yaml`、`function_score_mask.yaml` 和
+`function_make_collage.yaml` 中的 `ARTIFACT_STORE_URL` 改成实际地址。
+
+4. 上传 demo 图片和 dataset。下面命令假设宿主机可通过
+`http://127.0.0.1:8080` 访问 artifact-store；如果不行，换成 NodePort、临时端口转发
+或在集群内执行上传：
+
+```bash
+python3 demo/serverless/sam/upload_artifacts.py \
+  --artifact-store http://127.0.0.1:8080 \
+  --dataset demo/serverless/sam/dataset.json \
+  --output-dir /tmp/most-dog-workflow-requests
+```
+
+5. 部署四个 Function 和两个 Workflow：
+
+```bash
+./kubectl apply -f manifest/function/function_extract_metadata.yaml
+./kubectl apply -f manifest/function/function_sam_segment.yaml
+./kubectl apply -f manifest/function/function_score_mask.yaml
+./kubectl apply -f manifest/function/function_make_collage.yaml
+./kubectl apply -f manifest/function/workflow_process_one_image.yaml
+./kubectl apply -f manifest/function/workflow_make_ranking.yaml
+
+./kubectl get functions
+./kubectl get workflows
+./kubectl get replicasets
+```
+
+6. 跑单图 Workflow、批量并发和最终合成：
+
+```bash
+./minik8s invoke workflow process-one-image \
+  --data "$(cat /tmp/most-dog-workflow-requests/01.json)"
+
+for request in /tmp/most-dog-workflow-requests/[0-9][0-9].json; do
+  ./minik8s invoke workflow process-one-image --data "$(cat "$request")" &
+done
+wait
+
+./minik8s invoke workflow make-ranking \
+  --data "$(cat /tmp/most-dog-workflow-requests/make-ranking.json)"
+```
+
+验证点：`process-one-image` 依次调用 `extract-metadata -> sam-segment -> score-mask`；
+批量阶段 `fn-sam-segment` 可观察到从 0 冷启动并在并发下扩到大于 1；最终输出包含
+`rankingRef` 和 `collageRef`，对应 artifact 为
+`artifact://most-dog/outputs/most-dog-ranking.json` 和
+`artifact://most-dog/outputs/most-dog-ranking.png`。
 
 ## 测试与当前验证基线
 
