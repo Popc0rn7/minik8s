@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
@@ -445,7 +444,7 @@ func (d *DockerRuntime) ContainerStats(ctx context.Context, containerID string) 
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	var stats dockertypes.StatsJSON
+	var stats container.StatsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
 		return nil, fmt.Errorf("decoding container stats: %w", err)
 	}

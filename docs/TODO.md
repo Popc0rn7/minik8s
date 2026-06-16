@@ -84,8 +84,8 @@
   支持每轮最多扩缩 1 个副本、缩容冷却。
 - [ ] 当前是简化实现：只支持 target `ReplicaSet`、Resource utilization；
   metrics addon 不是真实 scraper，metrics 仅保存在控制面内存中，CPU 需要两轮
-  Docker stats 才能由 delta 算出，API 可能返回 stale 样本；NodeMetrics 由
-  PodMetrics 汇总而来，不是节点原生指标；`metrics.k8s.io/v1beta1` 只是复用
+  Docker stats 才能由 delta 算出，metrics API 只按 freshness TTL 暴露最新内存
+  样本；NodeMetrics 由 PodMetrics 汇总而来，不是节点原生指标；`metrics.k8s.io/v1beta1` 只是复用
   sailer 样本的最小 adapter，缺少真实 metrics-server、cAdvisor、API
   aggregation、custom/external metrics 和 Kubernetes 完整 stabilization policy。
 - [ ] 真实压力扩缩容需要补 Linux + Docker 人工验收记录。

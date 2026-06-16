@@ -17,7 +17,8 @@ Kubernetes HPA，不包含复杂 stabilization policy 或多 Workload 类型。
 | HPA-03 | CPU 压力触发扩容 | Pod 实际运行节点 | 停止压力进程 |
 | HPA-04 | 压力停止后冷却缩容 | node-a | 删除 HPA 不删除 RS |
 | HPA-04B | 扩缩容速度和冷却窗口记录 | node-a | 删除 HPA/RS |
-| HPA-05 | HPA 单元测试 | 任意开发机 | 不改变集群 |
+| HPA-05 | metrics freshness 和 partial metrics 观察 | node-a | 不改变集群 |
+| HPA-06 | HPA 单元测试 | 任意开发机 | 不改变集群 |
 
 ## HPA-00：环境基线
 
@@ -81,7 +82,8 @@ curl --noproxy '*' -fsS $HARBOR/apis/metrics.k8s.io/v1beta1/pods
 期望：
 
 - Pod 未 Running 或 metrics 未就绪时，HPA condition 指向 `MetricsUnavailable` 或等价原因。
-- `kubectl top pods` 和 metrics API 能解释是否已有样本。
+- `kubectl top pods` 和 metrics API 能解释是否已有 fresh 样本；超过 freshness TTL 的旧样本
+  不应继续出现在 `metrics.k8s.io` 返回中。
 
 ## HPA-03：压力触发扩容
 
@@ -186,7 +188,35 @@ end
 - 缩容阶段先经历冷却窗口，之后每轮最多减少 1，且不低于 `minReplicas`。
 - 如果 metrics 尚未稳定或压力不足，应记录当轮 metrics、condition 和未扩缩容原因。
 
-## HPA-05：单元测试
+## HPA-05：metrics freshness 和 partial metrics 观察
+
+目标：确认 `kubectl top` / metrics API 与 HPA 使用一致的新鲜度语义，并确认多容器 Pod
+缺任一容器 metrics 或 request 时不会用 partial metrics 误算 utilization。
+
+观察 stale metrics：
+
+```fish
+date -Is
+curl --noproxy '*' -fsS $HARBOR/apis/metrics.k8s.io/v1beta1/pods
+sleep 35
+curl --noproxy '*' -fsS $HARBOR/apis/metrics.k8s.io/v1beta1/pods
+./kubectl describe hpa nginx-hpa
+```
+
+期望：
+
+- 如果 `sailer` 持续上报，metrics API 中样本保持刷新，HPA 可继续显示 current metrics。
+- 如果停止 `sailer` 或节点失联超过 TTL，metrics API 不再返回旧 PodMetrics / NodeMetrics，
+  HPA condition 进入 `MetricsUnavailable` 或等价原因，而不是继续基于旧样本扩缩容。
+
+观察 partial metrics：
+
+- 使用多容器 Pod 模板时，所有业务容器都需要设置对应 CPU / Memory requests。
+- 如果某个容器缺 request，或 metrics API 中缺该容器对应 usage，HPA 应把该 Pod 对该
+  metric 视为无效；缩容时应保留当前 replicas，并记录 `MetricsUnavailable` 或
+  `PartialMetrics`。
+
+## HPA-06：单元测试
 
 ```fish
 go test ./pkg/yaml ./internal/metrics ./internal/bridge/logbook ./internal/bridge/captain ./internal/bridge/harbor ./internal/cli -run 'HPA|Metrics|Utilization' -count=1

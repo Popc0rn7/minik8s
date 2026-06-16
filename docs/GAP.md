@@ -27,21 +27,26 @@ GC / finalizer。
 | metrics-server | 独立 addon，拉取每个 kubelet 指标并聚合 | `metrics-server` Pod 是 busybox 占位；真实 API 在 bridge 里 | 不能说实现了真实 metrics-server，只能说 minimal metrics adapter |
 | CPU 指标 | 对 cumulative CPU counter 做 rate，Metrics API 有实际采样 window | 也用相邻两轮 Docker stats delta 算 CPU | 首轮 CPU 不可用；`window` 展示与实际采样间隔不强绑定 |
 | Memory 指标 | Kubernetes resource metrics 通常报 working set | 当前使用 Docker `MemoryStats.Usage` | 语义不等价，可能包含 cache，和 working set 口径不同 |
-| Metrics 存储 | metrics-server 有缓存，但不是业务状态持久化；HPA按新鲜样本决策 | bridge 内存 map，只保存最新样本 | bridge 重启丢 metrics；旧 Pod 样本可能残留；metrics API 可能返回 stale 样本 |
+| Metrics 存储 | metrics-server 有缓存，但不是业务状态持久化；HPA按新鲜样本决策 | bridge 内存 map，只保存最新样本；node 新一轮上报会清理该 node 未再出现的旧 Pod metrics；metrics API 和 HPA 共用 freshness TTL | bridge 重启丢 metrics；没有历史窗口或持久化指标 |
 | NodeMetrics | kubelet / metrics-server 提供节点级资源指标 | 由 PodMetrics 按 node 汇总 | 不含宿主机系统进程、daemon、未托管容器、节点真实 working set |
 | HPA target | 支持 scalable target，常见 Deployment / ReplicaSet / StatefulSet 等 scale subresource | 只允许 `ReplicaSet` | 没有 scale subresource 抽象，也不支持 Deployment / Pod target |
 | HPA metric 类型 | Resource、ContainerResource、Pods、Object、External 等 | 只支持 Resource CPU / Memory utilization | 没有 custom / external metrics，也没有 per-container resource metric |
-| HPA 算法 | 基础公式相同；还处理 missing metrics、not-yet-ready pods、tolerance、downscale stabilization window | 使用基础公式，多指标取最大，每轮最多 +/-1，缩容 30s cooldown | 缺 Kubernetes 的保守重算、Ready 延迟、默认 5min 缩容稳定窗口、tolerance、behavior policies |
+| HPA 算法 | 基础公式相同；还处理 missing metrics、not-yet-ready pods、tolerance、downscale stabilization window | 拆为 metrics evaluation、desired replicas 计算、scale policy 三段；使用基础公式，多指标取最大，每轮最多 +/-1，缩容 30s cooldown；partial container metrics 不参与 Pod utilization | 缺 Kubernetes 的保守重算、Ready 延迟、默认 5min 缩容稳定窗口、tolerance、behavior policies |
 | readiness 影响 | HPA 会考虑 Pod Ready 状态和 CPU 初始化窗口 | 只看 Pod phase Running 和 metrics TTL | readiness 未实现，所以启动期 CPU、未就绪 Pod 对 HPA 都偏简化 |
 | scale-to-zero | 普通 HPA 基于资源指标不能无样本从 0 自动拉起 | `minReplicas` 可为 0，但无 Running Pod 时只报 `NoRunningPods` | 不应宣称资源 HPA 支持 0 -> N 冷启动 |
 
-优先补强建议：
+已补强的教学版语义：
 
-- P0：某 node 新一轮上报 metrics 时，清理这个 node 上本轮未再上报的旧 Pod metrics。
-- P0：`PodUtilization` 遇到任一目标容器缺 metrics / request 时，把整个 Pod 标为缺失，
+- 某 node 新一轮上报 metrics 时，会清理这个 node 上本轮未再上报的旧 Pod metrics。
+- `PodUtilization` 遇到任一目标容器缺 metrics / request 时，会把整个 Pod 标为缺失，
   避免 partial container metrics 误算。
-- P1：metrics API 对外展示增加 freshness 过滤或标识，避免 `kubectl top` 和 HPA 决策
-  看到的样本新鲜度不一致。
+- metrics API 对外展示按与 HPA 相同的 30s freshness TTL 过滤样本，避免
+  `kubectl top` 和 HPA 决策看到的新鲜度不一致。
+- HPA controller 已拆出 metrics evaluation、desired replicas 计算、scale policy
+  三段边界，便于未来替换算法。
+
+后续补强建议：
+
 - P1：文档和答辩统一称为 minimal metrics adapter，不称真实 metrics-server。
 - P2：再考虑真实 scraper / cAdvisor / kubelet metrics endpoint 或历史窗口。
 

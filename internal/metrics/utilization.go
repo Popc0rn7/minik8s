@@ -8,7 +8,10 @@ import (
 	"minik8s/internal/pod"
 )
 
-var ErrMissingRequest = errors.New("missing resource request")
+var (
+	ErrMissingMetrics = errors.New("missing container metrics")
+	ErrMissingRequest = errors.New("missing resource request")
+)
 
 func PodUtilization(p *pod.Pod, pm *PodMetrics, resource string) (int32, error) {
 	if p == nil || pm == nil {
@@ -23,7 +26,7 @@ func PodUtilization(p *pod.Pod, pm *PodMetrics, resource string) (int32, error) 
 	for _, c := range p.Spec.Containers {
 		cm, ok := byName[c.Name]
 		if !ok {
-			continue
+			return 0, ErrMissingMetrics
 		}
 		switch resource {
 		case ResourceCPU:

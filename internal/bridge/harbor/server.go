@@ -62,6 +62,8 @@ type Config struct {
 	DNSEnabled         bool
 	BootstrapTokenPath string
 	HarborURL          string
+	Now                func() time.Time
+	MetricsTTL         time.Duration
 }
 
 type Server struct {
@@ -90,6 +92,8 @@ type Server struct {
 	nodeTokens         *nodeTokenRegistry
 	heartbeats         *heartbeatManager
 	harborURL          string
+	now                func() time.Time
+	metricsTTL         time.Duration
 }
 
 func New(config Config) *Server {
@@ -120,6 +124,14 @@ func New(config Config) *Server {
 	metricsStore := config.MetricsStore
 	if metricsStore == nil {
 		metricsStore = store.NewInMemoryMetricsStore()
+	}
+	now := config.Now
+	if now == nil {
+		now = time.Now
+	}
+	metricsTTL := config.MetricsTTL
+	if metricsTTL == 0 {
+		metricsTTL = captain.DefaultHPAMetricsTTL
 	}
 	nodeStore := config.NodeStore
 	if nodeStore == nil {
@@ -194,6 +206,8 @@ func New(config Config) *Server {
 		bootstrapTokenPath: config.BootstrapTokenPath,
 		nodeTokens:         nodeTokens,
 		harborURL:          config.HarborURL,
+		now:                now,
+		metricsTTL:         metricsTTL,
 	}
 	server.heartbeats = newHeartbeatManager(heartbeatManagerConfig{
 		pods:        podStore,
@@ -1980,7 +1994,7 @@ func (s *Server) handleMetricsPods(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, metrics.NewPodMetricsList(s.metrics.ListPodMetrics("")))
+	writeJSON(w, http.StatusOK, metrics.NewPodMetricsList(s.freshPodMetrics("")))
 }
 
 func (s *Server) handleMetricsNodes(w http.ResponseWriter, r *http.Request) {
@@ -1988,7 +2002,32 @@ func (s *Server) handleMetricsNodes(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, metrics.NewNodeMetricsList(s.metrics.ListPodMetrics("")))
+	writeJSON(w, http.StatusOK, metrics.NewNodeMetricsList(s.freshPodMetrics("")))
+}
+
+func (s *Server) freshPodMetrics(namespace string) []*metrics.PodMetrics {
+	now := s.now()
+	items := s.metrics.ListPodMetrics(namespace)
+	fresh := make([]*metrics.PodMetrics, 0, len(items))
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		if now.Sub(metricsFreshnessTime(item)) <= s.metricsTTL {
+			fresh = append(fresh, item)
+		}
+	}
+	return fresh
+}
+
+func metricsFreshnessTime(pm *metrics.PodMetrics) time.Time {
+	if pm == nil {
+		return time.Time{}
+	}
+	if !pm.ReceivedAt.IsZero() {
+		return pm.ReceivedAt
+	}
+	return pm.Timestamp
 }
 
 func readPod(r io.Reader, namespace, name string) (*pod.Pod, error) {

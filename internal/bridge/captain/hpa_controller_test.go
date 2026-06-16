@@ -2,6 +2,7 @@ package captain
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -267,6 +268,64 @@ func TestHPAControllerDoesNotTreatUnavailableCPUAsZero(t *testing.T) {
 	assert.Equal(t, "MetricsUnavailable", gotHPA.Status.Conditions[0].Reason)
 }
 
+func TestHPAControllerDoesNotScaleDownWithPartialContainerMetrics(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	rsStore := store.NewInMemoryReplicaSetStore()
+	hpaStore := store.NewInMemoryHPAStore()
+	metricsStore := store.NewInMemoryMetricsStore()
+	now := time.Unix(100, 0)
+
+	require.NoError(t, rsStore.Create(hpaControllerReplicaSet(3)))
+	require.NoError(t, podStore.Create(hpaRunningPodWithSidecar("nginx-rs-1")))
+	require.NoError(t, podStore.Create(hpaRunningPodWithSidecar("nginx-rs-2")))
+	require.NoError(t, podStore.Create(hpaRunningPodWithSidecar("nginx-rs-3")))
+	require.NoError(t, hpaStore.Create(hpaControllerHPA("nginx-hpa", 1, 3, 50)))
+	require.NoError(t, metricsStore.UpsertNodeMetrics("node-a", []*metrics.PodMetrics{
+		hpaPartialPodMetrics("nginx-rs-1", now, 100_000_000),
+		hpaPartialPodMetrics("nginx-rs-2", now, 100_000_000),
+		hpaPartialPodMetrics("nginx-rs-3", now, 100_000_000),
+	}))
+
+	ctrl := NewHPAController(podStore, rsStore, hpaStore, metricsStore, HPAControllerConfig{
+		Now:        func() time.Time { return now },
+		MetricsTTL: time.Minute,
+	})
+	require.NoError(t, ctrl.Sync(context.Background()))
+
+	rs, err := rsStore.Get("nginx-rs", "default")
+	require.NoError(t, err)
+	assert.Equal(t, int32(3), rs.Spec.Replicas)
+	gotHPA, err := hpaStore.Get("nginx-hpa", "default")
+	require.NoError(t, err)
+	assert.True(t, slices.Contains([]string{"MetricsUnavailable", "PartialMetrics"}, gotHPA.Status.Conditions[0].Reason))
+}
+
+func TestCalculateDesiredReplicasUsesLargestMetricCandidate(t *testing.T) {
+	desired := calculateDesiredReplicas(4, []metricEvaluation{
+		{averageUtilization: 25, targetUtilization: 50},
+		{averageUtilization: 90, targetUtilization: 60},
+	})
+
+	assert.Equal(t, int32(6), desired)
+}
+
+func TestApplyScalePolicyLimitsStepAndHonorsCooldown(t *testing.T) {
+	now := time.Unix(100, 0)
+	ctrl := NewHPAController(nil, nil, nil, nil, HPAControllerConfig{
+		Now:               func() time.Time { return now },
+		ScaleDownCooldown: time.Minute,
+	})
+	autoscaler := hpaControllerHPA("nginx-hpa", 1, 10, 50)
+
+	assert.Equal(t, int32(4), ctrl.applyScalePolicy(autoscaler, 3, 8))
+
+	autoscaler.Status.LastScaleTime = now.Add(-30 * time.Second).Unix()
+	assert.Equal(t, int32(3), ctrl.applyScalePolicy(autoscaler, 3, 1))
+
+	autoscaler.Status.LastScaleTime = now.Add(-2 * time.Minute).Unix()
+	assert.Equal(t, int32(2), ctrl.applyScalePolicy(autoscaler, 3, 1))
+}
+
 func hpaControllerReplicaSet(replicas int32) *replicaset.ReplicaSet {
 	return &replicaset.ReplicaSet{
 		TypeMeta:   pod.TypeMeta{Kind: "ReplicaSet", APIVersion: "v1"},
@@ -305,7 +364,37 @@ func hpaRunningPod(name string) *pod.Pod {
 	}
 }
 
+func hpaRunningPodWithSidecar(name string) *pod.Pod {
+	p := hpaRunningPod(name)
+	p.Spec.Containers = append(p.Spec.Containers, pod.ContainerSpec{
+		Name:  "sidecar",
+		Image: "busybox",
+		Resources: pod.ResourceRequirements{
+			Requests: pod.ResourceList{CPU: "1", Memory: "128Mi"},
+		},
+	})
+	return p
+}
+
 func hpaPodMetrics(name string, timestamp time.Time, cpuNanoCores int64) *metrics.PodMetrics {
+	return &metrics.PodMetrics{
+		Namespace: "default",
+		Name:      name,
+		NodeName:  "node-a",
+		Timestamp: timestamp,
+		Containers: []metrics.ContainerMetrics{{
+			Name: "nginx",
+			Usage: metrics.ResourceUsage{
+				CPUNanoCores:    cpuNanoCores,
+				CPUAvailable:    true,
+				MemoryBytes:     64 * 1024 * 1024,
+				MemoryAvailable: true,
+			},
+		}},
+	}
+}
+
+func hpaPartialPodMetrics(name string, timestamp time.Time, cpuNanoCores int64) *metrics.PodMetrics {
 	return &metrics.PodMetrics{
 		Namespace: "default",
 		Name:      name,

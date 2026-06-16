@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	defaultHPAMetricsTTL        = 30 * time.Second
+	DefaultHPAMetricsTTL        = 30 * time.Second
 	defaultHPAScaleDownCooldown = 30 * time.Second
 )
 
@@ -43,7 +43,7 @@ func NewHPAController(podStore store.PodStore, replicaSetStore store.ReplicaSetS
 	}
 	ttl := config.MetricsTTL
 	if ttl == 0 {
-		ttl = defaultHPAMetricsTTL
+		ttl = DefaultHPAMetricsTTL
 	}
 	cooldown := config.ScaleDownCooldown
 	if cooldown == 0 {
@@ -114,36 +114,14 @@ func (c *HPAController) reconcileHPA(ctx context.Context, autoscaler *hpa.Horizo
 		return c.hpaStore.Update(autoscaler)
 	}
 
-	evaluations := make([]metricEvaluation, 0, len(autoscaler.Spec.Metrics))
-	blockScaleDown := false
-	for _, spec := range autoscaler.Spec.Metrics {
-		evaluation := c.evaluateMetric(running, spec)
-		autoscaler.Status.CurrentMetrics = append(autoscaler.Status.CurrentMetrics, hpa.MetricStatus{
-			Type:                      spec.Type,
-			Name:                      spec.Resource.Name,
-			CurrentAverageUtilization: evaluation.averageUtilization,
-			ValidPods:                 int32(evaluation.validPods),
-			TotalPods:                 int32(len(running)),
-		})
-		if evaluation.err != nil || evaluation.validPods < len(running) {
-			blockScaleDown = true
-		}
-		if evaluation.validPods > 0 && evaluation.err == nil {
-			evaluations = append(evaluations, evaluation)
-		}
-	}
+	evaluations, statuses, blockScaleDown := c.evaluateMetrics(running, autoscaler.Spec.Metrics)
+	autoscaler.Status.CurrentMetrics = statuses
 	if len(evaluations) == 0 {
 		autoscaler.Status.Conditions = unavailableCondition("MetricsUnavailable", "no fresh usable metrics are available")
 		return c.hpaStore.Update(autoscaler)
 	}
 
-	var desired int32
-	for i, evaluation := range evaluations {
-		candidate := int32(math.Ceil(float64(rs.Spec.Replicas) * float64(evaluation.averageUtilization) / float64(evaluation.targetUtilization)))
-		if i == 0 || candidate > desired {
-			desired = candidate
-		}
-	}
+	desired := calculateDesiredReplicas(rs.Spec.Replicas, evaluations)
 	desired = clampReplicas(desired, autoscaler.Spec.MinReplicas, autoscaler.Spec.MaxReplicas)
 	if desired < rs.Spec.Replicas && blockScaleDown {
 		desired = rs.Spec.Replicas
@@ -177,6 +155,29 @@ type metricEvaluation struct {
 	err                error
 }
 
+func (c *HPAController) evaluateMetrics(pods []*pod.Pod, specs []hpa.MetricSpec) ([]metricEvaluation, []hpa.MetricStatus, bool) {
+	evaluations := make([]metricEvaluation, 0, len(specs))
+	statuses := make([]hpa.MetricStatus, 0, len(specs))
+	blockScaleDown := false
+	for _, spec := range specs {
+		evaluation := c.evaluateMetric(pods, spec)
+		statuses = append(statuses, hpa.MetricStatus{
+			Type:                      spec.Type,
+			Name:                      spec.Resource.Name,
+			CurrentAverageUtilization: evaluation.averageUtilization,
+			ValidPods:                 int32(evaluation.validPods),
+			TotalPods:                 int32(len(pods)),
+		})
+		if evaluation.err != nil || evaluation.validPods < len(pods) {
+			blockScaleDown = true
+		}
+		if evaluation.validPods > 0 && evaluation.err == nil {
+			evaluations = append(evaluations, evaluation)
+		}
+	}
+	return evaluations, statuses, blockScaleDown
+}
+
 func (c *HPAController) evaluateMetric(pods []*pod.Pod, spec hpa.MetricSpec) metricEvaluation {
 	total := int64(0)
 	valid := 0
@@ -200,6 +201,17 @@ func (c *HPAController) evaluateMetric(pods []*pod.Pod, spec hpa.MetricSpec) met
 		targetUtilization:  spec.Resource.Target.AverageUtilization,
 		validPods:          valid,
 	}
+}
+
+func calculateDesiredReplicas(current int32, evaluations []metricEvaluation) int32 {
+	var desired int32
+	for i, evaluation := range evaluations {
+		candidate := int32(math.Ceil(float64(current) * float64(evaluation.averageUtilization) / float64(evaluation.targetUtilization)))
+		if i == 0 || candidate > desired {
+			desired = candidate
+		}
+	}
+	return desired
 }
 
 func metricsFreshnessTime(pm *metrics.PodMetrics) time.Time {

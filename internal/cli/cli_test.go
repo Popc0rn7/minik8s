@@ -188,7 +188,7 @@ func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
 	} {
 		err := app.Run(context.Background(), args, &out)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "Harbor API is not configured")
+		assert.Contains(t, err.Error(), "harbor API is not configured")
 		assert.Contains(t, err.Error(), "minik8s bridge")
 		assert.Contains(t, err.Error(), "minik8s sailer join")
 	}

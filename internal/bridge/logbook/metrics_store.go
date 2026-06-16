@@ -35,6 +35,7 @@ func (s *InMemoryMetricsStore) UpsertNodeMetrics(nodeName string, podMetrics []*
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	receivedAt := s.now().UTC()
+	reported := make(map[string]struct{}, len(podMetrics))
 	for _, pm := range podMetrics {
 		if pm == nil {
 			continue
@@ -46,7 +47,18 @@ func (s *InMemoryMetricsStore) UpsertNodeMetrics(nodeName string, podMetrics []*
 		if copy.ReceivedAt.IsZero() {
 			copy.ReceivedAt = receivedAt
 		}
-		s.metrics[podMetricsKey(copy.Namespace, copy.Name)] = copy
+		key := podMetricsKey(copy.Namespace, copy.Name)
+		if copy.NodeName == nodeName {
+			reported[key] = struct{}{}
+		}
+		s.metrics[key] = copy
+	}
+	for key, pm := range s.metrics {
+		if pm != nil && pm.NodeName == nodeName {
+			if _, ok := reported[key]; !ok {
+				delete(s.metrics, key)
+			}
+		}
 	}
 	return nil
 }

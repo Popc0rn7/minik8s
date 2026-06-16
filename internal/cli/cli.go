@@ -3088,7 +3088,7 @@ func readLocalConfig(path string) (localConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return localConfig{}, fmt.Errorf("Harbor API is not configured; run minik8s bridge on the control-plane node or minik8s sailer join on this worker to create %s", path)
+			return localConfig{}, fmt.Errorf("harbor API is not configured; run minik8s bridge on the control-plane node or minik8s sailer join on this worker to create %s", path)
 		}
 		return localConfig{}, fmt.Errorf("reading minik8s config: %w", err)
 	}

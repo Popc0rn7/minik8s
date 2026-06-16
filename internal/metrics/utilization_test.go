@@ -55,3 +55,47 @@ func TestPodUtilizationRequiresRequests(t *testing.T) {
 
 	require.ErrorIs(t, err, ErrMissingRequest)
 }
+
+func TestPodUtilizationRequiresMetricsForEveryContainer(t *testing.T) {
+	p := twoContainerPod()
+	pm := &PodMetrics{Timestamp: time.Now(), Containers: []ContainerMetrics{{
+		Name:  "app",
+		Usage: ResourceUsage{CPUNanoCores: 250_000_000, CPUAvailable: true, MemoryBytes: 64 * 1024 * 1024, MemoryAvailable: true},
+	}}}
+
+	_, err := PodUtilization(p, pm, ResourceCPU)
+
+	require.ErrorIs(t, err, ErrMissingMetrics)
+}
+
+func TestPodUtilizationRequiresRequestsForEveryContainer(t *testing.T) {
+	p := twoContainerPod()
+	p.Spec.Containers[1].Resources.Requests.CPU = ""
+	pm := &PodMetrics{Timestamp: time.Now(), Containers: []ContainerMetrics{{
+		Name:  "app",
+		Usage: ResourceUsage{CPUNanoCores: 250_000_000, CPUAvailable: true, MemoryBytes: 64 * 1024 * 1024, MemoryAvailable: true},
+	}, {
+		Name:  "sidecar",
+		Usage: ResourceUsage{CPUNanoCores: 250_000_000, CPUAvailable: true, MemoryBytes: 64 * 1024 * 1024, MemoryAvailable: true},
+	}}}
+
+	_, err := PodUtilization(p, pm, ResourceCPU)
+
+	require.ErrorIs(t, err, ErrMissingRequest)
+}
+
+func twoContainerPod() *pod.Pod {
+	return &pod.Pod{
+		Spec: pod.PodSpec{Containers: []pod.ContainerSpec{{
+			Name: "app",
+			Resources: pod.ResourceRequirements{
+				Requests: pod.ResourceList{CPU: "500m", Memory: "128Mi"},
+			},
+		}, {
+			Name: "sidecar",
+			Resources: pod.ResourceRequirements{
+				Requests: pod.ResourceList{CPU: "500m", Memory: "128Mi"},
+			},
+		}}},
+	}
+}

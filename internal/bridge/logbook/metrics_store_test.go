@@ -51,3 +51,39 @@ func TestInMemoryMetricsStorePreservesExplicitReceiveTime(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, explicitReceivedAt, got.ReceivedAt)
 }
+
+func TestInMemoryMetricsStoreRemovesNodePodsMissingFromNextReport(t *testing.T) {
+	now := time.Date(2026, 6, 15, 10, 8, 0, 0, time.UTC)
+	store := NewInMemoryMetricsStoreWithClock(func() time.Time { return now })
+
+	require.NoError(t, store.UpsertNodeMetrics("node-a", []*metrics.PodMetrics{
+		{Namespace: "default", Name: "pod-a", NodeName: "node-a"},
+		{Namespace: "default", Name: "pod-b", NodeName: "node-a"},
+	}))
+	require.NoError(t, store.UpsertNodeMetrics("node-a", []*metrics.PodMetrics{
+		{Namespace: "default", Name: "pod-a", NodeName: "node-a"},
+	}))
+
+	_, ok := store.GetPodMetrics("default", "pod-a")
+	assert.True(t, ok)
+	_, ok = store.GetPodMetrics("default", "pod-b")
+	assert.False(t, ok)
+}
+
+func TestInMemoryMetricsStoreDoesNotRemoveOtherNodePodsFromNextReport(t *testing.T) {
+	now := time.Date(2026, 6, 15, 10, 8, 0, 0, time.UTC)
+	store := NewInMemoryMetricsStoreWithClock(func() time.Time { return now })
+
+	require.NoError(t, store.UpsertNodeMetrics("node-a", []*metrics.PodMetrics{
+		{Namespace: "default", Name: "pod-a", NodeName: "node-a"},
+	}))
+	require.NoError(t, store.UpsertNodeMetrics("node-b", []*metrics.PodMetrics{
+		{Namespace: "default", Name: "pod-b", NodeName: "node-b"},
+	}))
+	require.NoError(t, store.UpsertNodeMetrics("node-a", nil))
+
+	_, ok := store.GetPodMetrics("default", "pod-a")
+	assert.False(t, ok)
+	_, ok = store.GetPodMetrics("default", "pod-b")
+	assert.True(t, ok)
+}
