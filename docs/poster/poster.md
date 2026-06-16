@@ -110,13 +110,28 @@ Static pods / addon deps如何接入系统:
 
 ## Serverless （右单列，不强调自选，但换不同颜色）
 
-自选功能展示教学版 Serverless API model。Function、EventTrigger 和 Workflow 都作为 Minik8s 一等资源接入 YAML loaders、Harbor APIs、file/etcd stores 和最小执行链路。
+基于 Minik8s 控制面实现教学版 Serverless 闭环。Function、EventTrigger 和 Workflow 都作为一等资源接入 YAML loaders、Harbor APIs、file/etcd stores；调用统一进入 NATS request/reply，再由 invocation worker 和 Activator 完成冷启动、扩缩容和 Pod `/invoke` 转发。
 
-- `Function`: YAML 内联 Python function object。
-- `EventTrigger`: 将事件配置连接到 Function references。
-- `Workflow`: 表达 function chains 的最小 resource model。
+- `Function`: 支持内联 Python 和自定义容器镜像；Function controller 映射为 `fn-*` ReplicaSet + Service，并维护 revision/update/delete。
+- `NATS`: Serverless addon 启动 NATS；CLI/HTTP invoke、EventTrigger 和 Workflow step 都通过 request/reply 进入统一调用入口。
+- `Invocation Worker`: 订阅 `minik8s.serverless.invoke` queue group，解析 namespace/function/data，并把请求交给 Activator。
+- `Activator`: 冷启动时把 ReplicaSet 从 0 拉到 1，等待 Running、PodIP 和 TCP 可达后转发 HTTP `/invoke`。
+- `EventTrigger`: 订阅 NATS subject，收到事件后复用同一条 invoke path 调用 Function。
+- `Workflow`: 支持同步函数链、step 间数据传递，以及基于 contains/regex 输出匹配的分支。
 
 Serverless样例图示
+
+版式方案：三张图片放在 Serverless 模块右侧/下半区竖排，形成一条 demo pipeline：
+
+```text
+Input batch
+  | SAM mask
+Masked target
+  | Evaluate
+Rank result
+```
+
+图片外框弱化，只保留轻边界和 caption，避免三张图像硬卡片一样抢注意力。
 
 10个狗狗拼图
 ![10 dogs](../assets/10dogs.jpg)
@@ -125,7 +140,7 @@ Serverless样例图示
 若干个arrow表示通过evaluate指向一张狗狗排名图
 ![rank](../assets/rank.png)
 
-不展示限制：scale-to-0、可靠 ack/retry、dead-letter handling 和复杂 DAG execution 尚未完成。
+不展示或仅小字展示限制：可靠 ack/retry、dead-letter handling 和复杂持久化 DAG execution 尚未完成。
 
 ## GPU Job 扩展 （右单列，不强调个人作业，但换颜色）
 
