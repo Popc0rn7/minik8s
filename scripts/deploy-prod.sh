@@ -122,6 +122,10 @@ if [ "$sync" -eq 1 ]; then
 		printf 'missing manifest directory\n' >&2
 		exit 1
 	fi
+	if [ ! -d scripts/acceptance ]; then
+		printf 'missing scripts/acceptance directory\n' >&2
+		exit 1
+	fi
 fi
 
 for node in $DEPLOY_NODES; do
@@ -129,11 +133,11 @@ for node in $DEPLOY_NODES; do
 		printf 'creating %s on %s\n' "$REMOTE_DIR" "$node"
 		ssh $SSH_OPTS "$node" "mkdir -p '$REMOTE_DIR'"
 
-		printf 'syncing binaries and manifests to %s:%s\n' "$node" "$REMOTE_DIR"
-		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS "$PROD_DIR"/minik8s "$PROD_DIR"/kubectl manifest "$node:$REMOTE_DIR/"
+		printf 'syncing binaries, manifests, and acceptance scripts to %s:%s\n' "$node" "$REMOTE_DIR"
+		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS "$PROD_DIR"/minik8s "$PROD_DIR"/kubectl manifest scripts/acceptance "$node:$REMOTE_DIR/"
 
 		printf 'setting executable bits on %s\n' "$node"
-		ssh $SSH_OPTS "$node" "chmod +x '$REMOTE_DIR/minik8s' '$REMOTE_DIR/kubectl'"
+		ssh $SSH_OPTS "$node" "chmod +x '$REMOTE_DIR/minik8s' '$REMOTE_DIR/kubectl' '$REMOTE_DIR/acceptance/01_pod_network.fish'"
 	fi
 
 	if [ "$pull_image" -eq 1 ]; then
