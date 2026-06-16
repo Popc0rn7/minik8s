@@ -2,68 +2,39 @@
 course: Cloud OS Lab 2026
 title: "Minik8s: A More Modular, More Unified Fleet"
 subtitle: "一个轻量容器编排系统，参考Kubernetes设计，重新设计组件边界和交互，核心编排闭环。"
-author: Popc0rn
-language: Go
 qr_label: QR
 qr_caption: GitHub / README / Testcases
 footer_left: "Testcases: `docs/testcase/` · API: `docs/harbor-api.md` · Deployment: `docs/deploy.md`"
 footer_right: "2026 Cloud OS Lab @ SJTU"
 ---
 
-## 展示前 TODO | prep
+## 展示前准备 | prep
 
 - 准备 60cm x 90cm 竖版导出
 - 补仓库二维码、运行截图、录屏二维码
 - 准备 Serverless 自选功能展示
 - 准备 CNI/双机/Logbook 兜底截图
 
-## 摘要条 | strip
-
-- **bridge**: apiserver 子集 + controller-manager 子集 + scheduler 子集
-- **sailer**: kubelet 子集 + node network agent + kube-proxy
-
 ## Minik8s简介 跨列展示
 
-```mermaid
-flowchart LR
-  user["User\nkubectl apply -f rs.yaml"]
-  harbor["Harbor API\nvalidate + accept ReplicaSet"]
-  logbook["Logbook\nfile / etcd state"]
-  captain["Captain\nReplicaSet controller"]
-  navigator["Navigator\nschedule new Pods"]
-  sailer["Sailer workers\npull assigned Pods"]
-  runtime["Runtime + CNI\nDocker/containerd + mooring"]
-  status["Observed state\nPods Running + RS 2/2"]
-
-  user --> harbor
-  harbor --> logbook
-  harbor --> captain
-  captain -->|"desired > current"| logbook
-  captain -->|"create owned Pods"| logbook
-  logbook -->|"unscheduled Pods"| navigator
-  navigator --> logbook
-  logbook --> sailer
-  sailer --> runtime
-  runtime -->|"heartbeat + pod status"| harbor
-  harbor --> status
-  status -. "next reconcile" .-> captain
-```
-
-图片抽象方向：把 ReplicaSet 建立过程画成“舰桥下达编队命令，水手把集装箱编成固定数量船队”的一张横向故事图。
-
-- 左侧是用户提交的 `rs.yaml` 指令卷轴/命令卡片，箭头进入 Bridge 舰桥。
-- Bridge 内部拆成 Harbor、Logbook、Captain、Navigator 四个小岗位：接收、记账、补齐 owned Pods、分配节点。
-- 中间用一个醒目的 `desired 2 / current 0 -> current 2` 仪表表现 reconciliation，而不是展示过多 API 细节。
-- 右侧是两个 Sailer worker 码头，各自启动一个带 `app=nginx-rs` 标签的小容器/Pod。
-- 最后一条回流箭头表示 heartbeat/status 回写，让画面形成闭环：声明目标、创建副本、运行、回报、继续收敛。
+![Example](../assets/example-2.png)
 
 - Kubernetes-like 资源工作流：apply、get、describe、delete。
 - Bridge舰桥 control plane 负责状态存储、Pod 调度和 controllers。
 - Sailer水手 worker 负责创建 Docker 容器并管理节点本地 data plane。
-- File 或 etcd-backed Logbook 支持控制面重启后的对象恢复。
+- Kubectl CLI 通过 Harbor API 与系统交互，展示资源状态和日志。
 
-> TODO一个特性词云表示意图
+Features:
 
+- Kubernetes 风格 CLI：`apply` / `get` / `describe` / `delete` / `top`。
+- Pod lifecycle：Docker sandbox、workload container、volume、port、restart policy。
+- 自研 CNI：mooring bridge/veth/IPAM，支持同节点与跨节点 PodCIDR 通信。
+- Service：ClusterIP、NodePort、selector endpoints 和 iptables 简化负载均衡。
+- Workload controllers：ReplicaSet、HPA、Node lifecycle、Service endpoint reconcile。
+- Multi-node：Node join、heartbeat、PodCIDR 分配、Ready/Unknown 状态和简单调度。
+- Addons：DNS host/path gateway、metrics、Serverless NATS dependency。
+- Logbook：本地 JSON 状态恢复；可切换到 etcd-backed store。
+- Extended Jobs：GPU Job 通过 submitter Pod 桥接外部 Slurm 队列。
 
 ## 系统架构 核心部分跨列
 
@@ -71,9 +42,22 @@ flowchart LR
 
 ![Architecture](../assets/architecture.png)
 
-> TODO 文字叙述各个架构职责交互
+Minik8s 把控制面和节点面拆成一条清晰的对象流。用户用 `kubectl` 提交 YAML，
+Harbor 接收 Pod、Service、ReplicaSet、HPA、DNS、Job 和 Serverless 对象，并写入
+Logbook。Logbook 默认落本地 JSON，启用 `MINIK8S_LOGBOOK_ENDPOINTS` 后切换到
+etcd-backed store，让控制面重启后可以恢复声明式对象。
 
-Bridge 组合 API、状态存储、调度和 controllers。Sailer 从控制面拉取 assigned Pods，创建 sandbox，执行 CNI，回写状态，并同步 Service 数据面规则。
+Bridge 组合 Harbor API、Logbook、Navigator 和 Captain controllers。Navigator 为
+Pending Pod 选择 Ready Node 并写入 `spec.nodeName`；Captain 周期性收敛 Service
+endpoints、ReplicaSet replicas、HPA replicas 和 Node lifecycle。Sailer 运行在每个
+worker 上，通过 heartbeat 注册 Node 状态，拉取分配给本节点的 Pods，创建 Docker
+sandbox，执行 CNI，回写 Pod 状态，并把 Service 对象同步成本机 iptables 规则。
+
+数据面由 mooring CNI、netagent 和 kube-proxy 组成。mooring 为 Pod 创建 bridge/veth、
+分配 Pod IP 和默认路由；netagent 根据 Node PodCIDR 同步 VXLAN/FDB/route，支撑跨节点
+Pod 通信；kube-proxy 把 ClusterIP/NodePort 转换成 NAT 规则，把稳定虚拟入口转发到当前
+endpoints。DNS、metrics、serverless 等 addon 以 static Pod manifest 方式接入 Bridge，
+作为可选依赖参与同一套对象和 reconcile 流程。
 
 ## 实现特色（每个部分单成一格并左侧单列）
 
@@ -102,15 +86,13 @@ Heartbeat 是数据面容错入口：`sailer` 持续向 Harbor 上报 Node 状�
 
 ### Deps Pod & Addon Pod
 
-> 图片留白：画一张 “Bridge private sailer 启动本地依赖 Pod” 的小图。左侧是
-> `.minik8s/manifests/`，中间是 private sailer，右侧是 `storage-etcd`、`dns-gateway`、
-> `metrics-server`、`serverless-nats` 四个依赖容器。
+![Deps&Addon](../assets/deps-pod.png)
 
 Minik8s 把控制面依赖也做成 static Pod manifest。`minik8s init` 只生成 manifest，
 不启动进程；`bridge` 启动时读取这些文件，用私有本地 `sailer` 拉起核心依赖和被启用
-的 addons。
+的 addons，极大减少启动依赖。
 
-Static pods / addon deps:
+Static pods / addon deps如何接入系统:
 
 - `storage-etcd`: bridge 核心依赖，默认由 bridge 启动，用作 etcd-backed Logbook；
   bridge 通过 `MINIK8S_LOGBOOK_ENDPOINTS` / 本地 endpoint 连接它。
@@ -139,9 +121,9 @@ Serverless样例图示
 10个狗狗拼图
 ![10 dogs](../assets/10dogs.jpg)
 若干个arror表示使用 sam 指向一张狗狗的mask
-> TOOD dog mask
-若干个arrow表示evaluate指向一张狗狗排名图
-> TODO dog rank
+![masked](../assets/masked.png)
+若干个arrow表示通过evaluate指向一张狗狗排名图
+![rank](../assets/rank.png)
 
 不展示限制：scale-to-0、可靠 ack/retry、dead-letter handling 和复杂 DAG execution 尚未完成。
 
