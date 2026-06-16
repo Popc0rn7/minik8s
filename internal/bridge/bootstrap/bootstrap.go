@@ -210,13 +210,13 @@ func DNSPod(configDir string, dnsHostPort, ingressHostPort int32) *pod.Pod {
 		ConfigDir:            configDir,
 		DNSHostPort:          dnsHostPort,
 		IngressHostPort:      ingressHostPort,
-		RouteProxyBinaryPath: "/opt/minik8s/minik8s",
+		RouteProxyBinaryPath: "/opt/minik8s/bin/minik8s",
 	})
 }
 
 func DNSPodWithOptions(options DNSPodOptions) *pod.Pod {
 	if options.RouteProxyBinaryPath == "" {
-		options.RouteProxyBinaryPath = "/opt/minik8s/minik8s"
+		options.RouteProxyBinaryPath = "/opt/minik8s/bin/minik8s"
 	}
 	return &pod.Pod{
 		TypeMeta: pod.TypeMeta{Kind: "Pod", APIVersion: "v1"},

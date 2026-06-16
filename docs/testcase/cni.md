@@ -28,8 +28,8 @@ CNI 架构、运行模式和环境要求见 [README.md](../../README.md)。通�
 - 两台机器都使用 Linux root shell，并具备 Docker、`ip`、`bridge`、`iptables`、
   `nsenter`、`curl` 或 `wget`。
 - node-a 入站 TCP `18080` 可达，两台节点之间双向 UDP `4789` 可达。
-- `manifest/node/node_a.yaml` 和 `manifest/node/node_b.yaml` 中的
-  `status.addresses[type=InternalIP]` 与实际主机 IP 一致。
+- `sailer join` 默认按访问 Harbor 的 UDP 路由探测 node IP；多网卡环境下如果探测结果
+  不符合预期，显式传 `--node-ip <本机内网 IP>`。
 - 每个测试终端已设置 `docs/testcase/README.md` 中的 fish 环境变量；如果 IP 不同，
   先改 `NODE_A_IP` 和 `NODE_B_IP`。
 - 如果 `/root/.config/fish/config.fish` 设置了 `HTTP_PROXY`、`HTTPS_PROXY` 或
@@ -68,7 +68,7 @@ node-a worker 终端：
 ./minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
-  -f manifest/node/node_a.yaml
+  --node-name node-a
 
 ./minik8s sailer run
 ```
@@ -79,7 +79,7 @@ node-b worker 终端：
 ./minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
-  -f manifest/node/node_b.yaml
+  --node-name node-b
 
 ./minik8s sailer run
 ```
@@ -181,7 +181,7 @@ ls -l /opt/cni/bin/mooring
 
 - `apply` 输出包含 `namespace/kube-mooring`、`configmap/mooring-cni-cfg` 和
   `daemonset/mooring-cni-ds` 的创建或 accepted 结果。
-- `sailer` 已通过 `ghcr.io/popc0rn7/mooring-cni:latest` 安装
+- `sailer` 已通过 `ghcr.io/popc0rn7/mooring-cni:v0.1.0` 安装
   `/opt/cni/bin/mooring`，或该文件已经存在且可执行。
 - 两台机器的 `10-mooring.conf` 使用各自 PodCIDR 和 gateway。
 - 两台机器仍能看到 `mk8s-vxlan` 和对端 PodCIDR route，说明内置 `netagent` 未被禁用。
@@ -227,14 +227,14 @@ sleep 8
 node-a 终端：
 
 ```fish
-cat .minik8s/state/cni-ipam.json
+cat /opt/minik8s/state/cni-ipam.json
 docker ps --filter label=minik8s.pod.name=nginx-node-a
 ```
 
 node-b 终端：
 
 ```fish
-cat .minik8s/state/cni-ipam.json
+cat /opt/minik8s/state/cni-ipam.json
 docker ps --filter label=minik8s.pod.name=nginx-node-b
 ```
 
@@ -453,7 +453,7 @@ sleep 8
 node-a 终端：
 
 ```fish
-cat .minik8s/state/cni-ipam.json 2>/dev/null; or true
+cat /opt/minik8s/state/cni-ipam.json 2>/dev/null; or true
 docker ps -a --filter label=minik8s.pod.name=nginx-node-a --format '{{.Names}} {{.Status}}'
 ip link show | grep nginx-node-a; or true
 ```
@@ -461,7 +461,7 @@ ip link show | grep nginx-node-a; or true
 node-b 终端：
 
 ```fish
-cat .minik8s/state/cni-ipam.json 2>/dev/null; or true
+cat /opt/minik8s/state/cni-ipam.json 2>/dev/null; or true
 docker ps -a --filter label=minik8s.pod.name=nginx-node-b --format '{{.Names}} {{.Status}}'
 ip link show | grep nginx-node-b; or true
 ```
@@ -567,7 +567,7 @@ sleep 8
 
 ```fish
 docker ps -a --filter label=minik8s.pod.namespace=default
-cat .minik8s/state/cni-ipam.json 2>/dev/null; or true
+cat /opt/minik8s/state/cni-ipam.json 2>/dev/null; or true
 ./minik8s doctor network; or true
 ```
 

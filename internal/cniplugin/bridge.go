@@ -329,7 +329,7 @@ func defaultBridgeConfig(conf *BridgeConfig) {
 		conf.Bridge = defaultBridge
 	}
 	if conf.IPAM.StatePath == "" {
-		conf.IPAM.StatePath = filepath.Join(".minik8s", "state", "cni-ipam.json")
+		conf.IPAM.StatePath = filepath.Join(string(os.PathSeparator), "opt", "minik8s", "state", "cni-ipam.json")
 	}
 }
 

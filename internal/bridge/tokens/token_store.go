@@ -34,7 +34,7 @@ func DefaultBootstrapTokenPath() string {
 	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
 		return filepath.Join(dir, bootstrapTokenFileName)
 	}
-	return filepath.Join(".minik8s", "state", bootstrapTokenFileName)
+	return filepath.Join(string(os.PathSeparator), "opt", "minik8s", "state", bootstrapTokenFileName)
 }
 
 func SetBootstrapToken(path, token string, ttl time.Duration, now time.Time) error {

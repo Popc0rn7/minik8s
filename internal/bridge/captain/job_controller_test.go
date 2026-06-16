@@ -69,3 +69,15 @@ func TestJobControllerCreatesSubmitterPodAndService(t *testing.T) {
 	assert.Equal(t, "job-cuda-add-submitter", updated.Status.SubmitterPod)
 	assert.Equal(t, "job-cuda-add-submitter", updated.Status.SubmitterService)
 }
+
+func TestJobControllerDefaultSubmitterImageIsPinned(t *testing.T) {
+	ctrl := NewJobController(
+		store.NewInMemoryPodStore(),
+		store.NewInMemoryServiceStore(),
+		store.NewInMemoryJobStore(),
+		JobControllerConfig{},
+	)
+
+	assert.Equal(t, "ghcr.io/popc0rn7/gpu-submitter:v0.1.0", ctrl.config.SubmitterImage)
+	assert.Equal(t, "/opt/minik8s/secrets/gpu-ssh", ctrl.config.SSHHostPath)
+}

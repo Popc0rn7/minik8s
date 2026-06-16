@@ -1209,10 +1209,6 @@ func (a *App) initialize(ctx context.Context, args []string, out io.Writer) erro
 	if err := writeTextFile(DefaultDNSRoutesPath(), "{\"hosts\":[]}\n"); err != nil {
 		return fmt.Errorf("initializing dns routes: %w", err)
 	}
-	routeProxyBinaryPath, err := currentExecutablePath()
-	if err != nil {
-		return err
-	}
 	if err := writeBridgeStaticPodManifests(initManifestOptions{
 		Force:                options.force,
 		EtcdDir:              etcdDir,
@@ -1220,7 +1216,7 @@ func (a *App) initialize(ctx context.Context, args []string, out io.Writer) erro
 		DNSHostIP:            "127.0.0.1",
 		DNSListenPort:        options.dnsListenPort,
 		IngressListenPort:    options.ingressListenPort,
-		RouteProxyBinaryPath: routeProxyBinaryPath,
+		RouteProxyBinaryPath: DefaultMinik8sBinaryPath(),
 	}); err != nil {
 		return err
 	}
@@ -1228,7 +1224,7 @@ func (a *App) initialize(ctx context.Context, args []string, out io.Writer) erro
 	if err := writes(out, cliui.SuccessLine("static pod manifests initialized at %s", DefaultStaticPodDir())); err != nil {
 		return err
 	}
-	return writes(out, cliui.InfoLine("next: ./minik8s bridge --listen :18080"))
+	return writes(out, cliui.InfoLine("next: ./bin/minik8s bridge --listen :18080"))
 }
 
 func parseInitOptions(args []string) (initOptions, error) {
@@ -1390,7 +1386,7 @@ func cniInitConfig(args []string) (cniInitPluginConfig, error) {
 		Bridge:     "mk8s0",
 		PodCIDR:    "10.244.0.0/24",
 		Gateway:    "10.244.0.1",
-		IPAM:       cniInitIPAM{StatePath: ".minik8s/state/cni-ipam.json"},
+		IPAM:       cniInitIPAM{StatePath: filepath.Join(DefaultStateDir(), "cni-ipam.json")},
 	}
 
 	for i := 0; i < len(args); i++ {
@@ -3370,33 +3366,39 @@ func writes(out io.Writer, s string) error {
 	return err
 }
 
+func DefaultInstallRoot() string {
+	return filepath.Join(string(os.PathSeparator), "opt", "minik8s")
+}
+
+func DefaultStateDir() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return dir
+	}
+	return filepath.Join(DefaultInstallRoot(), "state")
+}
+
+func DefaultMinik8sBinaryPath() string {
+	return filepath.Join(DefaultInstallRoot(), "bin", "minik8s")
+}
+
 // DefaultStatePath returns the default local state file path.
 func DefaultStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "pods.json")
-	}
-	return filepath.Join(".minik8s", "state", "pods.json")
+	return filepath.Join(DefaultStateDir(), "pods.json")
 }
 
 func DefaultServiceStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "services.json")
-	}
-	return filepath.Join(".minik8s", "state", "services.json")
+	return filepath.Join(DefaultStateDir(), "services.json")
 }
 
 func DefaultDNSStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "dns.json")
-	}
-	return filepath.Join(".minik8s", "state", "dns.json")
+	return filepath.Join(DefaultStateDir(), "dns.json")
 }
 
 func DefaultDNSDir() string {
 	if dir := os.Getenv("MINIK8S_DNS_DIR"); dir != "" {
 		return dir
 	}
-	return filepath.Join(".minik8s", "dns")
+	return filepath.Join(DefaultInstallRoot(), "dns")
 }
 
 func DefaultDNSHostsPath() string {
@@ -3419,7 +3421,7 @@ func DefaultStaticPodDir() string {
 	if dir := os.Getenv("MINIK8S_STATIC_POD_DIR"); dir != "" {
 		return dir
 	}
-	return filepath.Join(".minik8s", "manifests")
+	return filepath.Join(DefaultInstallRoot(), "static-pods")
 }
 
 func DefaultStorageManifestPath() string {
@@ -3447,31 +3449,19 @@ func DefaultBridgeDNSManifestPath() string {
 }
 
 func DefaultReplicaSetStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "replicasets.json")
-	}
-	return filepath.Join(".minik8s", "state", "replicasets.json")
+	return filepath.Join(DefaultStateDir(), "replicasets.json")
 }
 
 func DefaultHPAStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "hpas.json")
-	}
-	return filepath.Join(".minik8s", "state", "hpas.json")
+	return filepath.Join(DefaultStateDir(), "hpas.json")
 }
 
 func DefaultJobStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "jobs.json")
-	}
-	return filepath.Join(".minik8s", "state", "jobs.json")
+	return filepath.Join(DefaultStateDir(), "jobs.json")
 }
 
 func DefaultNodeStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "nodes.json")
-	}
-	return filepath.Join(".minik8s", "state", "nodes.json")
+	return filepath.Join(DefaultStateDir(), "nodes.json")
 }
 
 func DefaultBootstrapTokenPath() string {
@@ -3479,45 +3469,30 @@ func DefaultBootstrapTokenPath() string {
 }
 
 func DefaultSailerConfigPath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "sailer.json")
-	}
-	return filepath.Join(".minik8s", "state", "sailer.json")
+	return filepath.Join(DefaultStateDir(), "sailer.json")
 }
 
 func DefaultLocalConfigPath() string {
 	if path := os.Getenv("MINIK8S_CONFIG"); path != "" {
 		return path
 	}
-	return filepath.Join(".minik8s", "config.json")
+	return filepath.Join(DefaultInstallRoot(), "config.json")
 }
 
 func DefaultFunctionStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "functions.json")
-	}
-	return filepath.Join(".minik8s", "state", "functions.json")
+	return filepath.Join(DefaultStateDir(), "functions.json")
 }
 
 func DefaultEventTriggerStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "eventtriggers.json")
-	}
-	return filepath.Join(".minik8s", "state", "eventtriggers.json")
+	return filepath.Join(DefaultStateDir(), "eventtriggers.json")
 }
 
 func DefaultWorkflowStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "workflows.json")
-	}
-	return filepath.Join(".minik8s", "state", "workflows.json")
+	return filepath.Join(DefaultStateDir(), "workflows.json")
 }
 
 func DefaultWorkflowRunStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "workflowruns.json")
-	}
-	return filepath.Join(".minik8s", "state", "workflowruns.json")
+	return filepath.Join(DefaultStateDir(), "workflowruns.json")
 }
 
 // DefaultCNIBinDir returns the default CNI plugin directory.

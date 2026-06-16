@@ -9,7 +9,7 @@ spec:
   containers:
   - name: writer
     image: busybox
-    imageTag: latest
+    imageTag: 1.36
     command: ["sh", "-c"]
     args: ["echo volume-ok > /data/marker; sleep 3600"]
     volumeMounts:

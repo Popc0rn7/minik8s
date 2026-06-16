@@ -132,7 +132,7 @@ func TestCLIApplyMooringCNIManifestStoresCompatObjects(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, ds.Spec.Template.Spec.InitContainers, 1)
 	assert.Equal(t, "install-cni-plugin", ds.Spec.Template.Spec.InitContainers[0].Name)
-	assert.Equal(t, "ghcr.io/popc0rn7/mooring-cni:latest", ds.Spec.Template.Spec.InitContainers[0].Image)
+	assert.Equal(t, "ghcr.io/popc0rn7/mooring-cni:v0.1.0", ds.Spec.Template.Spec.InitContainers[0].Image)
 }
 
 const mooringCNIConfigMapManifest = `---
@@ -148,7 +148,7 @@ metadata:
   namespace: kube-mooring
 data:
   cni-conf.json: |
-    {"cniVersion":"1.0.0","name":"minik8s","type":"mooring","bridge":"mk8s0","ipam":{"statePath":".minik8s/state/cni-ipam.json"}}
+    {"cniVersion":"1.0.0","name":"minik8s","type":"mooring","bridge":"mk8s0","ipam":{"statePath":"/opt/minik8s/state/cni-ipam.json"}}
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -160,7 +160,7 @@ spec:
     spec:
       initContainers:
       - name: install-cni-plugin
-        image: ghcr.io/popc0rn7/mooring-cni:latest
+        image: ghcr.io/popc0rn7/mooring-cni:v0.1.0
 `
 
 func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
@@ -197,11 +197,30 @@ func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
 
 func TestDefaultLocalConfigPathCanBeOverridden(t *testing.T) {
 	t.Setenv("MINIK8S_CONFIG", "")
-	assert.Equal(t, filepath.Join(".minik8s", "config.json"), DefaultLocalConfigPath())
+	assert.Equal(t, filepath.Join(string(os.PathSeparator), "opt", "minik8s", "config.json"), DefaultLocalConfigPath())
 
 	override := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("MINIK8S_CONFIG", override)
 	assert.Equal(t, override, DefaultLocalConfigPath())
+}
+
+func TestDefaultInstallLayoutPaths(t *testing.T) {
+	t.Setenv("MINIK8S_STATE_DIR", "")
+	t.Setenv("MINIK8S_DNS_DIR", "")
+	t.Setenv("MINIK8S_STATIC_POD_DIR", "")
+	t.Setenv("MINIK8S_CNI_BIN_DIR", "")
+	t.Setenv("MINIK8S_CNI_CONF_DIR", "")
+	t.Setenv("MINIK8S_CONFIG", "")
+
+	root := filepath.Join(string(os.PathSeparator), "opt", "minik8s")
+	assert.Equal(t, filepath.Join(root, "state", "pods.json"), DefaultStatePath())
+	assert.Equal(t, filepath.Join(root, "state", "services.json"), DefaultServiceStatePath())
+	assert.Equal(t, filepath.Join(root, "state", "sailer.json"), DefaultSailerConfigPath())
+	assert.Equal(t, filepath.Join(root, "config.json"), DefaultLocalConfigPath())
+	assert.Equal(t, filepath.Join(root, "dns"), DefaultDNSDir())
+	assert.Equal(t, filepath.Join(root, "static-pods"), DefaultStaticPodDir())
+	assert.Equal(t, filepath.Join(string(os.PathSeparator), "opt", "cni", "bin"), DefaultCNIBinDir())
+	assert.Equal(t, filepath.Join(string(os.PathSeparator), "etc", "cni", "net.d"), DefaultCNIConfDir())
 }
 
 func TestWriteAndReadLocalConfig(t *testing.T) {
@@ -507,13 +526,11 @@ func TestAddonReadinessReadyUsesManifestHostPorts(t *testing.T) {
 
 func TestBridgeDependencyEtcdDirIsAbsolute(t *testing.T) {
 	t.Setenv("MINIK8S_STATE_DIR", "")
-	cwd, err := os.Getwd()
-	require.NoError(t, err)
 
 	dir, err := bridgeDependencyEtcdDir()
 
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(cwd, ".minik8s", "state", "bridge-deps", "etcd"), dir)
+	assert.Equal(t, filepath.Join(string(os.PathSeparator), "opt", "minik8s", "state", "bridge-deps", "etcd"), dir)
 }
 
 func TestWaitForBridgeDependenciesReadyUsesEtcdProbe(t *testing.T) {
@@ -622,7 +639,7 @@ func TestCLIInitWritesStaticDependencyManifests(t *testing.T) {
 	serverlessPod := readPodManifest(t, filepath.Join(root, "manifests", "serverless-nats.yaml"))
 	assert.Equal(t, "serverless-nats", serverlessPod.Name)
 	assert.Contains(t, out.String(), "static pod manifests initialized")
-	assert.Contains(t, out.String(), "next: ./minik8s bridge --listen :18080")
+	assert.Contains(t, out.String(), "next: ./bin/minik8s bridge --listen :18080")
 	assert.NotContains(t, out.String(), "--addons")
 }
 
@@ -866,7 +883,7 @@ func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
 	assert.Contains(t, out.String(), "bridge: mk8s0")
 	assert.Contains(t, out.String(), "podCIDR: 10.244.0.0/24")
 	assert.Contains(t, out.String(), "gateway: 10.244.0.1")
-	assert.Contains(t, out.String(), "ipam: .minik8s/state/cni-ipam.json")
+	assert.Contains(t, out.String(), "ipam: /opt/minik8s/state/cni-ipam.json")
 	assert.Contains(t, out.String(), "󱈸  mooring: missing")
 }
 
@@ -882,7 +899,7 @@ func TestCLIDoctorNetworkShowsRoutesFromConfig(t *testing.T) {
   "bridge": "mk8s0",
   "podCIDR": "10.244.0.0/24",
   "gateway": "10.244.0.1",
-  "ipam": {"statePath": ".minik8s/state/cni-ipam.json"},
+  "ipam": {"statePath": "/opt/minik8s/state/cni-ipam.json"},
   "routes": [{"dst": "10.244.1.0/24", "gw": "192.168.1.11"}]
 }`), 0o644))
 	app := New(Config{
@@ -1286,7 +1303,7 @@ status:
 		TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindDaemonSet, APIVersion: "apps/v1"},
 		ObjectMeta: pod.ObjectMeta{Name: k8scompat.MooringCNIDaemonSet, Namespace: k8scompat.MooringCNINamespace},
 		Spec: k8scompat.DaemonSetSpec{Template: k8scompat.PodTemplateSpec{Spec: k8scompat.PodTemplatePodSpec{
-			InitContainers: []k8scompat.Container{{Name: "install-cni-plugin", Image: "ghcr.io/popc0rn7/mooring-cni:latest"}},
+			InitContainers: []k8scompat.Container{{Name: "install-cni-plugin", Image: "ghcr.io/popc0rn7/mooring-cni:v0.1.0"}},
 		}}},
 	}))
 	srv := harbor.New(harbor.Config{
@@ -1360,7 +1377,7 @@ func TestLocalMooringCNIRunnerInstallsPluginFromDaemonSetImage(t *testing.T) {
 			TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindConfigMap, APIVersion: "v1"},
 			ObjectMeta: pod.ObjectMeta{Name: k8scompat.MooringCNIConfigMap, Namespace: k8scompat.MooringCNINamespace},
 			Data: map[string]string{
-				"cni-conf.json": `{"cniVersion":"1.0.0","name":"minik8s","type":"mooring","bridge":"mk8s0","ipam":{"statePath":".minik8s/state/cni-ipam.json"}}`,
+				"cni-conf.json": `{"cniVersion":"1.0.0","name":"minik8s","type":"mooring","bridge":"mk8s0","ipam":{"statePath":"/opt/minik8s/state/cni-ipam.json"}}`,
 			},
 		},
 		DaemonSet: &k8scompat.DaemonSet{
@@ -2169,6 +2186,7 @@ spec:
       containers:
       - name: nginx
         image: nginx
+        imageTag: 1.27-alpine
 `), 0o644))
 	var out bytes.Buffer
 

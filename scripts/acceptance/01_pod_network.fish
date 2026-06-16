@@ -2,9 +2,9 @@
 
 set -gx MINIK8S_HARBOR (set -q MINIK8S_HARBOR; and echo $MINIK8S_HARBOR; or echo http://127.0.0.1:18080)
 
-set ctl ./kubectl
+set ctl ./bin/kubectl
 if not test -x "$ctl"
-    set ctl ./minik8s
+    set ctl ./bin/minik8s
 end
 
 echo "== Minik8s Pod network acceptance: scheduler + mooring PodIP =="
@@ -15,8 +15,8 @@ $ctl delete pod busybox-client 2>/dev/null; or true
 $ctl delete pod nginx-pod 2>/dev/null; or true
 
 echo "== apply unscheduled pods =="
-$ctl apply -f manifest/pod/pod_nginx.yaml
-$ctl apply -f manifest/pod/pod_busybox_client.yaml
+$ctl apply -f manifests/pod/pod_nginx.yaml
+$ctl apply -f manifests/pod/pod_busybox_client.yaml
 
 set nginx_ip ""
 set nginx_node ""

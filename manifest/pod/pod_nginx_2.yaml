@@ -10,7 +10,7 @@ spec:
   containers:
   - name: nginx
     image: nginx
-    imageTag: alpine
+    imageTag: 1.27-alpine
     command: ["nginx"]
     args: ["-g", "daemon off;"]
     ports:

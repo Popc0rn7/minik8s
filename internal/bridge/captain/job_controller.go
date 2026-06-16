@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -36,17 +35,13 @@ type JobController struct {
 
 func NewJobController(pods store.PodStore, services store.ServiceStore, jobs store.JobStore, config JobControllerConfig) *JobController {
 	if config.SubmitterImage == "" {
-		config.SubmitterImage = "ghcr.io/popc0rn7/gpu-submitter:latest"
+		config.SubmitterImage = "ghcr.io/popc0rn7/gpu-submitter:v0.1.0"
 	}
 	if config.HarborURL == "" {
 		config.HarborURL = "http://127.0.0.1:18080"
 	}
 	if config.SSHHostPath == "" {
-		if abs, err := filepath.Abs(filepath.Join(".minik8s", "secrets", "gpu-ssh")); err == nil {
-			config.SSHHostPath = abs
-		} else {
-			config.SSHHostPath = filepath.Join(".minik8s", "secrets", "gpu-ssh")
-		}
+		config.SSHHostPath = "/opt/minik8s/secrets/gpu-ssh"
 	}
 	return &JobController{pods: pods, services: services, jobs: jobs, config: config}
 }

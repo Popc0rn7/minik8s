@@ -2,16 +2,14 @@
 set -eu
 
 REMOTE_DIR="${REMOTE_DIR:-/opt/minik8s}"
-PROD_DIR="${PROD_DIR:-dist/prod}"
+PROD_DIR="${PROD_DIR:-.}"
 MOORING_CNI_IMAGE="${MOORING_CNI_IMAGE:-ghcr.io/popc0rn7/mooring-cni}"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+IMAGE_TAG="${IMAGE_TAG:-v0.1.0}"
 REMOTE_DOCKER="${REMOTE_DOCKER:-docker}"
 SSH_CONFIG="${SSH_CONFIG:-$HOME/.ssh/config}"
 SSH_OPTS="${SSH_OPTS:-}"
 RSYNC_RSH="${RSYNC_RSH:-}"
 RSYNC_OPTS="${RSYNC_OPTS:-}"
-NODE1="${NODE1:-node-1}"
-NODE2="${NODE2:-node-2}"
 
 if [ -z "$SSH_OPTS" ] && [ -f "$SSH_CONFIG" ]; then
 	SSH_OPTS="-F $SSH_CONFIG"
@@ -30,21 +28,19 @@ usage() {
 	printf 'Each deploy node must be reachable from this host via ssh; use ~/.ssh/config ProxyJump if needed.\n'
 	printf '\n'
 	printf 'Environment:\n'
-	printf '  DEPLOY_NODES       space-separated ssh targets, for example: "root@10.0.0.1 root@10.0.0.2"\n'
-	printf '  NODE1              default first direct ssh target when DEPLOY_NODES is unset, default: node-1\n'
-	printf '  NODE2              default second direct ssh target when DEPLOY_NODES is unset, default: node-2\n'
+	printf '  DEPLOY_NODES       required space-separated ssh targets, for example: "root@10.119.16.213"\n'
 	printf '  REMOTE_DIR         install directory on each node, default: /opt/minik8s\n'
-	printf '  PROD_DIR           local prod artifact directory, default: dist/prod\n'
+	printf '  PROD_DIR           local prod artifact directory, default: repository root\n'
 	printf '  MOORING_CNI_IMAGE  mooring CNI image repository, default: ghcr.io/popc0rn7/mooring-cni\n'
-	printf '  IMAGE_TAG          image tag, default: latest\n'
+	printf '  IMAGE_TAG          image tag, default: v0.1.0\n'
 	printf '  REMOTE_DOCKER      docker command on remote nodes, default: docker\n'
 	printf '  SSH_CONFIG         ssh config file, default: $HOME/.ssh/config when present\n'
-	printf '  SSH_OPTS           extra ssh options, for example: -i ~/.ssh/id_rsa\n'
+	printf '  SSH_OPTS           extra ssh options, for example: -i ~/.ssh/id_ed25519_minik8s\n'
 	printf '  RSYNC_RSH          rsync remote shell, default: ssh plus SSH_OPTS\n'
 	printf '  RSYNC_OPTS         extra rsync options, not for ssh -e options\n'
 	printf '\n'
-	printf 'Defaults:\n'
-	printf '  If DEPLOY_NODES is unset, this host deploys directly to NODE1 and NODE2.\n'
+	printf 'Example:\n'
+	printf '  DEPLOY_NODES="root@10.119.16.213" SSH_OPTS="-i ~/.ssh/id_ed25519_minik8s" %s --sync-only\n' "$0"
 }
 
 default_update=0
@@ -97,7 +93,9 @@ if [ "$default_update" -eq 1 ]; then
 fi
 
 if [ -z "${DEPLOY_NODES:-}" ]; then
-	DEPLOY_NODES="$NODE1 $NODE2"
+	printf 'DEPLOY_NODES is required for remote deploy.\n' >&2
+	printf 'Example: DEPLOY_NODES="root@10.119.16.213" SSH_OPTS="-i ~/.ssh/id_ed25519_minik8s" %s --sync-only\n' "$0" >&2
+	exit 2
 fi
 
 if [ "$build" -eq 1 ]; then
@@ -126,18 +124,31 @@ if [ "$sync" -eq 1 ]; then
 		printf 'missing scripts/acceptance directory\n' >&2
 		exit 1
 	fi
+	if [ ! -d demo/serverless/harbor-incident-triage ]; then
+		printf 'missing demo/serverless/harbor-incident-triage directory\n' >&2
+		exit 1
+	fi
 fi
 
 for node in $DEPLOY_NODES; do
 	if [ "$sync" -eq 1 ]; then
 		printf 'creating %s on %s\n' "$REMOTE_DIR" "$node"
-		ssh $SSH_OPTS "$node" "mkdir -p '$REMOTE_DIR'"
+		ssh $SSH_OPTS "$node" "mkdir -p '$REMOTE_DIR/bin' '$REMOTE_DIR/scripts' '$REMOTE_DIR/manifests' '$REMOTE_DIR/demo/serverless' '$REMOTE_DIR/state' '$REMOTE_DIR/static-pods' '$REMOTE_DIR/dns' '$REMOTE_DIR/secrets/gpu-ssh'"
 
-		printf 'syncing binaries, manifests, and acceptance scripts to %s:%s\n' "$node" "$REMOTE_DIR"
-		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS "$PROD_DIR"/minik8s "$PROD_DIR"/kubectl manifest scripts/acceptance "$node:$REMOTE_DIR/"
+		printf 'syncing binaries to %s:%s/bin\n' "$node" "$REMOTE_DIR"
+		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS "$PROD_DIR"/minik8s "$PROD_DIR"/kubectl "$node:$REMOTE_DIR/bin/"
+
+		printf 'syncing acceptance scripts to %s:%s/scripts/acceptance\n' "$node" "$REMOTE_DIR"
+		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS scripts/acceptance/ "$node:$REMOTE_DIR/scripts/acceptance/"
+
+		printf 'syncing manifests to %s:%s/manifests\n' "$node" "$REMOTE_DIR"
+		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS manifest/ "$node:$REMOTE_DIR/manifests/"
+
+		printf 'syncing triage demo to %s:%s/demo/serverless/harbor-incident-triage\n' "$node" "$REMOTE_DIR"
+		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS demo/serverless/harbor-incident-triage/ "$node:$REMOTE_DIR/demo/serverless/harbor-incident-triage/"
 
 		printf 'setting executable bits on %s\n' "$node"
-		ssh $SSH_OPTS "$node" "chmod +x '$REMOTE_DIR/minik8s' '$REMOTE_DIR/kubectl' '$REMOTE_DIR/acceptance/01_pod_network.fish'"
+		ssh $SSH_OPTS "$node" "chmod +x '$REMOTE_DIR/bin/minik8s' '$REMOTE_DIR/bin/kubectl' '$REMOTE_DIR/scripts/acceptance/01_pod_network.fish' '$REMOTE_DIR/scripts/acceptance/'*.sh 2>/dev/null || true; chmod 700 '$REMOTE_DIR/secrets/gpu-ssh'"
 	fi
 
 	if [ "$pull_image" -eq 1 ]; then

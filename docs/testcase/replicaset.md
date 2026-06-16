@@ -123,7 +123,7 @@ begin
   echo '      containers:'
   echo '      - name: nginx'
   echo '        image: nginx'
-  echo '        imageTag: alpine'
+  echo '        imageTag: 1.27-alpine'
 end > /tmp/minik8s-rs-one.yaml
 
 ./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
@@ -169,7 +169,7 @@ test -f /tmp/minik8s-rs-one.yaml; or begin
   echo '      containers:'
   echo '      - name: nginx'
   echo '        image: nginx'
-  echo '        imageTag: alpine'
+  echo '        imageTag: 1.27-alpine'
 end > /tmp/minik8s-rs-one.yaml
 
 ./kubectl delete pod nginx-rs-manual; or true

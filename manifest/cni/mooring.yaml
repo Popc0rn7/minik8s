@@ -16,7 +16,7 @@ data:
       "type": "mooring",
       "bridge": "mk8s0",
       "ipam": {
-        "statePath": ".minik8s/state/cni-ipam.json"
+        "statePath": "/opt/minik8s/state/cni-ipam.json"
       }
     }
 ---
@@ -30,4 +30,4 @@ spec:
     spec:
       initContainers:
       - name: install-cni-plugin
-        image: ghcr.io/popc0rn7/mooring-cni:latest
+        image: ghcr.io/popc0rn7/mooring-cni:v0.1.0

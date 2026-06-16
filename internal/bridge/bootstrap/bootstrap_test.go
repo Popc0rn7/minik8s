@@ -101,3 +101,10 @@ func TestDNSPodBindsDNSHostIPAndMountsRouteProxyBinary(t *testing.T) {
 	assert.Equal(t, "/usr/local/bin/minik8s", routeProxy.VolumeMounts[1].MountPath)
 	assert.True(t, routeProxy.VolumeMounts[1].ReadOnly)
 }
+
+func TestDNSPodDefaultRouteProxyBinaryUsesInstallBin(t *testing.T) {
+	p := DNSPod("/var/lib/minik8s/dns", 53, 80)
+
+	require.Len(t, p.Spec.Volumes, 2)
+	assert.Equal(t, "/opt/minik8s/bin/minik8s", p.Spec.Volumes[1].HostPath.Path)
+}
