@@ -226,18 +226,18 @@ one of them, not from the Workflow YAML.
 - **NATS URL is reachable by CLI**: set
   `MINIK8S_NATS_URL=nats://$NODE_1_IP:4222` before using `publish`.
 - **Python runtime image is available on both nodes**: every inline Python
-  Function starts a `python:3.11-slim` container. Pull it manually on both
+  Function starts a `python:3.11.9-slim` container. Pull it manually on both
   machines before the demo:
   ```bash
-  docker pull python:3.11-slim
+  docker pull python:3.11.9-slim
   ```
   If the demo environment has no internet, preload it:
   ```bash
-  docker save python:3.11-slim -o /tmp/python-3.11-slim.tar
-  scp /tmp/python-3.11-slim.tar node-1:/tmp/
-  scp /tmp/python-3.11-slim.tar node-2:/tmp/
-  ssh node-1 'docker load -i /tmp/python-3.11-slim.tar'
-  ssh node-2 'docker load -i /tmp/python-3.11-slim.tar'
+  docker save python:3.11.9-slim -o /tmp/python-3.11.9-slim.tar
+  scp /tmp/python-3.11.9-slim.tar node-1:/tmp/
+  scp /tmp/python-3.11.9-slim.tar node-2:/tmp/
+  ssh node-1 'docker load -i /tmp/python-3.11.9-slim.tar'
+  ssh node-2 'docker load -i /tmp/python-3.11.9-slim.tar'
   ```
 - **Network tools and permissions exist on both nodes**: Docker, `ip`,
   `bridge`, `iptables`, and `nsenter` must be installed and runnable as root.

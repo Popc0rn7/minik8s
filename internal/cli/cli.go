@@ -1236,20 +1236,15 @@ func (a *App) initialize(ctx context.Context, args []string, out io.Writer) erro
 
 func parseInitOptions(args []string) (initOptions, error) {
 	options := initOptions{dnsListenPort: 53, ingressListenPort: 80}
+	if port, err := dnsPortFromEnv(options.dnsListenPort); err != nil {
+		return options, err
+	} else {
+		options.dnsListenPort = port
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--force":
 			options.force = true
-		case "--dns-listen":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("missing value for --dns-listen")
-			}
-			port, err := listenPort(args[i])
-			if err != nil {
-				return options, fmt.Errorf("invalid --dns-listen %q: %w", args[i], err)
-			}
-			options.dnsListenPort = port
 		case "--ingress-listen":
 			i++
 			if i >= len(args) {
@@ -2277,6 +2272,11 @@ func dockerAddonPodRunning(name string) bool {
 
 func parseBridgeOptions(args []string) (bridgeOptions, error) {
 	options := bridgeOptions{listen: ":8080", addons: defaultAddonSet(), serviceSyncInterval: 5 * time.Second, dnsSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24, serviceCIDR: service.DefaultServiceCIDR, nodePortRange: service.DefaultNodePortRange, gatewayIP: "127.0.0.1", dnsListenPort: 53, ingressListenPort: 80}
+	if port, err := dnsPortFromEnv(options.dnsListenPort); err != nil {
+		return options, err
+	} else {
+		options.dnsListenPort = port
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -2324,16 +2324,6 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 				return options, fmt.Errorf("invalid --gateway-ip %q", args[i])
 			}
 			options.gatewayIP = args[i]
-		case "--dns-listen":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("missing value for --dns-listen")
-			}
-			port, err := listenPort(args[i])
-			if err != nil {
-				return options, fmt.Errorf("invalid --dns-listen %q: %w", args[i], err)
-			}
-			options.dnsListenPort = port
 		case "--ingress-listen":
 			i++
 			if i >= len(args) {
@@ -2433,6 +2423,18 @@ func listenPort(value string) (int32, error) {
 		return 0, fmt.Errorf("port must be between 1 and 65535")
 	}
 	return int32(port), nil
+}
+
+func dnsPortFromEnv(fallback int32) (int32, error) {
+	value := strings.TrimSpace(os.Getenv("MINIK8S_DNS_PORT"))
+	if value == "" {
+		return fallback, nil
+	}
+	port, err := listenPort(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid MINIK8S_DNS_PORT %q: %w", value, err)
+	}
+	return port, nil
 }
 
 func (a *App) runDNSSyncLoop(ctx context.Context, interval time.Duration, gatewayIP string) {

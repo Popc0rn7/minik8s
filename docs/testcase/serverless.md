@@ -17,7 +17,7 @@ dead-letter 仍应记录为未覆盖能力。
 
 | Case | 任务 | 验证能力 | 关键证据 | 恢复要求 |
 | --- | --- | --- | --- | --- |
-| SL-00 | 启动 serverless addon | NATS、Harbor、双节点 worker 基线 | `doctor serverless`、`get nodes` | 保持环境运行 |
+| SL-00 | 启动 serverless addon | NATS、Harbor、三节点 worker 基线 | `doctor serverless`、`get nodes` | 保持环境运行 |
 | SL-01 | 上传 `echo` 函数 | Function YAML/API/CLI、独立 `fn-*` ReplicaSet/Service | `get/describe functions`、`get rs/services` | 保留 `echo` 给后续 case |
 | SL-02 | 调用 echo 并等待缩零 | HTTP Trigger、冷启动、scale-to-0、再次冷启动 | invoke 输出、`fn-echo` replicas 0->1->0->1 | 保留 `echo` |
 | SL-03 | 9 并发 slow-echo 请求 | inflight 驱动扩容到大于 1、并发请求正确返回 | 9 个输出、`fn-slow-echo` replicas 或 Pod 数大于 1 | 删除 `slow-echo` |
@@ -28,8 +28,9 @@ dead-letter 仍应记录为未覆盖能力。
 
 ## SL-00：启动 addon 和基线
 
-按 `docs/testcase/README.md` 的默认双节点流程启动。node-a 控制面只启用 serverless
-addon；本 testcase 不依赖 DNS/metrics，避免被宿主机 53 端口或 metrics 环境影响：
+按 `docs/testcase/README.md` 的默认三节点流程启动。node-a 控制面只启用 serverless
+addon；本 testcase 不依赖 DNS/metrics，验收环境仍通过 `MINIK8S_DNS_PORT=153`
+生成 DNS static manifest，用于避免宿主机标准 `53` 端口影响后续脚本：
 
 ```fish
 make prod-deploy
@@ -54,7 +55,7 @@ set -gx MINIK8S_NATS_URL nats://127.0.0.1:4222
 
 期望：
 
-- `node-a` 和 `node-b` 均为 `Ready`。
+- `node-a`、`node-b` 和 `node-c` 均为 `Ready`。
 - `doctor addon serverless` 显示 serverless addon ready。
 - `doctor serverless` 显示 `nats ok`。
 - bridge 日志显示 NATS dependency ready，并启动 serverless function controller、
@@ -360,5 +361,5 @@ sleep 8
 ./kubectl get pods; or true
 ```
 
-结束整轮测试时，再按 `docs/testcase/README.md` 在 node-a 和 node-b 分别执行
-`./minik8s doctor clean`，并报告两台机器的 Docker 残留、节点状态和后台进程状态。
+结束整轮测试时，再按 `docs/testcase/README.md` 在 node-a、node-b 和 node-c 分别执行
+`./minik8s doctor clean`，并报告三台机器的 Docker 残留、节点状态和后台进程状态。

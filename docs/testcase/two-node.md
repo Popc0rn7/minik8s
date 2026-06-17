@@ -1,26 +1,27 @@
-# 双节点公共启动测试
+# 三节点公共启动测试
 
-本文是默认双节点环境的可执行基线。除 addon 或单节点特例外，其他 testcase 应先通过
+本文是默认三节点环境的可执行基线。除 addon 或单节点特例外，其他 testcase 应先通过
 本文，再继续执行 feature case。
 
 ## 覆盖矩阵
 
 | Case | 目标 | 机器 | 恢复要求 |
 | --- | --- | --- | --- |
-| NODE-00 | 宿主机、工具和网络预检 | node-a + node-b | 不改变集群 |
+| NODE-00 | 宿主机、工具和网络预检 | node-a + node-b + node-c | 不改变集群 |
 | NODE-01 | bridge、CNI manifest、token 启动 | node-a | 保持 bridge 运行 |
-| NODE-02 | 两个 worker join/run | node-a + node-b | 两节点 Ready |
-| NODE-03 | PodCIDR、VXLAN、route 基线 | node-a + node-b | 保持默认网络 |
+| NODE-02 | 三个 worker join/run | node-a + node-b + node-c | 三节点 Ready |
+| NODE-03 | PodCIDR、VXLAN、route 基线 | node-a + node-b + node-c | 保持默认网络 |
 | NODE-04 | 旧 sailer 入口兼容性说明 | 任意 | 不作为默认验收 |
 
 ## NODE-00：环境预检
 
-目标：确认两台机器可以互通，并具备运行 CNI/kube-proxy 的基础能力。
+目标：确认三台机器可以互通，并具备运行 CNI/kube-proxy 的基础能力。
 
 node-a：
 
 ```fish
 ping -c 3 $NODE_B_IP
+ping -c 3 $NODE_C_IP
 docker version
 which ip
 which bridge
@@ -33,6 +34,7 @@ node-b：
 
 ```fish
 ping -c 3 $NODE_A_IP
+ping -c 3 $NODE_C_IP
 docker version
 which ip
 which bridge
@@ -41,9 +43,22 @@ which nsenter
 iptables-save -t nat >/tmp/minik8s-iptables-b.txt
 ```
 
+node-c：
+
+```fish
+ping -c 3 $NODE_A_IP
+ping -c 3 $NODE_B_IP
+docker version
+which ip
+which bridge
+which iptables
+which nsenter
+iptables-save -t nat >/tmp/minik8s-iptables-c.txt
+```
+
 期望：
 
-- 两台机器互 ping 成功。
+- 三台机器互 ping 成功。
 - Docker client/server 正常。
 - `ip`、`bridge`、`iptables`、`nsenter` 均存在。
 - `iptables-save` 可用，说明网络规则检查能力正常。
@@ -57,7 +72,7 @@ iptables-save -t nat >/tmp/minik8s-iptables-b.txt
 
 目标：启动 Harbor API，启用 mooring CNI 兼容对象，并设置 worker bootstrap token。
 
-两台机器都构建：
+三台机器都构建：
 
 ```fish
 make prod-deploy
@@ -90,13 +105,13 @@ curl --noproxy '*' -fsS $HARBOR/version
 
 失败排查：
 
-- node-b 无法访问 Harbor：确认 `--listen :18080` 绑定外部可达端口，防火墙放通 TCP
+- node-b/node-c 无法访问 Harbor：确认 `--listen :18080` 绑定外部可达端口，防火墙放通 TCP
   `18080`，并使用 `curl --noproxy '*'` 规避代理。
 - CNI manifest apply 失败：确认当前 `kubectl` 连接的是 node-a 的 Harbor。
 
-## NODE-02：两个 worker join/run
+## NODE-02：三个 worker join/run
 
-目标：用当前主路径注册 node-a/node-b，并启动节点本地 kubelet/CNI/proxy 循环。
+目标：用当前主路径注册 node-a/node-b/node-c，并启动节点本地 kubelet/CNI/proxy 循环。
 
 node-a worker 终端：
 
@@ -120,12 +135,24 @@ node-b worker 终端：
 ./minik8s sailer run
 ```
 
+node-c worker 终端：
+
+```fish
+./minik8s sailer join \
+  --apiserver http://$NODE_A_IP:18080 \
+  --token $MINIK8S_TOKEN \
+  --node-name node-c
+
+./minik8s sailer run
+```
+
 node-a 测试终端：
 
 ```fish
 ./kubectl get nodes
 ./kubectl get node node-a -o yaml
 ./kubectl get node node-b -o yaml
+./kubectl get node node-c -o yaml
 ```
 
 期望：
@@ -134,8 +161,8 @@ node-a 测试终端：
 - `sailer run` 显示对应 node started。
 - 只执行 `sailer join` 后，`get nodes` 可看到对应 Node 和 PodCIDR，但状态通常是
   `Unknown`；执行并保持 `sailer run` 心跳后，状态应变为 `Ready`。
-- `get nodes` 包含 `node-a` 和 `node-b`。
-- `node-a` 的 PodCIDR 为 `10.244.0.0/24`，`node-b` 为 `10.244.1.0/24`。
+- `get nodes` 包含 `node-a`、`node-b` 和 `node-c`。
+- `node-a` 的 PodCIDR 为 `10.244.0.0/24`，`node-b` 为 `10.244.1.0/24`，`node-c` 为 `10.244.2.0/24`。
 
 失败排查：
 
@@ -148,7 +175,7 @@ node-a 测试终端：
 
 ## NODE-03：网络基线
 
-目标：确认两个 worker 已写入 CNI 配置，并同步 VXLAN/FDB/route。
+目标：确认三个 worker 已写入 CNI 配置，并同步 VXLAN/FDB/route。
 
 node-a：
 
@@ -170,17 +197,27 @@ ip link show mk8s-vxlan
 bridge fdb show dev mk8s-vxlan
 ```
 
+node-c：
+
+```fish
+cat /etc/cni/net.d/10-mooring.conf
+./minik8s doctor network
+ip route | grep 10.244
+ip link show mk8s-vxlan
+bridge fdb show dev mk8s-vxlan
+```
+
 期望：
 
-- 两台机器的 CNI 配置 `type` 为 `mooring`。
-- node-a 配置 `podCIDR: 10.244.0.0/24`，node-b 配置 `podCIDR: 10.244.1.0/24`。
-- 两台机器均存在 `mk8s-vxlan`。
-- node-a 有到 `10.244.1.0/24` 的 route，node-b 有到 `10.244.0.0/24` 的 route。
-- FDB 指向对端 Node IP。
+- 三台机器的 CNI 配置 `type` 为 `mooring`。
+- node-a 配置 `podCIDR: 10.244.0.0/24`，node-b 配置 `podCIDR: 10.244.1.0/24`，node-c 配置 `podCIDR: 10.244.2.0/24`。
+- 三台机器均存在 `mk8s-vxlan`。
+- node-a 有到 `10.244.1.0/24` 和 `10.244.2.0/24` 的 route，node-b/node-c 有到其他节点 PodCIDR 的 route。
+- FDB 指向其他 Node IP。
 
 失败排查：
 
-- 无 VXLAN 或 route：检查两台节点的 `InternalIP`、`curl --noproxy '*' -fsS $HARBOR/nodes`、
+- 无 VXLAN 或 route：检查三台节点的 `InternalIP`、`curl --noproxy '*' -fsS $HARBOR/nodes`、
   UDP `4789`、宿主机防火墙和 `ip_forward`。
 - PodCIDR 为空：确认 `bridge` 启动时包含 `--cluster-cidr` 和
   `--node-cidr-mask-size 24`，然后重新 `sailer join`。
@@ -199,8 +236,8 @@ bridge fdb show dev mk8s-vxlan
 
 ## 恢复
 
-如果只结束 testcase，先删除业务对象，再停止两个 `sailer run`。如果要清理本机网络状态，
-在 node-a 和 node-b 分别执行：
+如果只结束 testcase，先删除业务对象，再停止三个 `sailer run`。如果要清理本机网络状态，
+在 node-a、node-b 和 node-c 分别执行：
 
 ```fish
 ./minik8s doctor network; or true

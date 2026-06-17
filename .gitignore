@@ -51,3 +51,6 @@ go.work.sum
 
 # env
 .env
+
+scripts/acceptance/lib/*_test.sh
+scripts/acceptance/*_test.sh

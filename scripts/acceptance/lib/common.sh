@@ -16,6 +16,10 @@ output() {
   printf '[OUTPUT]\n%s\n' "$*"
 }
 
+pass() {
+  printf '[PASS] %s\n' "$*"
+}
+
 run() {
   printf '[RUN] %s\n' "$*"
   local out
@@ -26,6 +30,16 @@ run() {
   printf '[EXIT] %s\n' "$code"
   printf '[OUTPUT]\n%s\n' "$out"
   return "$code"
+}
+
+check_run() {
+  local message="$1"
+  shift
+  if run "$@"; then
+    pass "$message"
+  else
+    fail "$message"
+  fi
 }
 
 mark_partial() {
@@ -52,7 +66,15 @@ mark_skip() {
 fail() {
   STATUS="FAIL"
   printf '[FAIL] %s\n' "$*"
+  if [ -n "${ACCEPTANCE_CLEANUP_ON_FAIL:-}" ]; then
+    cleanup "$ACCEPTANCE_CLEANUP_ON_FAIL"
+  fi
+  end
   exit 1
+}
+
+cleanup() {
+  printf '[CLEANUP] %s\n' "$*"
 }
 
 end() {

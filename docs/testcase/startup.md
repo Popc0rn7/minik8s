@@ -71,7 +71,7 @@ docker ps --filter label=minik8s.pod.namespace=minik8s-system
 
 失败排查：
 
-- 2379/53/80 端口冲突：停止占用进程后重试，或调整 addon/端口参数。
+- 2379/153/80 端口冲突：停止占用进程后重试，或调整 addon/端口参数。验收环境 DNS 监听端口统一使用 153。
 - Docker 拉取失败：记录镜像和网络错误，不把它误报为业务对象失败。
 
 ## 全量恢复

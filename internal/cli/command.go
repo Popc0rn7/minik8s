@@ -163,7 +163,7 @@ func addRuntimeCommands(root *cobra.Command, app *App, out io.Writer, bind func(
 
 func newInitCommand(app *App, out io.Writer) *cobra.Command {
 	var force bool
-	var dnsListen, ingressListen string
+	var ingressListen string
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize local Minik8s startup files",
@@ -173,9 +173,6 @@ func newInitCommand(app *App, out io.Writer) *cobra.Command {
 			if force {
 				legacy = append(legacy, "--force")
 			}
-			if dnsListen != "" {
-				legacy = append(legacy, "--dns-listen", dnsListen)
-			}
 			if ingressListen != "" {
 				legacy = append(legacy, "--ingress-listen", ingressListen)
 			}
@@ -183,7 +180,6 @@ func newInitCommand(app *App, out io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite generated startup files")
-	cmd.Flags().StringVar(&dnsListen, "dns-listen", "", "DNS host listen port/address")
 	cmd.Flags().StringVar(&ingressListen, "ingress-listen", "", "HTTP ingress host listen port/address")
 	return cmd
 }
@@ -561,7 +557,7 @@ func newRouteProxyCommand(app *App, out io.Writer) *cobra.Command {
 }
 
 func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
-	var listen, addons, serviceSyncInterval, dnsSyncInterval, replicaSetSyncInterval, hpaSyncInterval, clusterCIDR, serviceCIDR, nodePortRange, gatewayIP, dnsListen, ingressListen string
+	var listen, addons, serviceSyncInterval, dnsSyncInterval, replicaSetSyncInterval, hpaSyncInterval, clusterCIDR, serviceCIDR, nodePortRange, gatewayIP, ingressListen string
 	var nodeCIDRMaskSize int
 	cmd := &cobra.Command{
 		Use:   "bridge",
@@ -582,9 +578,6 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 			}
 			if gatewayIP != "" {
 				legacy = append(legacy, "--gateway-ip", gatewayIP)
-			}
-			if dnsListen != "" {
-				legacy = append(legacy, "--dns-listen", dnsListen)
 			}
 			if ingressListen != "" {
 				legacy = append(legacy, "--ingress-listen", ingressListen)
@@ -615,7 +608,6 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&serviceSyncInterval, "service-sync-interval", "", "Service sync interval")
 	cmd.Flags().StringVar(&dnsSyncInterval, "dns-sync-interval", "", "DNS sync interval")
 	cmd.Flags().StringVar(&gatewayIP, "gateway-ip", "", "DNS answer gateway IP")
-	cmd.Flags().StringVar(&dnsListen, "dns-listen", "", "DNS host listen port/address")
 	cmd.Flags().StringVar(&ingressListen, "ingress-listen", "", "HTTP ingress host listen port/address")
 	cmd.Flags().StringVar(&replicaSetSyncInterval, "replicaset-sync-interval", "", "ReplicaSet sync interval")
 	cmd.Flags().StringVar(&hpaSyncInterval, "hpa-sync-interval", "", "HPA sync interval")

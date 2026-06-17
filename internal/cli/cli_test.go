@@ -438,6 +438,24 @@ func TestBridgeOptionsDefaultToNoAddons(t *testing.T) {
 	assert.Equal(t, "none", options.addons.String())
 }
 
+func TestBridgeOptionsReadDNSPortFromEnvironment(t *testing.T) {
+	t.Setenv("MINIK8S_DNS_PORT", "153")
+
+	options, err := parseBridgeOptions([]string{"--listen", ":18080"})
+
+	require.NoError(t, err)
+	assert.Equal(t, int32(153), options.dnsListenPort)
+}
+
+func TestInitOptionsReadDNSPortFromEnvironment(t *testing.T) {
+	t.Setenv("MINIK8S_DNS_PORT", "153")
+
+	options, err := parseInitOptions([]string{})
+
+	require.NoError(t, err)
+	assert.Equal(t, int32(153), options.dnsListenPort)
+}
+
 func TestAddonProbePortsForDNSIncludesDNSAndIngress(t *testing.T) {
 	assert.Equal(t, []string{"53", "80"}, addonProbePorts(AddonDNS))
 }
@@ -619,6 +637,7 @@ func TestCLIInitWritesStaticDependencyManifests(t *testing.T) {
 	t.Setenv("MINIK8S_STATE_DIR", filepath.Join(root, "state"))
 	t.Setenv("MINIK8S_DNS_DIR", filepath.Join(root, "dns"))
 	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
+	t.Setenv("MINIK8S_DNS_PORT", "153")
 	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
 	var out bytes.Buffer
 
@@ -635,6 +654,10 @@ func TestCLIInitWritesStaticDependencyManifests(t *testing.T) {
 
 	dns := readPodManifest(t, filepath.Join(root, "manifests", "dns-gateway.yaml"))
 	assert.Equal(t, "dns-gateway", dns.Name)
+	coredns := dns.Spec.Containers[0]
+	require.Len(t, coredns.Ports, 2)
+	assert.Equal(t, int32(153), coredns.Ports[0].HostPort)
+	assert.Equal(t, int32(153), coredns.Ports[1].HostPort)
 	metricsPod := readPodManifest(t, filepath.Join(root, "manifests", "metrics-server.yaml"))
 	assert.Equal(t, "metrics-server", metricsPod.Name)
 	serverlessPod := readPodManifest(t, filepath.Join(root, "manifests", "serverless-nats.yaml"))

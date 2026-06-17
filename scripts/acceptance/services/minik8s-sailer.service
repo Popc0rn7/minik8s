@@ -1,0 +1,15 @@
+[Unit]
+Description=Minik8s sailer worker
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__MINIK8S_REMOTE_DIR__
+Environment=MINIK8S_STATE_DIR=__MINIK8S_STATE_DIR__
+ExecStart=__MINIK8S_REMOTE_DIR__/bin/minik8s sailer run
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

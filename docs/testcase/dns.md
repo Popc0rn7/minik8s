@@ -18,11 +18,12 @@
 
 目标：启动带 DNS addon 的控制面，并确认 gateway 依赖 ready。
 
-前置：执行前建议停止已有 bridge，避免 53/80/18080 端口冲突。端口 53 和 80 需要 root
-或对应 capability。
+前置：执行前建议停止已有 bridge，避免 153/80/18080 端口冲突。验收环境通过
+`MINIK8S_DNS_PORT=153` 作为 DNS 监听端口，避免宿主机已有 DNS 服务占用标准 `53` 端口。
 
 ```fish
 make prod-deploy
+set -q MINIK8S_DNS_PORT; or set -gx MINIK8S_DNS_PORT 153
 ./minik8s init --force
 set NODE_A_DNS_IP <node-a-pod-reachable-ip>
 ./minik8s bridge \
@@ -117,7 +118,7 @@ head -n 1 /tmp/minik8s-dns-path2.html
 
 目标：补充证明同一 host 下多个 path 能转发到不同 Service，而不只是返回相同 nginx 页面。
 
-前置：DNS addon 和 gateway 已 ready，node-a/node-b 至少一个 worker Ready。
+前置：DNS addon 和 gateway 已 ready，node-a/node-b/node-c 至少一个 worker Ready。
 
 创建临时 YAML：
 

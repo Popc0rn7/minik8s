@@ -133,7 +133,7 @@ fi
 for node in $DEPLOY_NODES; do
 	if [ "$sync" -eq 1 ]; then
 		printf 'creating %s on %s\n' "$REMOTE_DIR" "$node"
-		ssh $SSH_OPTS "$node" "mkdir -p '$REMOTE_DIR/bin' '$REMOTE_DIR/scripts' '$REMOTE_DIR/manifests' '$REMOTE_DIR/demo/serverless' '$REMOTE_DIR/state' '$REMOTE_DIR/static-pods' '$REMOTE_DIR/dns' '$REMOTE_DIR/secrets/gpu-ssh'"
+		ssh $SSH_OPTS "$node" "mkdir -p '$REMOTE_DIR/bin' '$REMOTE_DIR/scripts' '$REMOTE_DIR/manifests' '$REMOTE_DIR/demo/serverless' '$REMOTE_DIR/state' '$REMOTE_DIR/static-pods' '$REMOTE_DIR/dns' '$REMOTE_DIR/secrets/gpu-ssh' /etc/cni/net.d /opt/cni/bin"
 
 		printf 'syncing binaries to %s:%s/bin\n' "$node" "$REMOTE_DIR"
 		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS "$PROD_DIR"/minik8s "$PROD_DIR"/kubectl "$node:$REMOTE_DIR/bin/"
