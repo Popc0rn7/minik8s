@@ -189,8 +189,10 @@ Harbor、Navigator 和 Captain。启用 addon 时，Bridge 会按 `--addons` 加
 manifest，而不是默认全部运行。
 
 Node Join 是多机闭环的入口。控制面通过 `bridge token set` 维护 join token，
-worker 用 `sailer join --apiserver ... --token ... -f manifest/node/*.yaml` 注册
-Node；Harbor 分配或校验 PodCIDR，并在后续 heartbeat 中把 Node 标记为 Ready。
+worker 用 `sailer join --apiserver ... --token ... [--node-name ...] [--node-ip ...]`
+注册 Node；未传 node name 时自动生成 `node-xxxxx`，未传 node IP 时按访问
+apiserver 的 UDP 路由探测本机 IP。Harbor 分配 PodCIDR，并在后续 heartbeat 中把
+Node 标记为 Ready。
 心跳超时后 Node 会转为 Unknown，新 Pod 调度会避开该节点，Service endpoints 也会随
 controller 收敛。
 
@@ -417,7 +419,7 @@ addon；启动后会把 Harbor 地址写入 `.minik8s/config.json`，后续 `./k
 ./minik8s sailer join \
   --apiserver http://127.0.0.1:18080 \
   --token minik8s \
-  -f manifest/node/node_a.yaml
+  --node-name node-a
 ./minik8s sailer run
 ```
 
@@ -495,7 +497,7 @@ make build
 export MINIK8S_HARBOR=http://127.0.0.1:18080
 export MINIK8S_NATS_URL=nats://127.0.0.1:4222
 ./minik8s bridge token set minik8s --ttl 24h
-./minik8s sailer join --apiserver "$MINIK8S_HARBOR" --token minik8s -f manifest/node/node_a.yaml
+./minik8s sailer join --apiserver "$MINIK8S_HARBOR" --token minik8s --node-name node-a
 ./minik8s sailer run
 ```
 

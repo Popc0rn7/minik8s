@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1680,17 +1681,20 @@ func TestSailerJoinWritesLocalConfig(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MINIK8S_STATE_DIR", filepath.Join(root, "state"))
 	t.Setenv("MINIK8S_CONFIG", filepath.Join(root, "config.json"))
-	nodePath := filepath.Join(root, "node.yaml")
-	require.NoError(t, os.WriteFile(nodePath, []byte(`
-apiVersion: v1
-kind: Node
-metadata:
-  name: node-a
-status:
-  addresses:
-  - type: InternalIP
-    address: 192.168.1.8
-`), 0o644))
+	oldAddrs := interfaceAddrsFunc
+	oldDial := udpDialFunc
+	interfaceAddrsFunc = func() ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.8"), Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	udpDialFunc = func(localIP net.IP, remote string) (*net.UDPAddr, error) {
+		require.Equal(t, "192.168.1.8", localIP.String())
+		require.Equal(t, "10.0.0.1:18080", remote)
+		return &net.UDPAddr{IP: localIP, Port: 12345}, nil
+	}
+	t.Cleanup(func() {
+		interfaceAddrsFunc = oldAddrs
+		udpDialFunc = oldDial
+	})
 	app := New(Config{
 		Runtime: mock.NewMockRuntime(),
 		Store:   store.NewInMemoryPodStore(),
@@ -1698,6 +1702,15 @@ status:
 			rec := httptestResponseRecorder(req)
 			require.Equal(t, http.MethodPost, req.Method)
 			require.Equal(t, "/api/v1/nodes/join", req.URL.Path)
+			var body struct {
+				Token string    `json:"token"`
+				Node  node.Node `json:"node"`
+			}
+			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+			assert.Equal(t, "bootstrap-secret", body.Token)
+			assert.Equal(t, "node-a", body.Node.Name())
+			assert.Equal(t, "192.168.1.8", body.Node.InternalIP())
+			assert.Equal(t, "node-a", body.Node.Labels["node"])
 			rec.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(rec).Encode(map[string]any{
 				"node": map[string]any{
@@ -1716,14 +1729,78 @@ status:
 	})
 	var out bytes.Buffer
 
-	require.NoError(t, app.sailerJoin(context.Background(), "http://10.0.0.1:18080/", "bootstrap-secret", nodePath, &out))
+	require.NoError(t, app.sailerJoin(context.Background(), "http://10.0.0.1:18080/", "bootstrap-secret", "node-a", "192.168.1.8", &out))
 
 	sailerConf, err := readLocalSailerConfig(DefaultSailerConfigPath())
 	require.NoError(t, err)
 	assert.Equal(t, "http://10.0.0.1:18080", sailerConf.APIServer)
+	assert.Equal(t, "node-a", sailerConf.NodeName)
+	assert.Equal(t, "192.168.1.8", sailerConf.NodeIP)
 	localConf, err := readLocalConfig(DefaultLocalConfigPath())
 	require.NoError(t, err)
 	assert.Equal(t, "http://10.0.0.1:18080", localConf.Harbor)
+}
+
+func TestBuildJoinNodeGeneratesNameAndDetectsNodeIP(t *testing.T) {
+	oldRandom := randomReader
+	oldDial := udpDialFunc
+	randomReader = strings.NewReader("abcde")
+	udpDialFunc = func(localIP net.IP, remote string) (*net.UDPAddr, error) {
+		require.Nil(t, localIP)
+		require.Equal(t, "10.0.0.1:18080", remote)
+		return &net.UDPAddr{IP: net.ParseIP("192.168.1.9"), Port: 43210}, nil
+	}
+	t.Cleanup(func() {
+		randomReader = oldRandom
+		udpDialFunc = oldDial
+	})
+
+	n, err := buildJoinNode("http://10.0.0.1:18080", "", "")
+
+	require.NoError(t, err)
+	assert.Regexp(t, `^node-[a-z0-9]{5}$`, n.Name())
+	assert.Equal(t, "192.168.1.9", n.InternalIP())
+	assert.Equal(t, n.Name(), n.Labels["node"])
+}
+
+func TestBuildJoinNodeRejectsNodeIPNotOnLocalInterface(t *testing.T) {
+	oldAddrs := interfaceAddrsFunc
+	interfaceAddrsFunc = func() ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.8"), Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	t.Cleanup(func() { interfaceAddrsFunc = oldAddrs })
+
+	_, err := buildJoinNode("http://10.0.0.1:18080", "node-a", "192.168.1.9")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not assigned to a local interface")
+}
+
+func TestBuildJoinNodeRejectsNodeIPWithoutUDPRoute(t *testing.T) {
+	oldAddrs := interfaceAddrsFunc
+	oldDial := udpDialFunc
+	interfaceAddrsFunc = func() ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.8"), Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	udpDialFunc = func(localIP net.IP, remote string) (*net.UDPAddr, error) {
+		return nil, fmt.Errorf("no route")
+	}
+	t.Cleanup(func() {
+		interfaceAddrsFunc = oldAddrs
+		udpDialFunc = oldDial
+	})
+
+	_, err := buildJoinNode("http://10.0.0.1:18080", "node-a", "192.168.1.8")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot reach apiserver")
+}
+
+func TestAPIServerUDPAddressDefaultsHTTPPort(t *testing.T) {
+	got, err := apiServerUDPAddress("http://10.0.0.1")
+
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1:80", got)
 }
 
 func TestSailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {

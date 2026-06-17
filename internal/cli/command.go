@@ -703,18 +703,19 @@ func newSailerCommand(app *App, out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&vxlanName, "vxlan-name", "", "VXLAN device name")
 	cmd.Flags().BoolVar(&once, "once", false, "Run one sync and exit")
 	cmd.Flags().BoolVar(&proxyDisabled, "proxy-disabled", false, "Disable node-local Service proxy sync")
-	var joinAPIServer, joinToken, joinFile string
+	var joinAPIServer, joinToken, joinNodeName, joinNodeIP string
 	joinCmd := &cobra.Command{
-		Use:   "join --apiserver <url> --token <token> -f <node.yaml>",
+		Use:   "join --apiserver <url> --token <token> [--node-name <name>] [--node-ip <ip>]",
 		Short: "Join this worker to a bridge using a bootstrap token",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.sailerJoin(cmd.Context(), joinAPIServer, joinToken, joinFile, out)
+			return app.sailerJoin(cmd.Context(), joinAPIServer, joinToken, joinNodeName, joinNodeIP, out)
 		},
 	}
 	joinCmd.Flags().StringVar(&joinAPIServer, "apiserver", "", "Bridge Harbor API URL")
 	joinCmd.Flags().StringVar(&joinToken, "token", "", "Bootstrap token")
-	joinCmd.Flags().StringVarP(&joinFile, "filename", "f", "", "Node YAML")
+	joinCmd.Flags().StringVar(&joinNodeName, "node-name", "", "Node name; defaults to node-xxxxx")
+	joinCmd.Flags().StringVar(&joinNodeIP, "node-ip", "", "Node host IP; defaults to the local source IP used to reach apiserver")
 	cmd.AddCommand(joinCmd)
 
 	runCmd := &cobra.Command{

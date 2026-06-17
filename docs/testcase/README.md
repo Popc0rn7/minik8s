@@ -24,9 +24,9 @@ CNI、启用两个 worker。
 - 跨节点 CNI 需要两节点之间双向 UDP `4789`
 
 两台机器都需要 Docker、`ip`、`bridge`、`iptables`、`nsenter`、`curl` 或 `wget`。
-确认 `manifest/node/node_a.yaml` 和 `manifest/node/node_b.yaml` 中的
-`status.addresses[type=InternalIP]` 与实际主机 IP 一致。Node YAML 不需要手写
-`spec.podCIDR`，控制面会按 `CLUSTER_CIDR` 自动分配。
+`sailer join` 默认按访问 Harbor 的 UDP 路由探测 node IP；多网卡环境下如果探测结果
+不符合预期，显式传 `--node-ip <本机内网 IP>`。`spec.podCIDR` 由控制面按
+`CLUSTER_CIDR` 自动分配。
 
 如果 root 的 fish 配置设置了代理，确认 `NO_PROXY/no_proxy` 覆盖
 `192.168.0.0/16`、`10.244.0.0/16` 和 `10.96.0.0/12`。访问 Harbor LAN 地址时优先使用
@@ -69,7 +69,7 @@ node-a worker 终端：
 ./minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
-  -f manifest/node/node_a.yaml
+  --node-name node-a
 
 ./minik8s sailer run
 ```
@@ -80,7 +80,7 @@ node-b worker 终端：
 ./minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
-  -f manifest/node/node_b.yaml
+  --node-name node-b
 
 ./minik8s sailer run
 ```

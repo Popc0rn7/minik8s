@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -44,6 +45,12 @@ import (
 	"minik8s/internal/service"
 	"minik8s/pkg/runtime"
 	podyaml "minik8s/pkg/yaml"
+)
+
+var (
+	randomReader       io.Reader = rand.Reader
+	interfaceAddrsFunc           = net.InterfaceAddrs
+	udpDialFunc                  = dialUDP
 )
 
 // Config contains CLI dependencies.
@@ -2553,22 +2560,16 @@ func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
 	return a.runAssignedSailer(ctx, options, podClient, assignedNode, out)
 }
 
-func (a *App) sailerJoin(ctx context.Context, apiserver, token, nodeFile string, out io.Writer) error {
+func (a *App) sailerJoin(ctx context.Context, apiserver, token, nodeName, nodeIP string, out io.Writer) error {
 	if strings.TrimSpace(apiserver) == "" {
 		return fmt.Errorf("--apiserver is required")
 	}
 	if strings.TrimSpace(token) == "" {
 		return fmt.Errorf("--token is required")
 	}
-	if strings.TrimSpace(nodeFile) == "" {
-		return fmt.Errorf("missing required -f flag")
-	}
-	nodeConfig, err := podyaml.LoadNodeFromFile(nodeFile)
+	nodeConfig, err := buildJoinNode(apiserver, nodeName, nodeIP)
 	if err != nil {
 		return err
-	}
-	if nodeConfig.InternalIP() == "" {
-		return fmt.Errorf("node InternalIP is required")
 	}
 	client := nodeSailer.NewHTTPPodClient(apiserver, a.httpClient)
 	joined, err := client.JoinNode(ctx, token, nodeConfig)
@@ -2595,6 +2596,157 @@ func (a *App) sailerJoin(ctx context.Context, apiserver, token, nodeFile string,
 		return err
 	}
 	return writes(out, cliui.SuccessLine("sailer joined node=%s apiserver=%s", conf.NodeName, conf.APIServer))
+}
+
+func buildJoinNode(apiserver, nodeName, nodeIP string) (*node.Node, error) {
+	name := strings.TrimSpace(nodeName)
+	if name == "" {
+		generated, err := randomNodeName()
+		if err != nil {
+			return nil, err
+		}
+		name = generated
+	}
+	ip := strings.TrimSpace(nodeIP)
+	var err error
+	if ip == "" {
+		ip, err = detectNodeIP(apiserver)
+		if err != nil {
+			return nil, err
+		}
+	} else if err := validateNodeIPForAPIServer(ip, apiserver); err != nil {
+		return nil, err
+	}
+	n := node.New(name, node.NodeSpec{Role: node.NodeRoleWorker}, node.NodeStatus{
+		Addresses: []node.NodeAddress{{Type: node.NodeAddressInternalIP, Address: ip}},
+	})
+	n.Labels["node"] = name
+	return n, nil
+}
+
+func randomNodeName() (string, error) {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(randomReader, buf); err != nil {
+		return "", fmt.Errorf("generating node name: %w", err)
+	}
+	for i := range buf {
+		buf[i] = alphabet[int(buf[i])%len(alphabet)]
+	}
+	return "node-" + string(buf), nil
+}
+
+func detectNodeIP(apiserver string) (string, error) {
+	addr, err := apiServerUDPAddress(apiserver)
+	if err != nil {
+		return "", err
+	}
+	local, err := udpDialFunc(nil, addr)
+	if err != nil {
+		return "", fmt.Errorf("detecting node IP via %s: %w", addr, err)
+	}
+	ip := local.IP.String()
+	if err := validateUsableNodeIP(ip); err != nil {
+		return "", fmt.Errorf("detected node IP %q is not usable: %w", ip, err)
+	}
+	return ip, nil
+}
+
+func validateNodeIPForAPIServer(value, apiserver string) error {
+	parsed := net.ParseIP(strings.TrimSpace(value))
+	if parsed == nil {
+		return fmt.Errorf("invalid --node-ip %q", value)
+	}
+	if err := validateUsableNodeIP(parsed.String()); err != nil {
+		return fmt.Errorf("invalid --node-ip %q: %w", value, err)
+	}
+	if ok, err := localInterfaceHasIP(parsed); err != nil {
+		return fmt.Errorf("validating --node-ip %q: %w", value, err)
+	} else if !ok {
+		return fmt.Errorf("--node-ip %q is not assigned to a local interface", value)
+	}
+	addr, err := apiServerUDPAddress(apiserver)
+	if err != nil {
+		return err
+	}
+	if _, err := udpDialFunc(parsed, addr); err != nil {
+		return fmt.Errorf("--node-ip %q cannot reach apiserver %s: %w", value, addr, err)
+	}
+	return nil
+}
+
+func validateUsableNodeIP(value string) error {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil {
+		return fmt.Errorf("not an IP address")
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("unspecified address is not allowed")
+	}
+	if ip.IsLoopback() {
+		return fmt.Errorf("loopback address is not allowed")
+	}
+	return nil
+}
+
+func localInterfaceHasIP(ip net.IP) (bool, error) {
+	addrs, err := interfaceAddrsFunc()
+	if err != nil {
+		return false, err
+	}
+	for _, addr := range addrs {
+		switch v := addr.(type) {
+		case *net.IPNet:
+			if v.IP.Equal(ip) {
+				return true, nil
+			}
+		case *net.IPAddr:
+			if v.IP.Equal(ip) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func apiServerUDPAddress(apiserver string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(apiserver))
+	if err != nil {
+		return "", fmt.Errorf("invalid --apiserver %q: %w", apiserver, err)
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return "", fmt.Errorf("invalid --apiserver %q: host is required", apiserver)
+	}
+	port := parsed.Port()
+	if port == "" {
+		switch parsed.Scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return "", fmt.Errorf("invalid --apiserver %q: port is required", apiserver)
+		}
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
+func dialUDP(localIP net.IP, remote string) (*net.UDPAddr, error) {
+	dialer := net.Dialer{}
+	if localIP != nil {
+		dialer.LocalAddr = &net.UDPAddr{IP: localIP}
+	}
+	conn, err := dialer.Dial("udp", remote)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return nil, fmt.Errorf("local address is %T, want *net.UDPAddr", conn.LocalAddr())
+	}
+	return addr, nil
 }
 
 func (a *App) sailerRun(ctx context.Context, args []string, out io.Writer) error {

@@ -222,7 +222,7 @@ begin
   echo '      mountPath: /shared'
   echo '  - name: client'
   echo '    image: busybox'
-  echo '    imageTag: latest'
+  echo '    imageTag: 1.36'
   echo '    command: ["sh", "-c"]'
   echo '    args: ["sleep 3; wget -qO- http://127.0.0.1:8080 > /shared/result; sleep 3600"]'
   echo '    volumeMounts:'
@@ -369,7 +369,7 @@ begin
   echo '  containers:'
   echo '  - name: app'
   echo '    image: busybox'
-  echo '    imageTag: latest'
+  echo '    imageTag: 1.36'
   echo '    command: ["sh", "-c"]'
   echo '    args: ["touch /tmp/healthy && sleep 3600"]'
   echo '    livenessProbe:'
@@ -701,7 +701,7 @@ set -gx BOOTSTRAP_TOKEN "<当前 bridge bootstrap token>"
 ./minik8s sailer join \
   --apiserver $HARBOR \
   --token $BOOTSTRAP_TOKEN \
-  -f manifest/node/node_b.yaml
+  --node-name node-b
 ./minik8s sailer run
 ```
 

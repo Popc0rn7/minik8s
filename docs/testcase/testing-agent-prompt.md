@@ -23,7 +23,8 @@
 3. 检查远端：
    - `ssh node-1`、`ssh node-2` 是否可用。
    - 两台机器的 `/opt/minik8s`、Docker、`ip`、`bridge`、`iptables`、`nsenter` 是否可用。
-   - Node YAML 中的 `InternalIP` 是否匹配实际 IP。
+   - `sailer join` 自动探测的 node IP 是否符合实际内网 IP；多网卡时记录并显式传
+     `--node-ip`。
 4. 如果 SSH 被本机系统配置或沙箱阻止，先记录原因，再用合规的方式请求提升权限或绕过只读系统配置，例如 `ssh -F ~/.ssh/config`。
 
 ## 执行策略

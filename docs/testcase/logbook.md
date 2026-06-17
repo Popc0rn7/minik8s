@@ -96,7 +96,7 @@ curl -fsS ${HARBOR}/nodes
 ./minik8s sailer join \
   --apiserver ${HARBOR} \
   --token ${MINIK8S_TOKEN} \
-  -f manifest/node/node_a.yaml
+  --node-name node-a
 ./minik8s sailer run
 ```
 
@@ -106,7 +106,7 @@ curl -fsS ${HARBOR}/nodes
 ./minik8s sailer join \
   --apiserver ${HARBOR} \
   --token ${MINIK8S_TOKEN} \
-  -f manifest/node/node_b.yaml
+  --node-name node-b
 ./minik8s sailer run
 ```
 
@@ -334,10 +334,11 @@ worker 在 Harbor 短暂不可用期间退出，本 case 视为失败；可以�
 
 ```bash
 ./minik8s bridge token set ${MINIK8S_TOKEN} --ttl 24h
-./minik8s sailer join --apiserver ${HARBOR} --token ${MINIK8S_TOKEN} -f manifest/node/node_a.yaml
+./minik8s sailer join --apiserver ${HARBOR} --token ${MINIK8S_TOKEN} --node-name node-a
 ```
 
-node-b 上使用同一个 `${HARBOR}` 和 token，对 `manifest/node/node_b.yaml` 重新 join。
+node-b 上使用同一个 `${HARBOR}` 和 token，传 `--node-name node-b` 重新 join；如多网卡
+探测不符合预期，额外传 `--node-ip <node-b 内网 IP>`。
 
 重新检查：
 

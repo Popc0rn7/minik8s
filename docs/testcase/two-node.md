@@ -104,7 +104,7 @@ node-a worker 终端：
 ./minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
-  -f manifest/node/node_a.yaml
+  --node-name node-a
 
 ./minik8s sailer run
 ```
@@ -115,7 +115,7 @@ node-b worker 终端：
 ./minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
-  -f manifest/node/node_b.yaml
+  --node-name node-b
 
 ./minik8s sailer run
 ```
@@ -139,7 +139,8 @@ node-a 测试终端：
 
 失败排查：
 
-- join 被拒绝：确认 token 未过期，Node YAML 的 name 和 InternalIP 正确。
+- join 被拒绝：确认 token 未过期；如多网卡机器自动探测 node IP 不符合预期，显式传
+  `--node-ip <本机内网 IP>`。
 - run 提示未 join：确认在同一个仓库和同一个 `MINIK8S_STATE_DIR` 下执行。
 - 只看到一个节点：检查另一个 worker 的 Harbor 地址、token 和 sailer 日志。
 - join 成功但节点是 `Unknown`：确认对应节点的 `sailer run` 仍在运行；join 只注册节点和
@@ -190,7 +191,7 @@ bridge fdb show dev mk8s-vxlan
 兼容路径，但默认 testcase 不使用它。人工验收统一使用：
 
 ```fish
-./minik8s sailer join --apiserver http://$NODE_A_IP:18080 --token $MINIK8S_TOKEN -f manifest/node/node_a.yaml
+./minik8s sailer join --apiserver http://$NODE_A_IP:18080 --token $MINIK8S_TOKEN --node-name node-a
 ./minik8s sailer run
 ```
 
