@@ -91,42 +91,86 @@ bash scripts/acceptance/00_env_check.sh
 
 ## 01 Deploy
 
-`scripts/acceptance/01_node_multinode.sh` 是多机启动脚本，支持同一个入口显式启动 bridge 或 sailer 节点。`00_env_check.sh` 已负责软件、端口、systemd 和 `/opt/minik8s` 布局预检；`01_node_multinode.sh` 只负责本机 service 生命周期和必要的 sailer join。
+`scripts/acceptance/01_node_multinode.sh` 是多机启动脚本，支持同一个入口显式建立 minik8s service 启动 bridge 或 sailer 节点。
 
 推荐运行顺序如下。三台机器均从 `/opt/minik8s` 执行：
 
 ```bash
 # node-a：启动 bridge
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/01_node_multinode.sh bridge
 
 # node-a：独立启动本机 worker sailer
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/01_node_multinode.sh sailer node-a
 
 # node-b：仅作为 worker 启动 sailer
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/01_node_multinode.sh sailer node-b
 
 # node-c：仅作为 worker 启动 sailer
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/01_node_multinode.sh sailer node-c
 
-# 验证集群状态
-cd /opt/minik8s
+# node-a上验证集群状态
 source scripts/acceptance/env.sh
 bash scripts/acceptance/01_node_multinode.sh
 ```
 
-无参数模式在 node-a 上运行，用于展示/检验 `docs/FINAL.md` 7.1 的 Node 要求：
-先检查本机 `sailer.json` 中的 join 身份，再检查 node-a 同时运行
-`minik8s-bridge.service` 与 `minik8s-sailer.service`，并通过
-`kubectl get nodes` / `kubectl describe node` 验证 node-a、node-b、node-c
-三台 Node 已注册且 Ready。
+Checklist:
+- 启动过程，展现2, 4, 5, 6要求
+- 最后的无参数验证，展现1, 3功能
+
+Node设计：
+```bash
+kind: Node
+apiVersion: v1
+metadata:
+    name: node-a
+    namespace: ""
+    labels:
+        node: node-a
+    annotations: {}
+    uid: ""
+    resourceVersion: "1434"
+spec:
+    role: Worker
+    podCIDR: 10.244.0.0/24
+status:
+    phase: Ready
+    lastHeartbeat: 2026-06-17T08:27:32.782584471Z
+    addresses:
+        - type: InternalIP
+          address: 192.168.1.4
+    conditions:
+        - type: Ready
+          status: "True"
+          lastHeartbeatTime: 2026-06-17T08:27:32.782584471Z
+          lastTransitionTime: 2026-06-17T08:27:32.782584471Z
+          reason: Heartbeat
+          message: Node is reporting heartbeat
+```
+- Node注册靠机器通过token加入Bridge，这时 Bridge 记录 node 对象，Node 记录 Harbor 地址。
+- 关键字段说明：
+  - `spec.role`：Worker/Master
+  - `spec.podCIDR`：Bridge分配给该 Node 的 Pod CIDR
+  - `status.phase`：Ready/NotReady/Unknown
+  - `status.addresses`：Node IP 地址列表，至少包含 InternalIP
+  - `status.conditions`：Node状态条件列表，至少包含 Ready 条件
+
+## 02 Pod
+
+TODO
+
+## 03 Service
+
+## 04 ReplicaSet
+
+## 05 HPA
+
+## 06 DNS
+
+## 07 Fault Tolerance
 
 ## CICD
 
