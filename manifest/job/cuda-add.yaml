@@ -9,6 +9,8 @@ spec:
   selector:
     matchLabels:
       accelerator: gpu
+  nodeSelector:
+    node: node-a
   source:
     files:
       - vector_add.cu

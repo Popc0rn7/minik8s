@@ -24,10 +24,11 @@ func TestJobControllerCreatesSubmitterPodAndService(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: job.JobSpec{
-			Selector: pod.LabelSelector{MatchLabels: map[string]string{"accelerator": "gpu"}},
-			Source:   job.JobSourceSpec{Files: []string{"vector_add.cu", "Makefile"}, Command: "make run"},
-			Slurm:    job.JobSlurmSpec{Partition: "debuga100"},
-			Remote:   job.JobRemoteSpec{Host: "sylogin.hpc.sjtu.edu.cn", Username: "stu1718", Workdir: "/dssg/home/acct-stu/stu1718/minik8s-gpujobs"},
+			Selector:     pod.LabelSelector{MatchLabels: map[string]string{"accelerator": "gpu"}},
+			NodeSelector: map[string]string{"node": "node-a"},
+			Source:       job.JobSourceSpec{Files: []string{"vector_add.cu", "Makefile"}, Command: "make run"},
+			Slurm:        job.JobSlurmSpec{Partition: "debuga100"},
+			Remote:       job.JobRemoteSpec{Host: "sylogin.hpc.sjtu.edu.cn", Username: "stu1718", Workdir: "/dssg/home/acct-stu/stu1718/minik8s-gpujobs"},
 		},
 		Status: job.JobStatus{Phase: job.JobPending},
 	}
@@ -52,6 +53,7 @@ func TestJobControllerCreatesSubmitterPodAndService(t *testing.T) {
 	require.Len(t, p.Spec.Containers, 1)
 	assert.Equal(t, "ghcr.io/popc0rn7/gpu-submitter:test", p.Spec.Containers[0].Image)
 	assert.Equal(t, pod.RestartPolicyNever, p.Spec.RestartPolicy)
+	assert.Equal(t, map[string]string{"node": "node-a"}, p.Spec.NodeSelector)
 	assert.Contains(t, p.Spec.Containers[0].Args, "http://10.119.15.146:18080")
 	assert.Equal(t, []pod.VolumeSpec{{
 		Name:     "gpu-ssh",

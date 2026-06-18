@@ -147,6 +147,7 @@ func (c *JobController) submitterPod(j *job.Job, name string) *pod.Pod {
 		},
 		Spec: pod.PodSpec{
 			RestartPolicy: pod.RestartPolicyNever,
+			NodeSelector:  j.Spec.NodeSelector,
 			Volumes: []pod.VolumeSpec{{
 				Name:     "gpu-ssh",
 				HostPath: &pod.HostPathVolume{Path: c.config.SSHHostPath, Type: "Directory"},
