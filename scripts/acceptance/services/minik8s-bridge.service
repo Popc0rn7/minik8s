@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=__MINIK8S_REMOTE_DIR__
 Environment=MINIK8S_STATE_DIR=__MINIK8S_STATE_DIR__
+Environment=MINIK8S_CNI_DISABLED=__MINIK8S_CNI_DISABLED__
 ExecStart=__MINIK8S_REMOTE_DIR__/bin/minik8s bridge --listen :__MINIK8S_HARBOR_PORT__ --addons dns,metrics,serverless --gateway-ip __MINIK8S_NODE_A_IP__ --cluster-cidr __MINIK8S_CLUSTER_CIDR__ --service-cidr __MINIK8S_SERVICE_CIDR__ --node-port-range __MINIK8S_NODE_PORT_RANGE__
 Restart=on-failure
 RestartSec=2

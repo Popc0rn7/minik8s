@@ -136,6 +136,27 @@ func TestCLIApplyMooringCNIManifestStoresCompatObjects(t *testing.T) {
 	assert.Equal(t, "ghcr.io/popc0rn7/mooring-cni:v0.1.0", ds.Spec.Template.Spec.InitContainers[0].Image)
 }
 
+func TestCLIDeleteK8sCompatConfigMapAndDaemonSet(t *testing.T) {
+	k8sStore := store.NewInMemoryK8sCompatStore()
+	handler := harbor.New(harbor.Config{K8sCompatStore: k8sStore, NodeStore: store.NewInMemoryNodeStore()})
+	app := newHTTPTestApp(t, handler, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	manifest := writeTempManifest(t, mooringCNIConfigMapManifest)
+	var out bytes.Buffer
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"delete", "configmap", "mooring-cni-cfg", "-n", "kube-mooring"}, &out))
+	assert.Contains(t, out.String(), "configmap/mooring-cni-cfg deleted")
+	_, err := k8sStore.GetConfigMap(k8scompat.MooringCNIConfigMap, k8scompat.MooringCNINamespace)
+	require.ErrorIs(t, err, store.ErrK8sObjectNotFound)
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"delete", "daemonset", "mooring-cni-ds", "-n", "kube-mooring"}, &out))
+	assert.Contains(t, out.String(), "daemonset/mooring-cni-ds deleted")
+	_, err = k8sStore.GetDaemonSet(k8scompat.MooringCNIDaemonSet, k8scompat.MooringCNINamespace)
+	require.ErrorIs(t, err, store.ErrK8sObjectNotFound)
+}
+
 const mooringCNIConfigMapManifest = `---
 kind: Namespace
 apiVersion: v1
@@ -1080,6 +1101,49 @@ status:
 	require.NoError(t, json.Unmarshal(data, &conf))
 	assert.Equal(t, "10.244.0.0/24", conf.PodCIDR)
 	assert.Equal(t, "10.244.0.1", conf.Gateway)
+}
+
+func TestCLISailerRunRespectsCNIDisabledInAssignedMode(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
+	t.Setenv("MINIK8S_CNI_DISABLED", "1")
+	t.Setenv("MINIK8S_HARBOR", "http://minik8s.test")
+	nodePath := filepath.Join(root, "node-a.yaml")
+	require.NoError(t, os.WriteFile(nodePath, []byte(`kind: Node
+apiVersion: v1
+metadata:
+  name: node-a
+status:
+  addresses:
+  - type: InternalIP
+    address: 192.168.1.8
+`), 0o644))
+	nodeStore := store.NewInMemoryNodeStore()
+	srv := harbor.New(harbor.Config{
+		NodeStore:        nodeStore,
+		ClusterCIDR:      "10.244.0.0/16",
+		NodeCIDRMaskSize: 24,
+	})
+	app := New(Config{
+		Runtime:      mock.NewMockRuntime(),
+		Store:        store.NewInMemoryPodStore(),
+		ServiceProxy: nil,
+		HTTPClient: &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptestResponseRecorder(req)
+			srv.ServeHTTP(rec, req)
+			return rec.Result(), nil
+		})},
+		NetRunner: func(name string, args ...string) error {
+			return fmt.Errorf("netagent should not run when CNI is disabled")
+		},
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"sailer", nodePath, "--harbor", "http://minik8s.test", "--once"}, &out))
+
+	_, err := os.Stat(filepath.Join(root, "net.d", "10-mooring.conf"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestCLISailerRunRequiresLocalJoinConfig(t *testing.T) {

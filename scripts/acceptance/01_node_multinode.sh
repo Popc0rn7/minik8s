@@ -5,11 +5,11 @@ role_from_args() {
   local role="${1:-${MINIK8S_ACCEPTANCE_ROLE:-}}"
   case "$role" in
     "") printf 'check\n' ;;
-    bridge|sailer|stop|clean)
+    bridge|sailer|cni-clean|stop|clean)
       printf '%s\n' "$role"
       ;;
     *)
-      printf 'role must be bridge, sailer, stop, or clean; got %s\n' "${role:-<empty>}" >&2
+      printf 'role must be bridge, sailer, cni-clean, stop, or clean; got %s\n' "${role:-<empty>}" >&2
       return 2
       ;;
   esac
@@ -89,6 +89,7 @@ Usage:
   bash scripts/acceptance/01_node_multinode.sh sailer node-a
   bash scripts/acceptance/01_node_multinode.sh sailer node-b
   bash scripts/acceptance/01_node_multinode.sh sailer node-c
+  bash scripts/acceptance/01_node_multinode.sh cni-clean
   bash scripts/acceptance/01_node_multinode.sh stop
   bash scripts/acceptance/01_node_multinode.sh clean
 
@@ -100,6 +101,10 @@ Run on every target machine from /opt/minik8s:
 
 The bridge role starts only the control plane. Run sailer node-a separately so
 node-a also participates as a worker.
+
+The bridge role also applies the mooring CNI compatibility manifest after
+Harbor is ready. The cni-clean role removes local mooring network state and
+best-effort deletes the CNI compatibility objects from Harbor.
 
 Run with no arguments on node-a after node-a/node-b/node-c have started to
 verify the final multinode Node acceptance requirements.
@@ -125,6 +130,16 @@ ACCEPTANCE_CLEANUP_ON_FAIL="inspect services with: systemctl status minik8s-brid
 HARBOR_READY_ATTEMPTS="${MINIK8S_HARBOR_READY_ATTEMPTS:-15}"
 HARBOR_READY_SLEEP_SECONDS="${MINIK8S_HARBOR_READY_SLEEP_SECONDS:-2}"
 
+cni_manifest_path() {
+  if [ -f "$REMOTE_DIR/manifests/cni/mooring.yaml" ]; then
+    printf '%s\n' "$REMOTE_DIR/manifests/cni/mooring.yaml"
+    return 0
+  fi
+  printf '%s\n' "$ROOT/manifest/cni/mooring.yaml"
+}
+
+CNI_MANIFEST="$(cni_manifest_path)"
+
 ensure_dirs() {
   output "systemd unit dir=${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
 }
@@ -136,6 +151,8 @@ start_bridge() {
   restart_unit "$(unit_name_for_role bridge)"
   journal_unit "$(unit_name_for_role bridge)"
   wait_harbor_ready
+  apply_cni_manifest
+  verify_cni_endpoints
 }
 
 join_sailer() {
@@ -251,6 +268,95 @@ wait_harbor_ready() {
   fail "Harbor API is reachable at $MINIK8S_HARBOR"
 }
 
+http_status() {
+  curl -sS -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || true
+}
+
+harbor_ready_quiet() {
+  [ "$(http_status "$MINIK8S_HARBOR/api/v1")" = "200" ]
+}
+
+cni_configmap_url() {
+  local namespace="$1"
+  local name="$2"
+  printf '%s/api/v1/namespaces/%s/configmaps/%s\n' "${MINIK8S_HARBOR%/}" "$namespace" "$name"
+}
+
+cni_daemonset_url() {
+  local namespace="$1"
+  local name="$2"
+  printf '%s/apis/apps/v1/namespaces/%s/daemonsets/%s\n' "${MINIK8S_HARBOR%/}" "$namespace" "$name"
+}
+
+verify_endpoint_200() {
+  local message="$1"
+  local url="$2"
+  check_run "$message" bash -c 'test "$(curl -sS -o /dev/null -w "%{http_code}" "$1")" = "200"' _ "$url"
+}
+
+apply_cni_manifest() {
+  step "apply mooring CNI compatibility manifest"
+  check_run "mooring CNI manifest exists" test -f "$CNI_MANIFEST"
+  check_run "mooring CNI manifest applied" "$KUBECTL_BIN" apply -f "$CNI_MANIFEST"
+}
+
+verify_cni_endpoints() {
+  step "verify mooring CNI compatibility endpoints"
+  verify_endpoint_200 "mooring ConfigMap endpoint is present" "$(cni_configmap_url kube-mooring mooring-cni-cfg)"
+  verify_endpoint_200 "mooring DaemonSet endpoint is present" "$(cni_daemonset_url kube-mooring mooring-cni-ds)"
+}
+
+delete_compat_object_if_present() {
+  local kind="$1"
+  local namespace="$2"
+  local name="$3"
+  local url="$4"
+  local status
+  status="$(http_status "$url")"
+  case "$status" in
+    200)
+      check_run "$kind/$name deleted from $namespace" "$KUBECTL_BIN" delete "$kind" "$name" -n "$namespace"
+      ;;
+    404)
+      pass "$kind/$name already absent from $namespace"
+      ;;
+    000)
+      mark_limited "Harbor is unreachable; skipped deleting $kind/$name from $namespace"
+      ;;
+    *)
+      mark_limited "unexpected Harbor status $status; skipped deleting $kind/$name from $namespace"
+      ;;
+  esac
+}
+
+clean_cni_control_plane_objects() {
+  step "clean CNI compatibility objects from Harbor"
+  if ! harbor_ready_quiet; then
+    mark_limited "Harbor API is not reachable; skipped CNI compatibility object deletion"
+    return 0
+  fi
+  delete_compat_object_if_present configmap kube-mooring mooring-cni-cfg "$(cni_configmap_url kube-mooring mooring-cni-cfg)"
+  delete_compat_object_if_present daemonset kube-mooring mooring-cni-ds "$(cni_daemonset_url kube-mooring mooring-cni-ds)"
+  delete_compat_object_if_present configmap kube-flannel kube-flannel-cfg "$(cni_configmap_url kube-flannel kube-flannel-cfg)"
+  delete_compat_object_if_present daemonset kube-flannel kube-flannel-ds "$(cni_daemonset_url kube-flannel kube-flannel-ds)"
+}
+
+clean_local_cni_state() {
+  step "clean local CNI network state"
+  if run "$MINIK8S_BIN" doctor clean; then
+    pass "local mooring network state cleaned"
+  else
+    mark_limited "local mooring network cleanup reported a non-fatal failure"
+  fi
+  run rm -f "$MINIK8S_CNI_BIN_DIR/mooring" || true
+  pass "local mooring plugin file removed if present"
+}
+
+clean_cni() {
+  clean_cni_control_plane_objects
+  clean_local_cni_state
+}
+
 start_sailer() {
   local node_name="$1"
   step "start sailer worker $node_name"
@@ -307,6 +413,7 @@ verify_multinode_deployment() {
   check_run "node-a sailer service is active" "$SYSTEMCTL_BIN" is-active --quiet "$(unit_name_for_role sailer)"
 
   step "verify Node status from Harbor"
+  verify_cni_endpoints
   check_run "kubectl can list nodes" "$KUBECTL_BIN" get nodes
   check_run "kubectl get nodes shows node-a, node-b, and node-c" bash -c '"$1" get nodes | grep -F "$2" >/dev/null && "$1" get nodes | grep -F "$3" >/dev/null && "$1" get nodes | grep -F "$4" >/dev/null' _ "$KUBECTL_BIN" "$MINIK8S_NODE_A_NAME" "$MINIK8S_NODE_B_NAME" "$MINIK8S_NODE_C_NAME"
   verify_node_ready "$MINIK8S_NODE_A_NAME"
@@ -315,6 +422,9 @@ verify_multinode_deployment() {
   verify_node_describe "$MINIK8S_NODE_A_NAME"
   verify_node_describe "$MINIK8S_NODE_B_NAME"
   verify_node_describe "$MINIK8S_NODE_C_NAME"
+  step "verify local mooring CNI files"
+  check_run "local mooring CNI config exists" test -f "$MINIK8S_CNI_CONF_DIR/10-mooring.conf"
+  check_run "local mooring CNI plugin exists" test -x "$MINIK8S_CNI_BIN_DIR/mooring"
 
   pass "three-node cluster is visible; node-a is both bridge and worker, node-b/node-c are worker nodes"
 }
@@ -374,6 +484,12 @@ main() {
       ensure_sailer_joined "$node_name" "$node_ip"
       start_sailer "$node_name"
       ;;
+    cni-clean)
+      clean_cni
+      cleanup "local CNI state cleaned and CNI compatibility objects removed when Harbor was reachable"
+      end
+      return 0
+      ;;
     stop)
       step "stop systemd services"
       stop_unit "$(unit_name_for_role sailer)"
@@ -383,11 +499,12 @@ main() {
       return 0
       ;;
     clean)
+      clean_cni
       step "clean systemd units"
       clean_unit "$(unit_name_for_role sailer)"
       clean_unit "$(unit_name_for_role bridge)"
       clean_local_state
-      cleanup "systemd unit files and local runtime state removed; bridge dependency data and etcd node state left intact"
+      cleanup "systemd unit files, local CNI state, and local runtime state removed; bridge dependency data and etcd node state left intact"
       end
       return 0
       ;;

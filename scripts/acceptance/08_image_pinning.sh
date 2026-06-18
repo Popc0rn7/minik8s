@@ -69,6 +69,7 @@ if [ -f docs/acceptance/images.md ]; then
   check_run "image table lists pinned GPU submitter image" rg -n 'ghcr.io/popc0rn7/gpu-submitter:v0.1.0' docs/acceptance/images.md
   check_run "image table lists pinned nginx image" rg -n 'nginx:1.27-alpine' docs/acceptance/images.md
   check_run "image table lists pinned busybox image" rg -n 'busybox:1.36' docs/acceptance/images.md
+  check_run "image table lists pinned HPA stress image" rg -n 'polinux/stress:1.0.4' docs/acceptance/images.md
   check_run "image table lists pinned NATS image" rg -n 'nats:2.10.24-alpine' docs/acceptance/images.md
   check_run "image table lists pinned Python runtime image" rg -n 'python:3.11.9-slim' docs/acceptance/images.md
 else

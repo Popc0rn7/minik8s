@@ -4,6 +4,7 @@ CNI_PLUGIN ?= .minik8s/cni/bin/mooring
 HARBOR ?= http://127.0.0.1:18080
 CTL ?= $(KUBECTL)
 RUN ?= $(MINIK8S)
+GO_BUILD ?= CGO_ENABLED=0 go build -trimpath -tags "netgo osusergo"
 
 PROD_DIR ?= .
 REMOTE_DIR ?= /opt/minik8s
@@ -20,9 +21,9 @@ DEMO_DIR ?= demo/serverless/harbor-incident-triage
 .PHONY: build prod prod-build prod-push prod-cni prod-demo prod-verify mooring-cni-image push-mooring-cni-image gpu-submitter-image push-gpu-submitter-image deploy-prod prod-deploy test bridge sailer-once sailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
 
 build:
-	go build -o $(MINIK8S) ./cmd/minik8s
-	go build -o $(KUBECTL) ./cmd/kubectl
-	go build -o $(CNI_PLUGIN) ./cmd/mooring
+	$(GO_BUILD) -o $(MINIK8S) ./cmd/minik8s
+	$(GO_BUILD) -o $(KUBECTL) ./cmd/kubectl
+	$(GO_BUILD) -o $(CNI_PLUGIN) ./cmd/mooring
 
 prod: prod-build
 

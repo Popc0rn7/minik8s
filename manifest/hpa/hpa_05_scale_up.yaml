@@ -1,0 +1,27 @@
+kind: HorizontalPodAutoscaler
+apiVersion: v1
+metadata:
+  name: hpa-05-web
+  namespace: default
+  labels:
+    app: rs-05-hpa
+    case: minik8s-acceptance-05
+spec:
+  scaleTargetRef:
+    kind: ReplicaSet
+    name: rs-05-hpa
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 10000

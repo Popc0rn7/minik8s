@@ -275,8 +275,8 @@ func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete pod|service|dns|replicaset|hpa|job|node <name>",
-		Short: "Delete a Pod, Service, DNS, ReplicaSet, HPA, Job, or Node",
+		Use:   "delete pod|service|dns|replicaset|hpa|job|node|configmap|daemonset <name>",
+		Short: "Delete a Pod, Service, DNS, ReplicaSet, HPA, Job, Node, ConfigMap, or DaemonSet",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bind()
@@ -334,8 +334,26 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 					return err
 				}
 				return writes(out, cliui.SuccessLine("workflowrun/%s deleted", ref.name))
+			case resourceConfigMaps:
+				client, err := app.controlPlaneClient()
+				if err != nil {
+					return err
+				}
+				if err := client.DeleteConfigMap(cmd.Context(), ref.name, app.namespace); err != nil {
+					return err
+				}
+				return writes(out, cliui.SuccessLine("configmap/%s deleted", ref.name))
+			case resourceDaemonSets:
+				client, err := app.controlPlaneClient()
+				if err != nil {
+					return err
+				}
+				if err := client.DeleteDaemonSet(cmd.Context(), ref.name, app.namespace); err != nil {
+					return err
+				}
+				return writes(out, cliui.SuccessLine("daemonset/%s deleted", ref.name))
 			default:
-				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, jobs, nodes, functions, eventtriggers, workflows, and workflowruns")
+				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, jobs, nodes, functions, eventtriggers, workflows, workflowruns, configmaps, and daemonsets")
 			}
 			return nil
 		},
@@ -765,6 +783,8 @@ const (
 	resourceEventTriggers resourceName = "eventtriggers"
 	resourceWorkflows     resourceName = "workflows"
 	resourceWorkflowRuns  resourceName = "workflowruns"
+	resourceConfigMaps    resourceName = "configmaps"
+	resourceDaemonSets    resourceName = "daemonsets"
 )
 
 type resourceRef struct {
@@ -819,6 +839,10 @@ func normalizeResource(resource string) (resourceName, error) {
 		return resourceWorkflows, nil
 	case "workflowrun", "workflowruns", "wfr":
 		return resourceWorkflowRuns, nil
+	case "configmap", "configmaps", "cm":
+		return resourceConfigMaps, nil
+	case "daemonset", "daemonsets", "ds":
+		return resourceDaemonSets, nil
 	default:
 		return "", fmt.Errorf("unsupported resource %q", resource)
 	}

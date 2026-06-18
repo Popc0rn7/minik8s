@@ -31,6 +31,7 @@ bash scripts/acceptance/00_env_check.sh
 | --- | --- | --- | --- | --- |
 | 基础必备 | Pod / Service / ReplicaSet / HPA nginx workload | `nginx:1.27-alpine` | Docker Hub | 所有 nginx 示例统一使用该 tag。 |
 | 基础必备 | Busybox client / volume / metrics placeholder | `busybox:1.36` | Docker Hub | 所有 busybox 示例统一使用该 tag。 |
+| HPA | CPU 压测 sidecar | `polinux/stress:1.0.4` | Docker Hub | 05 HPA 验收使用真实 `stress` binary 制造 CPU load。 |
 | 基础必备 | 控制面 etcd static dependency | `quay.io/coreos/etcd:v3.5.15` | Quay | `minik8s bridge` 默认 dependency pod 使用。 |
 | CNI 必备 | 自研 Mooring CNI 安装镜像 | `ghcr.io/popc0rn7/mooring-cni:v0.1.0` | GHCR | `manifest/cni/mooring.yaml` 和部署脚本默认使用。 |
 | DNS | CoreDNS | `coredns/coredns:1.11.1` | Docker Hub | 启用 `--addons dns` 时使用。 |
@@ -48,6 +49,7 @@ bash scripts/acceptance/00_env_check.sh
 ```bash
 docker pull nginx:1.27-alpine
 docker pull busybox:1.36
+docker pull polinux/stress:1.0.4
 docker pull quay.io/coreos/etcd:v3.5.15
 docker pull ghcr.io/popc0rn7/mooring-cni:v0.1.0
 docker pull coredns/coredns:1.11.1
@@ -70,6 +72,7 @@ mkdir -p /tmp/minik8s-images
 docker save \
   nginx:1.27-alpine \
   busybox:1.36 \
+  polinux/stress:1.0.4 \
   quay.io/coreos/etcd:v3.5.15 \
   ghcr.io/popc0rn7/mooring-cni:v0.1.0 \
   coredns/coredns:1.11.1 \
@@ -96,9 +99,9 @@ ssh root@10.119.16.213 'docker load -i /tmp/minik8s-acceptance-images.tar'
 ssh root@<node-b-ip> 'docker load -i /tmp/minik8s-acceptance-images.tar'
 ssh root@<node-c-ip> 'docker load -i /tmp/minik8s-acceptance-images.tar'
 
-ssh root@10.119.16.213 "docker images | grep -E 'nginx|busybox|etcd|mooring-cni|coredns|alpine|nats|python|sam-cpu|gpu-submitter'"
-ssh root@<node-b-ip> "docker images | grep -E 'nginx|busybox|etcd|mooring-cni|coredns|alpine|nats|python|sam-cpu|gpu-submitter'"
-ssh root@<node-c-ip> "docker images | grep -E 'nginx|busybox|etcd|mooring-cni|coredns|alpine|nats|python|sam-cpu|gpu-submitter'"
+ssh root@10.119.16.213 "docker images | grep -E 'nginx|busybox|polinux/stress|etcd|mooring-cni|coredns|alpine|nats|python|sam-cpu|gpu-submitter'"
+ssh root@<node-b-ip> "docker images | grep -E 'nginx|busybox|polinux/stress|etcd|mooring-cni|coredns|alpine|nats|python|sam-cpu|gpu-submitter'"
+ssh root@<node-c-ip> "docker images | grep -E 'nginx|busybox|polinux/stress|etcd|mooring-cni|coredns|alpine|nats|python|sam-cpu|gpu-submitter'"
 ```
 
 ## Publish Local Project Images

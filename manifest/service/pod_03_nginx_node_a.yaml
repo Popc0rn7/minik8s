@@ -1,0 +1,28 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  name: svc-03-nginx-a
+  namespace: default
+  labels:
+    app: svc-03-nginx
+    case: minik8s-acceptance-03
+    tier: frontend
+spec:
+  nodeSelector:
+    node: node-a
+  containers:
+  - name: nginx
+    image: nginx
+    imageTag: 1.27-alpine
+    command: ["nginx"]
+    args: ["-g", "daemon off;"]
+    ports:
+    - containerPort: 80
+    resources:
+      requests:
+        cpu: "0.1"
+        memory: "64Mi"
+      limits:
+        cpu: "0.5"
+        memory: "128Mi"
+  restartPolicy: Always

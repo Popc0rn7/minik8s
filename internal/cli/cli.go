@@ -2805,30 +2805,39 @@ func getNodeWithRetry(ctx context.Context, client *nodeSailer.HTTPPodClient, nod
 }
 
 func (a *App) runAssignedSailer(ctx context.Context, options sailerOptions, podClient *nodeSailer.HTTPPodClient, assignedNode *node.Node, out io.Writer) error {
-	networkMode, bridgeName, err := a.ensureManifestCNIIfApplied(ctx, options.harbor, assignedNode)
-	if err != nil {
-		return err
-	}
-	if bridgeName != "" {
-		options.bridgeName = bridgeName
-	}
-	if networkMode == sailerNetworkBuiltIn {
-		hasConfig, err := cniConfigExists(DefaultCNIConfDir())
+	cniDisabled := os.Getenv("MINIK8S_CNI_DISABLED") == "1"
+	networkMode := sailerNetworkBuiltIn
+	if !cniDisabled {
+		var bridgeName string
+		var err error
+		networkMode, bridgeName, err = a.ensureManifestCNIIfApplied(ctx, options.harbor, assignedNode)
 		if err != nil {
 			return err
 		}
-		if !hasConfig {
-			cniConfig, err := cniConfigForPodCIDR(options.podCIDR)
+		if bridgeName != "" {
+			options.bridgeName = bridgeName
+		}
+		if networkMode == sailerNetworkBuiltIn {
+			hasConfig, err := cniConfigExists(DefaultCNIConfDir())
 			if err != nil {
 				return err
 			}
-			options.bridgeName = cniConfig.Bridge
-			if _, err := writeCNIConfig(cniConfig); err != nil {
-				return err
+			if !hasConfig {
+				cniConfig, err := cniConfigForPodCIDR(options.podCIDR)
+				if err != nil {
+					return err
+				}
+				options.bridgeName = cniConfig.Bridge
+				if _, err := writeCNIConfig(cniConfig); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	network := cniNetworkManager{runner: cni.NewRunner(cni.Config{BinDir: DefaultCNIBinDir(), ConfDir: DefaultCNIConfDir()})}
+	var network nodeSailer.PodNetworkManager
+	if !cniDisabled {
+		network = cniNetworkManager{runner: cni.NewRunner(cni.Config{BinDir: DefaultCNIBinDir(), ConfDir: DefaultCNIConfDir()})}
+	}
 	k := nodeSailer.New(nodeSailer.Config{
 		Node:         assignedNode,
 		Runtime:      a.runtime,
@@ -2839,11 +2848,12 @@ func (a *App) runAssignedSailer(ctx context.Context, options sailerOptions, podC
 		ClusterDNS:   options.clusterDNS,
 	})
 	var networkAgent *netagent.Agent
-	if networkMode != sailerNetworkFlannel {
+	if !cniDisabled && networkMode != sailerNetworkFlannel {
+		var err error
 		networkAgent, err = a.sailerNetworkAgent(options)
-	}
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 	if options.once {
 		if networkAgent != nil {

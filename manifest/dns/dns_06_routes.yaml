@@ -1,0 +1,19 @@
+kind: DNS
+apiVersion: v1
+metadata:
+  name: dns-06-routes
+  namespace: default
+  labels:
+    app: dns-06-routes
+    case: minik8s-acceptance-06
+spec:
+  host: acceptance06.minik8s.local
+  paths:
+  - path: /alpha
+    pathType: Prefix
+    serviceName: service-06-alpha
+    servicePort: 80
+  - path: /beta
+    pathType: Prefix
+    serviceName: service-06-beta
+    servicePort: 80

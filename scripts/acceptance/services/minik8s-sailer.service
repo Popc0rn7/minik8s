@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=__MINIK8S_REMOTE_DIR__
 Environment=MINIK8S_STATE_DIR=__MINIK8S_STATE_DIR__
+Environment=MINIK8S_CNI_DISABLED=__MINIK8S_CNI_DISABLED__
 ExecStart=__MINIK8S_REMOTE_DIR__/bin/minik8s sailer run
 Restart=on-failure
 RestartSec=2

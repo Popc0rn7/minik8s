@@ -1,0 +1,20 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: rs-07-web
+  namespace: default
+  labels:
+    app: rs-07-web
+    case: minik8s-acceptance-07
+spec:
+  type: NodePort
+  selector:
+    matchLabels:
+      app: rs-07-web
+      case: minik8s-acceptance-07
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+    nodePort: 30085

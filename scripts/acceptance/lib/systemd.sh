@@ -21,6 +21,7 @@ render_unit_template() {
     -e "s#__MINIK8S_CLUSTER_CIDR__#$MINIK8S_CLUSTER_CIDR#g" \
     -e "s#__MINIK8S_SERVICE_CIDR__#$MINIK8S_SERVICE_CIDR#g" \
     -e "s#__MINIK8S_NODE_PORT_RANGE__#$MINIK8S_NODE_PORT_RANGE#g" \
+    -e "s#__MINIK8S_CNI_DISABLED__#$MINIK8S_CNI_DISABLED#g" \
     "$template" >"$output_path"
   if grep -E "__[A-Z0-9_]+__" "$output_path" >/dev/null; then
     printf 'unrendered placeholder remains in %s\n' "$output_path" >&2

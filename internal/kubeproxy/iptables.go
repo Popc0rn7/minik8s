@@ -19,6 +19,8 @@ type IPTablesProxy struct {
 	known  map[string]*service.Service
 }
 
+const defaultClusterPodCIDR = "10.244.0.0/16"
+
 func NewIPTablesProxy(runner IPTablesRunner) *IPTablesProxy {
 	if runner == nil {
 		runner = runIPTables
@@ -47,7 +49,11 @@ func (p *IPTablesProxy) SyncAll(ctx context.Context, services []*service.Service
 }
 
 func (p *IPTablesProxy) SyncService(ctx context.Context, svc *service.Service) error {
-	if err := p.DeleteService(ctx, svc); err != nil {
+	deleteTarget := svc
+	if old := p.known[serviceKey(svc)]; old != nil {
+		deleteTarget = old
+	}
+	if err := p.DeleteService(ctx, deleteTarget); err != nil {
 		return err
 	}
 	chain := serviceChainName(svc)
@@ -69,6 +75,9 @@ func (p *IPTablesProxy) SyncService(ctx context.Context, svc *service.Service) e
 			}
 		}
 		if err := p.appendEndpointRules(ctx, chain, port.Port, proto, endpoints); err != nil {
+			return err
+		}
+		if err := p.appendEndpointMasqueradeRules(ctx, proto, endpoints); err != nil {
 			return err
 		}
 	}
@@ -94,6 +103,11 @@ func (p *IPTablesProxy) DeleteService(ctx context.Context, svc *service.Service)
 				firstErr = err
 			}
 			if err := p.deleteRuleUntilMissing(ctx, "OUTPUT", "-p", proto, "--dport", fmt.Sprint(port.NodePort), "-j", chain); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		for _, ep := range endpointsForPort(svc.Status.Endpoints, port.Port) {
+			if err := p.deleteRuleUntilMissing(ctx, "POSTROUTING", "-p", proto, "!", "-s", defaultClusterPodCIDR, "-d", ep.IP, "--dport", fmt.Sprint(ep.TargetPort), "-j", "MASQUERADE"); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
@@ -156,6 +170,15 @@ func (p *IPTablesProxy) appendEndpointRules(ctx context.Context, chain string, s
 	return nil
 }
 
+func (p *IPTablesProxy) appendEndpointMasqueradeRules(ctx context.Context, proto string, endpoints []service.Endpoint) error {
+	for _, ep := range endpoints {
+		if err := p.runner(ctx, "-t", "nat", "-A", "POSTROUTING", "-p", proto, "!", "-s", defaultClusterPodCIDR, "-d", ep.IP, "--dport", fmt.Sprint(ep.TargetPort), "-j", "MASQUERADE"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func endpointsForPort(endpoints []service.Endpoint, port int32) []service.Endpoint {
 	result := make([]service.Endpoint, 0, len(endpoints))
 	for _, ep := range endpoints {
@@ -190,6 +213,7 @@ func isIPTablesMissingRule(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "Bad rule") ||
 		strings.Contains(msg, "No chain/target/match by that name") ||
+		strings.Contains(msg, "does not exist") ||
 		strings.Contains(msg, "No such file or directory") ||
 		strings.Contains(msg, "does a matching rule exist")
 }

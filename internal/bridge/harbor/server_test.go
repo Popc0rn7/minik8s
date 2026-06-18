@@ -17,6 +17,7 @@ import (
 	store "minik8s/internal/bridge/logbook"
 	bridgeServerless "minik8s/internal/bridge/serverless"
 	"minik8s/internal/function"
+	"minik8s/internal/k8scompat"
 	"minik8s/internal/metrics"
 	"minik8s/internal/minilog"
 	"minik8s/internal/netregistry"
@@ -105,6 +106,32 @@ func TestHarborPodCRUDDoesNotRunRuntime(t *testing.T) {
 	del := serve(t, srv, http.MethodDelete, "/api/v1/namespaces/default/pods/nginx", "")
 	require.Equal(t, http.StatusOK, del.Code)
 	assert.Contains(t, del.Body.String(), `"status":"Success"`)
+}
+
+func TestHarborK8sCompatConfigMapAndDaemonSetDelete(t *testing.T) {
+	k8sStore := store.NewInMemoryK8sCompatStore()
+	srv := New(Config{K8sCompatStore: k8sStore})
+	require.NoError(t, k8sStore.UpsertConfigMap(&k8scompat.ConfigMap{
+		TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindConfigMap, APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{Name: "mooring-cni-cfg", Namespace: "kube-mooring"},
+		Data:       map[string]string{"cni-conf.json": `{"type":"mooring"}`},
+	}))
+	require.NoError(t, k8sStore.UpsertDaemonSet(&k8scompat.DaemonSet{
+		TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindDaemonSet, APIVersion: "apps/v1"},
+		ObjectMeta: pod.ObjectMeta{Name: "mooring-cni-ds", Namespace: "kube-mooring"},
+	}))
+
+	deleteCM := serve(t, srv, http.MethodDelete, "/api/v1/namespaces/kube-mooring/configmaps/mooring-cni-cfg", "")
+	require.Equal(t, http.StatusOK, deleteCM.Code, deleteCM.Body.String())
+	assert.Contains(t, deleteCM.Body.String(), `"status":"Success"`)
+	_, err := k8sStore.GetConfigMap("mooring-cni-cfg", "kube-mooring")
+	require.ErrorIs(t, err, store.ErrK8sObjectNotFound)
+
+	deleteDS := serve(t, srv, http.MethodDelete, "/apis/apps/v1/namespaces/kube-mooring/daemonsets/mooring-cni-ds", "")
+	require.Equal(t, http.StatusOK, deleteDS.Code, deleteDS.Body.String())
+	assert.Contains(t, deleteDS.Body.String(), `"status":"Success"`)
+	_, err = k8sStore.GetDaemonSet("mooring-cni-ds", "kube-mooring")
+	require.ErrorIs(t, err, store.ErrK8sObjectNotFound)
 }
 
 func TestHarborDiscoveryIncludesServices(t *testing.T) {

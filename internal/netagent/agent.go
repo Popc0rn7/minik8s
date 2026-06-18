@@ -2,6 +2,7 @@ package netagent
 
 import (
 	"context"
+	"crypto/sha1"
 	"errors"
 	"fmt"
 	"net"
@@ -165,10 +166,19 @@ func (a *Agent) ensureBridgeDevice() error {
 	if err := a.runner("ip", "addr", "replace", fmt.Sprintf("%s/%d", gateway, prefix), "dev", a.bridgeName); err != nil {
 		return err
 	}
+	if err := a.runner("ip", "link", "set", "dev", a.bridgeName, "address", stableLinkMAC("bridge", a.local.Name, a.local.NodeIP, a.local.PodCIDR)); err != nil {
+		return err
+	}
 	if err := a.runner("ip", "link", "set", a.bridgeName, "up"); err != nil {
 		return err
 	}
 	if err := a.runner("ip", "route", "replace", a.local.PodCIDR, "dev", a.bridgeName); err != nil {
+		return err
+	}
+	if err := a.runner("modprobe", "br_netfilter"); err != nil {
+		return err
+	}
+	if err := a.runner("sysctl", "-w", "net.bridge.bridge-nf-call-iptables=1"); err != nil {
 		return err
 	}
 	if err := a.runner("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
@@ -228,6 +238,9 @@ func (a *Agent) ensureVXLANDevice() error {
 			return err
 		}
 	}
+	if err := a.runner("ip", "link", "set", "dev", a.vxlanName, "address", stableLinkMAC("vxlan", a.local.Name, a.local.NodeIP, a.local.PodCIDR)); err != nil {
+		return err
+	}
 	if err := a.runner("ip", "link", "set", a.vxlanName, "master", a.bridgeName); err != nil {
 		return err
 	}
@@ -269,6 +282,12 @@ func isFDBMissing(err error) bool {
 }
 
 var errNoFDBEntry = errors.New("fdb entry missing")
+
+func stableLinkMAC(parts ...string) string {
+	sum := sha1.Sum([]byte(strings.Join(parts, "|")))
+	sum[0] = (sum[0] & 0xfe) | 0x02
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3], sum[4], sum[5])
+}
 
 func run(name string, args ...string) error {
 	if name == "iptables" {
