@@ -385,6 +385,68 @@ source scripts/acceptance/env.sh
 bash scripts/acceptance/07_fault_tolerance.sh cleanup
 ```
 
+## 08 GPU / Personal GPU Job
+
+`scripts/acceptance/20_personal_gpu.sh` 是个人作业 GPU 验收脚本，对应 `docs/FINAL.md` 9.3。运行前需保证 01 多机部署已完成，脚本只需要在 node-a 上执行。
+
+当前实现不是原生 GPU device plugin，也不会把交我算 Slurm 节点加入 Minik8s 集群；它实现的是一个接近 Kubernetes Job 的一次性任务抽象：每个 `Job` 创建独立 submitter Pod/Service，由 submitter 通过 SSH/SCP 把 CUDA 程序上传到交我算平台，使用 Slurm 编译运行并回收结果。
+
+```bash
+source scripts/acceptance/env.sh
+bash scripts/acceptance/20_personal_gpu.sh
+```
+
+GPU 验收依赖交我算 SSH 凭据。仓库不提交私钥；验收前需要按照交付布局把 `secrets/gpu-ssh` 上传到远程机器的 `/opt/minik8s/secrets/gpu-ssh`：
+
+```text
+/opt/minik8s/secrets/gpu-ssh/
+├── <private-key>，例如 id_ed25519_minik8s
+├── <private-key>-cert.pub，例如 id_ed25519_minik8s-cert.pub
+├── config
+└── known_hosts
+```
+
+Job controller 会把该目录作为 hostPath 挂载到 submitter Pod 的 `/root/.ssh`。私钥文件名不要求固定为 `id_ed25519` 或 `id_rsa`，最终只以远程机器 `/opt/minik8s/secrets/gpu-ssh/config` 为准；其中 `IdentityFile` 和 `CertificateFile` 必须指向挂载后的 `/root/.ssh/<private-key>` 和 `/root/.ssh/<private-key>-cert.pub`。脚本不会 fallback 或猜测文件名；缺少 config 字段或对应文件会直接失败。脚本会读取该 config，并用同一目录在 node-a 上做非交互 SSH 预检，确认能够访问 `stu1718@sylogin.hpc.sjtu.edu.cn`，并找到 `sbatch`、`squeue` 和 `sacct`。
+
+该脚本使用 `manifests/job/` 下的三个 YAML 和两个 CUDA 程序执行：
+
+**08.1 CUDA 程序、Job YAML 和 Slurm 凭据**
+- 展示 `vector_add.cu`、`matmul_tiled.cu`、`Makefile`、`Makefile.matmul` 路径。
+- 展示 Job YAML 中的 `apiVersion: batch/v1`、`kind: Job`、`metadata.name`、`selector.matchLabels.accelerator: gpu`、`source.files`、`source.command`、`spec.slurm` 和 `spec.remote`。
+- 检查 `ghcr.io/popc0rn7/gpu-submitter:v0.1.0` 已在本机 Docker 中可用。
+- 检查 Harbor API 可访问，检查 `/opt/minik8s/secrets/gpu-ssh` 已上传，并验证 SSH/Slurm 命令可用。
+
+**08.2 提交 CUDA vector add Job**
+- 通过 `kubectl apply -f manifests/job/cuda-add.yaml` 创建 `cuda-add`。
+- 等待控制面创建独立 submitter Pod/Service：`job-cuda-add-submitter`。
+- 运行 `kubectl get jobs`、`kubectl describe job cuda-add`、`kubectl get pod job-cuda-add-submitter -o yaml` 和 `kubectl get svc job-cuda-add-submitter -o yaml`，展示 Job 状态、remote host、remote dir、Slurm Job ID、submitter Pod 和 submitter Service。
+
+**08.3 观察 Slurm 状态和 vector add 结果**
+- 等待 Job 从 `PodCreating/Preparing/Uploading/Submitted/Running/Collecting` 进入终态。
+- 如果进入 `Succeeded`，运行 `kubectl logs job cuda-add`，要求输出包含 `N = 1048576`、`threadsPerBlock = 256`、`blocksPerGrid = 4096` 和 `Result: PASS`。
+- 如果交我算队列导致任务未在等待窗口内结束，脚本输出当前 phase、Slurm Job ID、remote dir、startTime，以及可复制的 `ssh ... squeue/sacct ...` 查询命令，并以 `[LIMITED]` 标记该小节。
+
+**08.4 Job 隔离性**
+- 通过 `kubectl apply -f manifests/job/cuda-add-2.yaml` 再提交一个同类 GPU Job。
+- 检查两个 Job 各自拥有独立 submitter Pod 和 Service：
+  - `job-cuda-add-submitter`
+  - `job-cuda-add-2-submitter`
+- 检查两个 Job 的 `Remote Dir` 不同；在两个任务都提交成功时检查 `Slurm Job ID` 不同。
+
+**08.5 复杂 CUDA tiled matrix multiplication**
+- 通过 `kubectl apply -f manifests/job/cuda-matmul.yaml` 提交 `cuda-matmul-tiled`。
+- 该程序展示二维 grid/block、shared memory tile 和 block 内同步。
+- 如果进入 `Succeeded`，运行 `kubectl logs job cuda-matmul-tiled`，要求输出包含 `Matrix N = 1024`、`Tile size = 16`、`Block = 16 x 16`、`Grid = 64 x 64`、`Kernel: tiled shared-memory matrix multiplication` 和 `Result: PASS`。
+- 如果交我算队列未及时完成，脚本同样输出 pending/running 状态、Slurm Job ID、remote dir、startTime 和查询命令。
+
+只有在意外中断下需要手动清理资源：
+```bash
+source scripts/acceptance/env.sh
+bash scripts/acceptance/20_personal_gpu.sh cleanup
+```
+
+清理会删除 `cuda-add`、`cuda-add-2` 和 `cuda-matmul-tiled` 三个 Job；如果 Job 已经提交 Slurm，控制面会 best-effort 执行 `scancel <jobid>`。
+
 ## CICD
 
 TODO
