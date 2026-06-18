@@ -117,22 +117,6 @@ source scripts/acceptance/env.sh
 bash scripts/acceptance/01_node_multinode.sh
 ```
 
-`01_node_multinode.sh bridge` 会在 Harbor ready 后自动执行 `kubectl apply -f manifests/cni/mooring.yaml`，并检查 `kube-mooring/mooring-cni-cfg` 与 `kube-mooring/mooring-cni-ds` endpoint。`env.sh` 默认 `MINIK8S_CNI_DISABLED=0`，因此后续 `sailer` 启动时会安装 `/opt/cni/bin/mooring` 并写入 `/etc/cni/net.d/10-mooring.conf`。开发调试需要禁用 CNI 时，可显式设置 `MINIK8S_CNI_DISABLED=1`。
-
-清理当前 01 service 和 CNI 状态：
-
-```bash
-source scripts/acceptance/env.sh
-bash scripts/acceptance/01_node_multinode.sh clean
-```
-
-只清理 mooring CNI 控制面兼容对象和本机网络残留：
-
-```bash
-source scripts/acceptance/env.sh
-bash scripts/acceptance/01_node_multinode.sh cni-clean
-```
-
 Checklist:
 - 启动过程，展现2, 4, 5, 6要求
 - 最后的无参数验证，展现1, 3功能
@@ -184,26 +168,40 @@ source scripts/acceptance/env.sh
 bash scripts/acceptance/02_pod_lifecycle.sh
 ```
 
-该脚本会借助`manifests/pod/`下的 Pod YAML：
+该脚本使用 ``manifests/pod/`下的四个YAML执行：
 
-- 多容器 Pod 的创建、启动、参数查看和删除。
-- Pod 配置中的 kind/name、镜像版本、命令、端口、CPU/内存 request/limit。
-- 同一 Pod 内 sidecar 通过 `127.0.0.1` 访问 nginx 容器。
-- 同一 Pod 内两个容器通过共享 volume 读写文件。
-- 手动 `docker kill` 一个容器后，sailer reconcile 使容器重启，并在 `kubectl describe pod`
-  中看到 `restartCount` 增加。
-- 创建多个不指定 `nodeName` 的 Pod，展示 Harbor scheduler 基于 Ready 节点、selector/resource
-  过滤和 round-robin 策略分配到不同节点。
+**02.1 生命周期、配置参数和容错**
+- 通过 `kubectl apply pod yaml` 创建 Pod 包含 `nginx:1.27-alpine` 的 web 容器和 `busybox:1.36` 的 sidecar 容器。
+- YAML 中展示 Pod 基本字段和关键配置：`kind`、`metadata.name`、镜像名称和版本、`command/args`、`containerPort: 80`、CPU/Memory request 和 limit、`restartPolicy: Always`、`nodeSelector`、以及共享 volume 挂载。
+- 支持 `kubectl describe`（符合 `docker ps` / `docker inspect`），展示本地容器镜像、命令、资源限制和网络命名空间。
+- 脚本用 `docker kill` 终止 sidecar 容器，随后检查该容器重启，且 `restartCount` 增加。
+- 最后通过 `kubectl delete` 删除 Pod，并确认对象已经不存在。
 
-脚本按 `02.1`、`02.2`、`02.3` 三个验收小节分别创建资源、输出证据、清理资源并输出
-`[END] status=<PASS|FAIL>`；最后输出总结果，例如 `[END] status=3/3PASS`。
+**02.2 同一 Pod 内 localhost 通信**
+- 创建多容器 Pod，由其中 web 容器提供 nginx 服务。
+- sidecar 容器通过 `docker exec` 执行 `wget -qO- http://127.0.0.1/`访问web 容器里的 nginx HTTP 服务，验证同一 Pod 内多容器共享网络命名空间，可以用 localhost 访问彼此服务。
+
+**02.3 多机调度**
+- 通过 `kubectl apply` 创建3个不指定 `nodeSelector` 的 Pod，交给 bridge 内的 navigator 分配到节点。
+- 通过 `nodeName`、状态和调度结果，检查这些 Pod 至少分布到两个不同节点，展示多机调度真实生效。
+- 当前调度策略是 Round-Robin： 先选择 Ready 节点，按节点名排序，再对 Pod 的 CPU/Memory requests 进行审查，过滤不满足节点。
+
+**02.4 Volume 文件共享**
+- 复用 02.2 的 Pod，声明 `hostPath` volume，并分别挂载到 web 容器的 `/usr/share/nginx/html/shared` 和 sidecar 容器的 `/shared`。
+- 在 web 容器中写入 `from-web.txt`，再在 sidecar 容器中读取同一文件内容，验证同一 Pod 内多个容器共享 volume。同时进行了双向验证。
+
+单独清理 02 资源可运行：
+
+```bash
+source scripts/acceptance/env.sh
+bash scripts/acceptance/02_pod_lifecycle.sh cleanup
+```
 
 ## 03 Service
 
 `scripts/acceptance/03_service.sh` 是 Service 抽象、endpoint controller 和 kube-proxy 数据面验收脚本。运行前需保证已经执行好 01 的多机部署，并且 CNI/kube-proxy 处于开启状态；脚本只需要在 node-a 上执行。03 会检查 `net.bridge.bridge-nf-call-iptables=1`，否则 Pod 内访问 ClusterIP 的流量不会进入宿主机 iptables Service 规则。
 
 ```bash
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/03_service.sh
 ```
