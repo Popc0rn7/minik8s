@@ -84,6 +84,47 @@ func TestIPTablesProxySyncAllReconcilesEveryService(t *testing.T) {
 	assert.Equal(t, 2, countCommandsContaining(runner.commands, "-t nat -N MK8S-SVC-"))
 }
 
+func TestIPTablesProxySyncAllCleansStaleMinik8sRulesBeforeFirstSync(t *testing.T) {
+	runner := &recordingRunner{}
+	proxy := NewIPTablesProxy(runner.Run)
+	proxy.ruleLister = func(ctx context.Context) (string, error) {
+		_ = ctx
+		return strings.Join([]string{
+			"-A PREROUTING -d 10.96.0.1/32 -p tcp -m tcp --dport 80 -j MK8S-SVC-STALE",
+			"-A OUTPUT -d 10.96.0.1/32 -p tcp -m tcp --dport 80 -j MK8S-SVC-STALE",
+			"-A POSTROUTING ! -s 10.244.0.0/16 -d 10.244.0.3/32 -p tcp -m tcp --dport 8080 -j MASQUERADE",
+			":MK8S-SVC-STALE - [0:0]",
+			"-A MK8S-SVC-STALE -p tcp -m tcp --dport 80 -j DNAT --to-destination 10.244.0.3:8080",
+		}, "\n"), nil
+	}
+	svc := &service.Service{
+		ObjectMeta: pod.ObjectMeta{Name: "nginx", Namespace: "default"},
+		Spec: service.ServiceSpec{
+			Type:  service.ServiceTypeClusterIP,
+			Ports: []service.ServicePort{{Protocol: "TCP", Port: 80, TargetPort: 80}},
+		},
+		Status: service.ServiceStatus{
+			ClusterIP: "10.96.0.1",
+			Endpoints: []service.Endpoint{
+				{PodName: "nginx-a", IP: "10.244.0.7", Port: 80, TargetPort: 80, Protocol: "TCP"},
+			},
+		},
+	}
+
+	require.NoError(t, proxy.SyncAll(context.Background(), []*service.Service{svc}))
+
+	joined := strings.Join(runner.commands, "\n")
+	assert.Contains(t, joined, "-t nat -D PREROUTING -d 10.96.0.1/32 -p tcp -m tcp --dport 80 -j MK8S-SVC-STALE")
+	assert.Contains(t, joined, "-t nat -D OUTPUT -d 10.96.0.1/32 -p tcp -m tcp --dport 80 -j MK8S-SVC-STALE")
+	assert.Contains(t, joined, "-t nat -D POSTROUTING ! -s 10.244.0.0/16 -d 10.244.0.3/32 -p tcp -m tcp --dport 8080 -j MASQUERADE")
+	assert.Contains(t, joined, "-t nat -F MK8S-SVC-STALE")
+	assert.Contains(t, joined, "-t nat -X MK8S-SVC-STALE")
+	assert.Less(t,
+		indexCommandContaining(runner.commands, "-t nat -X MK8S-SVC-STALE"),
+		indexCommandContaining(runner.commands, "-t nat -N MK8S-SVC-"),
+	)
+}
+
 func TestIPTablesProxySyncAllDeletesServicesMissingFromSnapshot(t *testing.T) {
 	runner := &recordingRunner{}
 	proxy := NewIPTablesProxy(runner.Run)
@@ -255,4 +296,13 @@ func countCommandsContaining(commands []string, needle string) int {
 		}
 	}
 	return count
+}
+
+func indexCommandContaining(commands []string, needle string) int {
+	for i, command := range commands {
+		if strings.Contains(command, needle) {
+			return i
+		}
+	}
+	return -1
 }

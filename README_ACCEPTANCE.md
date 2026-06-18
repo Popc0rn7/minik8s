@@ -163,12 +163,11 @@ status:
 `scripts/acceptance/02_pod_lifecycle.sh` 是 Pod 抽象和容器生命周期验收脚本。运行前需保证已经执行好01的多机部署，该脚本只需要在 node-a 上执行。
 
 ```bash
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/02_pod_lifecycle.sh
 ```
 
-该脚本使用 ``manifests/pod/`下的四个YAML执行：
+该脚本使用 `manifests/pod/`下的四个YAML执行：
 
 **02.1 生命周期、配置参数和容错**
 - 通过 `kubectl apply pod yaml` 创建 Pod 包含 `nginx:1.27-alpine` 的 web 容器和 `busybox:1.36` 的 sidecar 容器。
@@ -199,118 +198,124 @@ bash scripts/acceptance/02_pod_lifecycle.sh cleanup
 
 ## 03 Service
 
-`scripts/acceptance/03_service.sh` 是 Service 抽象、endpoint controller 和 kube-proxy 数据面验收脚本。运行前需保证已经执行好 01 的多机部署，并且 CNI/kube-proxy 处于开启状态；脚本只需要在 node-a 上执行。03 会检查 `net.bridge.bridge-nf-call-iptables=1`，否则 Pod 内访问 ClusterIP 的流量不会进入宿主机 iptables Service 规则。
+`scripts/acceptance/03_service.sh` 是 Service 抽象、endpoint controller 和 kube-proxy 数据面验收脚本。运行前需保证已经执行好 01 的多机部署，脚本只需要在 node-a 上执行
 
+只有在意外中断下需要手动清理资源：
 ```bash
 source scripts/acceptance/env.sh
 bash scripts/acceptance/03_service.sh
 ```
 
-该脚本使用固定 manifest，而不是运行时临时生成 YAML：
+该脚本使用 `manifests/service/`下的五个YAML执行：
 
-- `manifests/service/pod_03_nginx_node_a.yaml`
-- `manifests/service/pod_03_nginx_node_b.yaml`
-- `manifests/service/pod_03_client.yaml`
-- `manifests/service/service_03_clusterip.yaml`
-- `manifests/service/service_03_nodeport.yaml`
+**03.1&2 Service 创建删除、基本信息和 selector**
+- 创建两个分别固定到 node-a 和 node-b 的 Nginx Pod，label 均包含 `app=svc-03-nginx`。
+- 通过 `kubectl apply` 创建 `svc-03-clusterip`。YAML 中展示 `kind`、`metadata.name`、`type: ClusterIP`、`selector.matchLabels.app`、`port: 80`、`targetPort: 80`。
+- 脚本会展示 Service 创建前不存在，创建后 endpointCount 从无到 2，说明 Service 创建过程触发 selector/endpoints 建立。
+- 运行 `kubectl describe svc svc-03-clusterip`，展示 Selector、虚拟 IP、Port/TargetPort 和 Endpoints，2个 Endpoint 对比 Pod IP 证明 Service 动态绑定后端。
+- 通过 `kubectl delete` 删除 Service 并确认对象不存在；随后重新创建该 Service 并再次恢复 endpointCount=2。
 
-四个小节分别覆盖：
+**03.3 ClusterIP 集群内访问**
+- 复用 03.1&2 的 Pod 和 Service，并创建新 Pod 作为集群内访问客户端。
+- node-a 宿主机通过 `curl http://<clusterIP>:80/` 访问 Service，证明宿主机可以访问 Service VIP。
+- client Pod 通过 `docker exec` 执行 `wget -qO- http://<clusterIP>:80/`，证明集群内 Pod 可以通过虚拟 IP 访问 Service 后端。
 
-- `03.1`：创建 nginx Pod 和 ClusterIP Service，检查 selector 生成两个 endpoint，删除 Service 后确认对象消失。
-- `03.2`：从 node-a 主机和 client Pod 内访问 ClusterIP，证明 Service VIP 到后端 Pod 的转发可用。
-- `03.3`：通过固定 NodePort `30080` 访问 Service，先验证 node-a 本机 NodePort，再尝试从 node-a 访问 node-b NodePort。若跨节点 NodePort 受云网络或防火墙限制，会输出 `[LIMITED]`。
-- `03.4`：删除一个后端 Pod 后等待 Service endpoint 从 2 个变为 1 个，再恢复后端并确认 endpoint 回到 2 个。
+**03.4 NodePort 集群外访问**
+- 创建新 Service `svc-03-nodeport`，使用固定 NodePort `30080`，selector 同样指向两个 nginx 后端。
+- node-a 宿主机通过 `curl http://<node-a-ip>:30080/` 访问本机 NodePort。
+- 脚本还会尝试从 node-a 访问 node-b 的 `30080`。如果云网络或防火墙限制跨节点 NodePort，会输出 `[LIMITED]`，但本机 NodePort 访问必须有成功证据。
 
-脚本按 `03.1`、`03.2`、`03.3`、`03.4` 分别清理资源并输出 `[END] status=<PASS|FAIL|LIMITED>`；最后输出总结果，例如 `[END] status=4/4PASS`。单独清理 03 资源可运行：
+**03.5 Endpoints 动态更新**
+- 初始状态下 `svc-03-clusterip` 应有两个 endpoints。
+- 删除 Pod `svc-03-nginx-b` 后，脚本等待 Service endpoint 从 2 个变为 1 个，并检查剩余 endpoint 对应 `svc-03-nginx-a`。
+- 重新 apply `svc-03-nginx-b` 后，脚本等待 endpoint 恢复为 2 个，展示 selector 和 endpoint controller 的动态更新能力。
 
+只有在意外中断下需要手动清理资源：
 ```bash
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/03_service.sh cleanup
 ```
 
-给后续 agent 的实施步骤：
-
-1. 本地编辑 `manifest/service/` 和 `scripts/acceptance/03_service.sh`，不要在脚本里临时创建 manifest。
-2. 先运行 `bash -n scripts/acceptance/03_service.sh`，再按影响范围运行 Go 单测，例如 `go test ./internal/bridge/captain ./internal/bridge/harbor ./internal/kubeproxy ./internal/service ./internal/cli -count=1`。
-3. 将脚本同步到 node-a 的 `/opt/minik8s/scripts/acceptance/`，将 manifest 同步到 node-a 的 `/opt/minik8s/manifests/service/`。
-4. 在 node-a 执行 `bash scripts/acceptance/03_service.sh cleanup` 后再执行完整脚本。
-5. 若失败，优先检查 `kubectl describe svc` 中的 ClusterIP、NodePort、endpoints，再看 `systemctl status minik8s-sailer` 和本机 iptables/kube-proxy 状态。
-
 ## 04 ReplicaSet
 
-`scripts/acceptance/04_replicaset.sh` 是 ReplicaSet 抽象、Service 绑定和副本恢复能力验收脚本。运行前需保证已经完成 01 多机部署，并且 03 所需的 CNI/kube-proxy/`br_netfilter` 数据面已经可用；脚本只需要在 node-a 上执行。
+`scripts/acceptance/04_replicaset.sh` 是 ReplicaSet 抽象、Service 绑定、负载均衡和副本恢复能力验收脚本。运行前需保证已经完成 01 多机部署，脚本只需要在 node-a 上执行。
 
 ```bash
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/04_replicaset.sh
 ```
 
-该脚本使用固定 manifest：
+该脚本使用 `manifests/replicaset/`下的两个YAML执行：
 
-- `manifests/replicaset/replicaset_04_acceptance.yaml`
-- `manifests/replicaset/service_04_acceptance.yaml`
+**04.1 ReplicaSet 创建删除、基本信息和多机调度**
+- 通过 `kubectl apply` 创建 ReplicaSet，YAML 中展示 `kind`、`metadata.name`、`replicas: 3`、selector、Pod template、`busybox:1.36`、`containerPort: 8080` 和 CPU/Memory request/limit。
+- 运行 `kubectl describe rs`，展示 ReplicaSet 名称、Desired/Current、Selector 和 owned Pods。
+- 脚本等待 3 个 Pod 变为 Running，并输出每个 Pod 的 `nodeName`、`podIP` 和 label。
+- 检查 3 个 Pod 至少分布到 2 个节点，展示 ReplicaSet 创建的 Pods 进入多机调度。
+- 通过 `kubectl delete rs rs-04-web` 删除 ReplicaSet，并确认对应 owned Pods 和 ReplicaSet 对象已经不存在。
 
-三个小节分别覆盖：
+**04.2 ReplicaSet 绑定 Service 和负载均衡**
+- 重新创建 ReplicaSet，并创建同 selector 的 NodePort Service `rs-04-web`，固定 `nodePort: 30081`。
+- 运行 `kubectl describe svc`，展示 Selector、ClusterIP、Port/TargetPort、NodePort 和 3 个 Endpoints。
+- node-a 宿主机通过 `curl http://<node-a-ip>:30081/` 访问 Service，后端 busybox httpd 会返回当前 Pod 的 hostname 和 Pod IP。
+- 脚本会连续访问本机 NodePort 并汇总返回的后端 Pod IP，要求至少命中 2 个不同后端，证明 Service 流量进入 ReplicaSet 的多个 Pod。
+- 负载均衡策略采取 iptables random DNAT，用随机化方式简单保证流量分布均匀。展示 kube-proxy 写入的 `--mode random` 和 3 条 DNAT 后端规则，说明本组负载均衡策略是 iptables random DNAT。
 
-- `04.1`：创建 `rs-04-web` ReplicaSet，期望副本数为 3，检查 `kubectl get/describe rs`、生成 Pod、至少两个节点上的调度分布，并删除 ReplicaSet 后确认 owned Pods 被清理。
-- `04.2`：创建绑定同一 label/selector 的 NodePort Service，检查 3 个 endpoints，并从 node-a 访问 node-a/node-b 的 `30081` NodePort。后端 Pod 使用 busybox httpd 返回自己的 hostname；脚本还会检查 kube-proxy 为 NodePort 写入了面向 3 个 endpoint 的 `statistic --mode random` DNAT 规则，用于证明本组设置的随机负载均衡策略。
-- `04.3`：删除一个 ReplicaSet-owned Pod，等待 controller 补回 3 个 Running Pods，输出删除前后的 Pod 名称，证明恢复能力。
+**04.3 ReplicaSet 恢复能力**
+- 复用 04.2 保留的 ReplicaSet，初始状态下应有 3 个 Running Pods。
+- docker 删除其中一个 ReplicaSet-owned Pod 后，等待 controller 自动补回 3 个 Running Pods，并再次展示 Desired/Current/Running 数量。
+- 输出删除前 Pod 集合、被删除的 Pod 名称和恢复后的 Pod 集合，证明 ReplicaSet 创建了 replacement Pod。
 
-脚本按 `04.1`、`04.2`、`04.3` 分别清理资源并输出 `[END] status=<PASS|FAIL>`；最后输出总结果，例如 `[END] status=3/3PASS`。单独清理 04 资源：
-
+只有在意外中断下需要手动清理资源：
 ```bash
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/04_replicaset.sh cleanup
 ```
 
-给后续 agent 的实施步骤：
-
-1. 本地编辑 `manifest/replicaset/` 和 `scripts/acceptance/04_replicaset.sh`，不要在脚本中临时生成 manifest。
-2. 先运行 `bash -n scripts/acceptance/04_replicaset.sh`，再运行 `go test ./internal/bridge/captain ./internal/bridge/harbor ./internal/replicaset ./pkg/yaml ./internal/cli -count=1`。
-3. 同步脚本到 node-a 的 `/opt/minik8s/scripts/acceptance/`，同步 manifest 到 node-a 的 `/opt/minik8s/manifests/replicaset/`。
-4. 在 node-a 执行 `bash scripts/acceptance/04_replicaset.sh cleanup` 后再执行完整脚本。
-5. 若失败，优先检查 `kubectl describe rs rs-04-web`、`kubectl get pods`、`kubectl describe svc rs-04-web`，再看 bridge 的 ReplicaSet controller 日志和各节点 sailer 日志。
-
 ## 05 HPA
 
-`scripts/acceptance/05_hpa.sh` 是 HorizontalPodAutoscaler、metrics API 和 ReplicaSet 动态伸缩验收脚本。运行前需保证 01 多机部署已完成，三台 sailer 正常上报 metrics，CNI/kube-proxy 可用；脚本只需要在 node-a 上执行。HPA 负载镜像 `polinux/stress:1.0.4` 需要预先拉取并加载到所有可能调度 Pod 的节点上。
+`scripts/acceptance/05_hpa.sh` 是 HorizontalPodAutoscaler、metrics API 和 ReplicaSet 动态伸缩验收脚本。运行前需保证 01 多机部署已完成，metrics addon 已启用，脚本只需要在 node-a 上执行。
 
 ```bash
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/05_hpa.sh
 ```
 
-该脚本使用固定 manifest：
+该脚本使用 `manifests/hpa/`下的 ReplicaSet、Service 和一个 HPA YAML 执行，脚本小节号对应 `docs/FINAL.md` 的 7.5 小节。
 
-- `manifests/hpa/replicaset_05_acceptance.yaml`
-- `manifests/hpa/service_05_acceptance.yaml`
-- `manifests/hpa/hpa_05_scale_up.yaml`
-- `manifests/hpa/hpa_05_scale_down.yaml`
+**05.1 HPA 配置和创建（对应 7.5.1）**
+- 只展示 `hpa_05_acceptance.yaml` 的 HPA 摘要，包含 `kind`、`metadata.name`、target workload、`minReplicas`、`maxReplicas` 和 CPU/Memory metrics。
+- 创建 ReplicaSet 和固定 NodePort `30082` Service，并复用这组资源进入 05.2。
+- 等待 `pods.metrics.k8s.io` 发现 ReplicaSet 的 Pod metrics，metrics server 监控 CPU/Memory，输出 Pod、CPU、memory 和 timestamp 摘要。
+- 通过 `kubectl apply` 创建 HPA，再运行 `kubectl get hpa` 和 `kubectl describe hpa`，副本上下限为 1 到 3，且包含 CPU/Memory utilization 指标。
 
-三个小节分别覆盖：
+**05.2 扩缩容时机（对应 7.5.2）**
+- 不重新创建 RS/Service/HPA，直接复用 05.1 的资源。
+- ReplicaSet Pod 中的 `polinux/stress:1.0.4` sidecar 执行真实 `stress --cpu 1 --timeout 60s`，制造 CPU load。
+- 脚本固定输出五个 observation 时间点：`before-load`、`scale-up-trigger`、`after-scale-up`、`after-load`、`scale-down-trigger`。
+- 每个 observation 同时展示 metrics 采集值、HPA 判断、RS Desired/Current、Running Pods 和 Service endpoints，最后说明观测到的最大副本数 3 和最小副本数 1。
+- 当前 metrics 链路是教学版实现：`sailer` 采集 Pod CPU/memory metrics 并上报给 bridge，bridge 暴露最小 `metrics.k8s.io` API，HPA controller 读取 CPU/Memory utilization 计算目标副本数。
 
-- `05.1`：创建 HPA 目标 ReplicaSet 和 NodePort Service，等待真实 sailer metrics 出现在 `pods.metrics.k8s.io`，再创建 HPA 并输出 `kubectl get/describe hpa`。
-- `05.2`：ReplicaSet Pod 中的 `polinux/stress:1.0.4` sidecar 执行真实 `stress --cpu 1 --timeout 90s`，HPA 基于 sailer 上报的 CPU metrics 将副本从 1 逐步扩到 `maxReplicas=3`，输出 Pod 和 HPA 状态。
-- `05.3`：保持同一 HPA 目标值，等待 Pod 内 `stress` 命令结束、真实 CPU metrics 回落并经过 cooldown 后缩回 `minReplicas=1`，再通过固定 NodePort `30082` 访问缩容后的 Service。
+**05.3 扩缩容速度（对应 7.5.3）**
+- 本轮 `05_hpa.sh` 暂不输出 05.3 小节。
+- 当前实现已有固定策略：bridge 默认 HPA sync interval 15s，单次 sync 最多调整 1 个副本，缩容有 30s cooldown；但该策略不是 HPA YAML 中可配置字段，因此脚本先不做 speed policy YAML 对比。
 
-脚本按 `05.1`、`05.2`、`05.3` 分别清理资源并输出 `[END] status=<PASS|FAIL>`；最后输出总结果，例如 `[END] status=3/3PASS`。单独清理 05 资源：
+**05.4 扩缩容后访问目标 Pod（对应 7.5.4）**
+- 在 05.2 缩回 1 个副本后，删除当前 RS-owned Pod，让 ReplicaSet 用同一模板重建 fresh Pod，重新触发 stress sidecar 并再次扩容到 3。
+- 检查扩容后的 Pod 分布在多个节点，Service endpoints 为 3。
+- 通过 `curl http://<node-a-ip>:30082/` 多次访问 NodePort，统计返回中的 `pod=` 或 `ip=`，证明扩容后的多个后端 Pod 可以接收流量。
 
+只有在意外中断下需要手动清理资源：
 ```bash
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/05_hpa.sh cleanup
 ```
 
 ## 06 DNS
 
-`scripts/acceptance/06_dns_forwarding.sh` 是 DNS 对象、DNS sync 文件和 host/path 转发验收脚本。运行前需保证 bridge 启动时包含 `dns` addon，`/opt/minik8s/dns` 由 bridge 同步，node-a 本机 80 端口由 DNS ingress 使用；脚本只需要在 node-a 上执行。
+`scripts/acceptance/06_dns_forwarding.sh` 是 DNS 对象、DNS sync 文件和 host/path 转发验收脚本。运行前需保证 01 多机部署已完成，端口80由DNS Ingress使用，脚本只需要在 node-a 上执行。
 
 ```bash
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/06_dns_forwarding.sh
 ```
@@ -340,32 +345,42 @@ bash scripts/acceptance/06_dns_forwarding.sh cleanup
 
 ## 07 Fault Tolerance
 
-`scripts/acceptance/07_fault_tolerance.sh` 是 bridge 重启、数据面节点故障、ReplicaSet 恢复、bare Pod NodeLost 和节点恢复验收脚本。运行前需保证 node-a 同时运行 bridge 和 sailer；脚本只在 node-a 上执行。脚本会重启 `minik8s-bridge.service` 验证控制面恢复，也会通过 `systemctl stop minik8s-sailer.service` 模拟本机 worker 故障。脚本带 `trap`，失败时也会尝试重新启动 bridge 和 sailer。
+`scripts/acceptance/07_fault_tolerance.sh` 是 bridge 重启、数据面节点故障、ReplicaSet 恢复、bare Pod NodeLost 和节点恢复验收脚本。运行前需保证 01 多机部署已完成，脚本只需要在 node-a 上执行。
 
 ```bash
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/07_fault_tolerance.sh
 ```
 
-该脚本使用固定 manifest：
+该脚本使用 `manifests/fault/`下的四个YAML执行：
 
-- `manifests/fault/replicaset_07_acceptance.yaml`
-- `manifests/fault/service_07_acceptance.yaml`
-- `manifests/fault/pod_07_bare.yaml`
-- `manifests/fault/service_07_bare.yaml`
+**07.1 bridge 重启后控制面状态和 Service 访问恢复**
+- 创建 3 副本 ReplicaSet `rs-07-web` 和固定 NodePort `30085` Service。
+- 重启 bridge 前通过 `curl http://<node-a-ip>:30085/` 访问 Service，证明数据面已可访问。
+- 执行 `systemctl restart minik8s-bridge.service`，等待 Harbor API 恢复。
+- 重启后展示 `kubectl get nodes`、Pod 摘要、Service 摘要和 NodePort 返回内容，证明控制面状态和数据面访问恢复。
 
-四个小节分别覆盖：
+**07.2 node-a sailer 故障后 ReplicaSet 恢复**
+- 最多重试 3 次，直到至少一个 ReplicaSet-owned Pod 落在 node-a；如果连续 3 次都没有落到 node-a，该小节输出 `[LIMITED]`。
+- 创建 Service 并等待 endpoints=3 后，执行 `systemctl stop minik8s-sailer.service` 模拟 node-a 数据面故障。
+- 等待 node-a 变为 `Unknown`，展示 node 摘要和 `kubectl describe node node-a`。
+- 等待 ReplicaSet 恢复到 3 个 Running Pods，并确认 Running Pods 不再位于 node-a。
+- 等待 Service endpoints 回到 3，并确认 endpoint 不再指向故障节点上的旧 Pod。
 
-- `07.1`：创建 3 副本 ReplicaSet 和固定 NodePort `30085` Service，确认 NodePort 可访问；重启 bridge 后再次确认 Harbor API、Pod/Service/endpoints 和 NodePort 访问恢复。
-- `07.2`：确认至少一个 ReplicaSet 副本在 node-a；停止 node-a sailer 后等待 node-a 变为 `Unknown`，确认 ReplicaSet-owned Pod 被驱逐并在 Ready 节点补齐，Service endpoint 不再指向故障节点。
-- `07.3`：创建显式调度到 node-a 的 bare Pod 和 ClusterIP Service；停止 node-a sailer 后确认 bare Pod 被标记为 `Unknown/NodeLost`，且对应 Service endpoint 被移除，不会像 ReplicaSet Pod 一样自动重建。
-- `07.4`：再次停止并启动本机 sailer，等待 node-a 从 `Unknown` 回到 `Ready`，输出恢复后的 node 列表。
+**07.3 node-a bare Pod NodeLost 和 endpoint 移除**
+- 创建显式 `nodeSelector: node-a` 的 bare Pod `pod-07-bare` 和 ClusterIP Service。
+- 停止 node-a sailer 后，展示 `kubectl describe pod pod-07-bare` 中的 `Status: Unknown` 和 `Reason: NodeLost`。
+- 等待 bare Service endpoints 从 1 变为 0，证明 endpoint 被移除。
+- 检查 bare Pod 数量仍为 1，证明 bare Pod 不像 ReplicaSet 一样自动补副本。
 
-脚本按 `07.1`、`07.2`、`07.3`、`07.4` 分别清理资源并输出 `[END] status=<PASS|FAIL|LIMITED>`；最后输出总结果，例如 `[END] status=4/4PASS`。如果 ReplicaSet 调度 3 次都没有副本落到 node-a，`07.2` 会输出 `[LIMITED]`，因为无法证明本机节点故障路径。单独清理 07 资源并确保 bridge/sailer 启动：
+**07.4 sailer 重启后 node-a 恢复 Ready**
+- 从干净状态停止本机 sailer，等待 node-a 变为 `Unknown`。
+- 执行 `systemctl start minik8s-sailer.service`，等待 node-a 回到 `Ready`。
+- 展示 `kubectl get nodes` 和 node-a 摘要，证明节点恢复。
+- 脚本带 `trap`，失败时也会尝试重新启动 bridge 和 sailer。
 
+只有在意外中断下需要手动清理资源：
 ```bash
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/07_fault_tolerance.sh cleanup
 ```
