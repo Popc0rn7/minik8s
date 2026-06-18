@@ -406,7 +406,7 @@ preflight() {
   evidence_run "cuda-matmul Job YAML includes required fields" bash -lc "$(declare -f job_manifest_summary); job_manifest_summary '$MATMUL_MANIFEST'"
 
   evidence_limited "GPU submitter image is available locally" docker image inspect "$GPU_IMAGE" || true
-  evidence_run "Harbor API is reachable" curl --noproxy '*' -fsS "$MINIK8S_HARBOR/api-resources" || true
+  evidence_run "Harbor API is reachable" curl --noproxy '*' -fsS "$MINIK8S_HARBOR/api/v1" || true
 
   if [ ! -d "$GPU_SSH_DIR" ]; then
     printf '[RUN] test -d %q\n' "$GPU_SSH_DIR"
