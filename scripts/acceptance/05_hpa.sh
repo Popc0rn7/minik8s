@@ -16,6 +16,7 @@ source tree.
 Sections:
   05.1 HPA config and creation
   05.2 HPA scale timing with real CPU load
+  05.3 HPA configurable speed policy
   05.4 HPA post-scale Service access
 
 Preparatory checks, cleanup, and polling are quiet unless they fail. Evidence
@@ -50,7 +51,7 @@ CASE_LABEL="minik8s-acceptance-05"
 
 SECTION_STATUS="PASS"
 SECTION_PASS_COUNT=0
-SECTION_TOTAL=3
+SECTION_TOTAL=4
 PREFLIGHT_DONE=0
 OBSERVED_MAX_REPLICAS=0
 OBSERVED_MIN_REPLICAS=999
@@ -67,6 +68,7 @@ MANIFEST_DIR="$(manifest_dir)"
 RS_MANIFEST="$MANIFEST_DIR/replicaset_05_acceptance.yaml"
 SERVICE_MANIFEST="$MANIFEST_DIR/service_05_acceptance.yaml"
 HPA_MANIFEST="$MANIFEST_DIR/hpa_05_acceptance.yaml"
+HPA_FAST_MANIFEST="$MANIFEST_DIR/hpa_05_fast.yaml"
 
 section_begin() {
   SECTION_STATUS="PASS"
@@ -254,10 +256,18 @@ hpa_manifest_summary() {
     inTarget && /^[[:space:]]*name:/ { targetName=$2; inTarget=0; next }
     /^[[:space:]]*minReplicas:/ { min=$2 }
     /^[[:space:]]*maxReplicas:/ { max=$2 }
+    /^[[:space:]]*behavior:/ { inBehavior=1; inScaleUp=0; inScaleDown=0; next }
+    inBehavior && /^[[:space:]]*syncIntervalSeconds:/ { syncInterval=$2; next }
+    inBehavior && /^[[:space:]]*scaleUp:/ { inScaleUp=1; inScaleDown=0; next }
+    inBehavior && /^[[:space:]]*scaleDown:/ { inScaleUp=0; inScaleDown=1; next }
+    inBehavior && inScaleUp && /^[[:space:]]*maxReplicaDeltaPerSync:/ { scaleUpDelta=$2; next }
+    inBehavior && inScaleDown && /^[[:space:]]*maxReplicaDeltaPerSync:/ { scaleDownDelta=$2; next }
+    inBehavior && inScaleDown && /^[[:space:]]*cooldownSeconds:/ { scaleDownCooldown=$2; next }
+    /^[[:space:]]*metrics:/ { inBehavior=0; inScaleUp=0; inScaleDown=0; next }
     /^[[:space:]]*name:/ && ($2 == "cpu" || $2 == "memory") { metric=$2; next }
     /^[[:space:]]*averageUtilization:/ && metric != "" { metrics=metrics metric "=" $2 " "; metric="" }
     END {
-      printf "hpa=%s target=%s/%s minReplicas=%s maxReplicas=%s metrics=%s\n", hpaName, targetKind, targetName, min, max, metrics
+      printf "hpa=%s target=%s/%s minReplicas=%s maxReplicas=%s behavior=syncIntervalSeconds=%s scaleUp.maxReplicaDeltaPerSync=%s scaleDown.maxReplicaDeltaPerSync=%s scaleDown.cooldownSeconds=%s metrics=%s\n", hpaName, targetKind, targetName, min, max, syncInterval, scaleUpDelta, scaleDownDelta, scaleDownCooldown, metrics
     }
   ' "$1"
 }
@@ -650,12 +660,12 @@ preflight() {
   quiet_check "CNI is enabled for HPA acceptance" bash -c 'test "${MINIK8S_CNI_DISABLED:-0}" != "1"' || return 1
   quiet_run "$STRESS_IMAGE is preloaded locally" docker image inspect "$STRESS_IMAGE" || return 1
   quiet_run "$STRESS_IMAGE contains real stress binary" docker run --rm --entrypoint sh "$STRESS_IMAGE" -c 'command -v stress && stress --cpu 1 --timeout 1s' || return 1
-  quiet_check "05 HPA manifests exist" test -f "$RS_MANIFEST" -a -f "$SERVICE_MANIFEST" -a -f "$HPA_MANIFEST" || return 1
+  quiet_check "05 HPA manifests exist" test -f "$RS_MANIFEST" -a -f "$SERVICE_MANIFEST" -a -f "$HPA_MANIFEST" -a -f "$HPA_FAST_MANIFEST" || return 1
   PREFLIGHT_DONE=1
 }
 
 show_hpa_yaml_summary() {
-  evidence_run "HPA manifest summary contains target, min/max, CPU and Memory metrics" hpa_manifest_summary "$HPA_MANIFEST"
+  evidence_run "HPA manifest summary contains target, min/max, behavior rate policy, CPU and Memory metrics" hpa_manifest_summary "$HPA_MANIFEST"
 }
 
 apply_rs_and_service() {
@@ -707,7 +717,31 @@ section_scale_timing() {
     evidence_run "05.2 observation scale-down-trigger" hpa_observation_row "scale-down-trigger" "low metrics triggered replica reduction" &&
     evidence_run "05.2 scale-down Pod count path" record_replica_path_until 1 "scale-down-to-min" &&
     evidence_run "05.2 observed replica extrema" printf 'observedMaxReplicas=%s expectedMaxReplicas=3 observedMinReplicas=%s expectedMinReplicas=1\n' "$OBSERVED_MAX_REPLICAS" "$OBSERVED_MIN_REPLICAS"
-  section_end "05.2 kept scaled-down HPA resources for 05.4"
+  section_end "05.2 kept scaled-down HPA resources for 05.3"
+}
+
+section_scale_speed_policy() {
+  section_begin "05.3 hpa configurable speed policy acceptance"
+  preflight &&
+    wait_for_rs_desired 1 &&
+    wait_for_rs_running 1 &&
+    wait_for_service_endpoints 1 &&
+    evidence_run "05.3 fast HPA manifest summary shows larger per-sync deltas and no scale-down cooldown" hpa_manifest_summary "$HPA_FAST_MANIFEST" &&
+    quiet_run "$HPA_NAME fast HPA manifest applied" "$KUBECTL_BIN" apply -f "$HPA_FAST_MANIFEST" &&
+    evidence_run "$HPA_NAME describe output shows fast behavior policy" "$KUBECTL_BIN" describe hpa "$HPA_NAME" &&
+    delete_one_running_rs_pod &&
+    wait_for_rs_running 1 &&
+    wait_for_service_endpoints 1 &&
+    show_metrics_evidence &&
+    evidence_run "05.3 observation before fast scale-up" hpa_observation_row "before-fast-scale-up" "fast behavior is active; replacement Pod restarts stress load" &&
+    evidence_run "05.3 fast scale-up Pod count path" record_replica_path_until 3 "fast-scale-up-delta-2" &&
+    evidence_run "05.3 observation after fast scale-up" hpa_observation_row "after-fast-scale-up" "scaleUp.maxReplicaDeltaPerSync=2 allows 1 to 3 in one HPA decision" &&
+    evidence_run "05.3 observation before fast scale-down" hpa_observation_row "before-fast-scale-down" "waiting for CPU to drop; scaleDown cooldown is 0s and delta is 2" &&
+    evidence_run "05.3 fast scale-down Pod count path" record_replica_path_until 1 "fast-scale-down-delta-2-cooldown-0" &&
+    evidence_run "05.3 observation after fast scale-down" hpa_observation_row "after-fast-scale-down" "fast behavior reached minReplicas in one HPA decision after load stopped" &&
+    quiet_run "$HPA_NAME normal HPA manifest restored for 05.4" "$KUBECTL_BIN" apply -f "$HPA_MANIFEST" &&
+    evidence_run "$HPA_NAME restored describe output shows normal behavior policy" "$KUBECTL_BIN" describe hpa "$HPA_NAME"
+  section_end "05.3 restored normal HPA resources for 05.4"
 }
 
 section_post_scale_access() {
@@ -748,6 +782,7 @@ main() {
 
   section_create_metrics
   section_scale_timing
+  section_scale_speed_policy
   section_post_scale_access
   printf '[END] status=%s/%sPASS\n' "$SECTION_PASS_COUNT" "$SECTION_TOTAL"
   if [ "$SECTION_PASS_COUNT" -ne "$SECTION_TOTAL" ]; then

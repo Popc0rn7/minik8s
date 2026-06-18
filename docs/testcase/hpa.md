@@ -149,14 +149,16 @@ sleep 30
 
 ## HPA-04B：扩缩容速度和冷却窗口记录
 
-目标：把 Handout 要求的“扩缩容速度策略”从文字说明变成可检查证据。当前策略预期为每轮
-最多增减 1 个副本，并存在缩容冷却窗口。
+目标：把 Handout 要求的“扩缩容速度策略”从文字说明变成可检查证据。当前教学版
+`spec.behavior` 支持 `syncIntervalSeconds`、扩容/缩容单轮最大副本步长，以及缩容冷却窗口。
 
 前置：已完成 HPA-03 的加压，或重新创建 `nginx-rs` 和 `nginx-hpa` 并制造 CPU 压力。
 
 扩容观测：
 
 ```fish
+./kubectl describe hpa nginx-hpa
+
 for i in (seq 1 5)
   date -Is
   ./kubectl get hpa nginx-hpa
@@ -181,8 +183,22 @@ for i in (seq 1 6)
 end
 ```
 
+快速策略观测：
+
+```bash
+./kubectl apply -f manifest/hpa/hpa_05_fast.yaml
+./kubectl describe hpa hpa-05-web
+```
+
+随后重新制造 CPU 压力并观察副本路径。`hpa_05_fast.yaml` 使用
+`scaleUp.maxReplicaDeltaPerSync: 2`、`scaleDown.maxReplicaDeltaPerSync: 2`
+和 `scaleDown.cooldownSeconds: 0`，预期比常规策略更快到达目标副本数。
+
 期望：
 
+- `kubectl describe hpa` 展示 `SyncIntervalSeconds`、`ScaleUpMaxReplicaDeltaPerSync`、
+  `ScaleDownMaxReplicaDeltaPerSync` 和 `ScaleDownCooldownSeconds`，与 YAML 中
+  `spec.behavior` 一致。
 - 每条记录都有 ISO 时间戳、HPA 当前指标、ReplicaSet desired/current 和 Pod 列表。
 - 扩容阶段 `nginx-rs` replicas 每轮最多增加 1，且不超过 `maxReplicas`。
 - 缩容阶段先经历冷却窗口，之后每轮最多减少 1，且不低于 `minReplicas`。
