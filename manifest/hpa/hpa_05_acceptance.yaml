@@ -12,6 +12,13 @@ spec:
     name: rs-05-hpa
   minReplicas: 1
   maxReplicas: 3
+  behavior:
+    syncIntervalSeconds: 15
+    scaleUp:
+      maxReplicaDeltaPerSync: 1
+    scaleDown:
+      maxReplicaDeltaPerSync: 1
+      cooldownSeconds: 30
   metrics:
   - type: Resource
     resource:

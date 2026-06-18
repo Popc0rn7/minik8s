@@ -326,6 +326,69 @@ func TestApplyScalePolicyLimitsStepAndHonorsCooldown(t *testing.T) {
 	assert.Equal(t, int32(2), ctrl.applyScalePolicy(autoscaler, 3, 1))
 }
 
+func TestApplyScalePolicyUsesConfiguredScaleUpDelta(t *testing.T) {
+	now := time.Unix(100, 0)
+	ctrl := NewHPAController(nil, nil, nil, nil, HPAControllerConfig{
+		Now: func() time.Time { return now },
+	})
+	autoscaler := hpaControllerHPA("nginx-hpa", 1, 10, 50)
+	autoscaler.Spec.Behavior = &hpa.HorizontalPodAutoscalerBehavior{
+		SyncIntervalSeconds: 15,
+		ScaleUp:             hpa.HPAScalingRules{MaxReplicaDeltaPerSync: 2},
+		ScaleDown:           hpa.HPAScalingRules{MaxReplicaDeltaPerSync: 1, CooldownSeconds: 30},
+	}
+
+	assert.Equal(t, int32(3), ctrl.applyScalePolicy(autoscaler, 1, 8))
+}
+
+func TestApplyScalePolicyUsesConfiguredScaleDownDeltaAfterCooldown(t *testing.T) {
+	now := time.Unix(100, 0)
+	ctrl := NewHPAController(nil, nil, nil, nil, HPAControllerConfig{
+		Now: func() time.Time { return now },
+	})
+	autoscaler := hpaControllerHPA("nginx-hpa", 1, 10, 50)
+	autoscaler.Spec.Behavior = &hpa.HorizontalPodAutoscalerBehavior{
+		SyncIntervalSeconds: 15,
+		ScaleUp:             hpa.HPAScalingRules{MaxReplicaDeltaPerSync: 1},
+		ScaleDown:           hpa.HPAScalingRules{MaxReplicaDeltaPerSync: 2, CooldownSeconds: 30},
+	}
+	autoscaler.Status.LastScaleTime = now.Add(-time.Minute).Unix()
+
+	assert.Equal(t, int32(3), ctrl.applyScalePolicy(autoscaler, 5, 1))
+}
+
+func TestApplyScalePolicyUsesConfiguredScaleDownCooldown(t *testing.T) {
+	now := time.Unix(100, 0)
+	ctrl := NewHPAController(nil, nil, nil, nil, HPAControllerConfig{
+		Now: func() time.Time { return now },
+	})
+	autoscaler := hpaControllerHPA("nginx-hpa", 1, 10, 50)
+	autoscaler.Spec.Behavior = &hpa.HorizontalPodAutoscalerBehavior{
+		SyncIntervalSeconds: 15,
+		ScaleUp:             hpa.HPAScalingRules{MaxReplicaDeltaPerSync: 1},
+		ScaleDown:           hpa.HPAScalingRules{MaxReplicaDeltaPerSync: 2, CooldownSeconds: 45},
+	}
+	autoscaler.Status.LastScaleTime = now.Add(-30 * time.Second).Unix()
+
+	assert.Equal(t, int32(5), ctrl.applyScalePolicy(autoscaler, 5, 1))
+}
+
+func TestApplyScalePolicyUsesConfiguredDecisionInterval(t *testing.T) {
+	now := time.Unix(100, 0)
+	ctrl := NewHPAController(nil, nil, nil, nil, HPAControllerConfig{
+		Now: func() time.Time { return now },
+	})
+	autoscaler := hpaControllerHPA("nginx-hpa", 1, 10, 50)
+	autoscaler.Spec.Behavior = &hpa.HorizontalPodAutoscalerBehavior{
+		SyncIntervalSeconds: 20,
+		ScaleUp:             hpa.HPAScalingRules{MaxReplicaDeltaPerSync: 2},
+		ScaleDown:           hpa.HPAScalingRules{MaxReplicaDeltaPerSync: 2, CooldownSeconds: 0},
+	}
+	autoscaler.Status.LastScaleTime = now.Add(-10 * time.Second).Unix()
+
+	assert.Equal(t, int32(3), ctrl.applyScalePolicy(autoscaler, 3, 8))
+}
+
 func hpaControllerReplicaSet(replicas int32) *replicaset.ReplicaSet {
 	return &replicaset.ReplicaSet{
 		TypeMeta:   pod.TypeMeta{Kind: "ReplicaSet", APIVersion: "v1"},

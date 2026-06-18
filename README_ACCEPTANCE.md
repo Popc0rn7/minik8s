@@ -284,7 +284,7 @@ bash scripts/acceptance/05_hpa.sh
 该脚本使用 `manifests/hpa/`下的 ReplicaSet、Service 和一个 HPA YAML 执行，脚本小节号对应 `docs/FINAL.md` 的 7.5 小节。
 
 **05.1 HPA 配置和创建（对应 7.5.1）**
-- 只展示 `hpa_05_acceptance.yaml` 的 HPA 摘要，包含 `kind`、`metadata.name`、target workload、`minReplicas`、`maxReplicas` 和 CPU/Memory metrics。
+- 只展示 `hpa_05_acceptance.yaml` 的 HPA 摘要，包含 `kind`、`metadata.name`、target workload、`minReplicas`、`maxReplicas`、`behavior` 扩缩容速度策略和 CPU/Memory metrics。
 - 创建 ReplicaSet 和固定 NodePort `30082` Service，并复用这组资源进入 05.2。
 - 等待 `pods.metrics.k8s.io` 发现 ReplicaSet 的 Pod metrics，metrics server 监控 CPU/Memory，输出 Pod、CPU、memory 和 timestamp 摘要。
 - 通过 `kubectl apply` 创建 HPA，再运行 `kubectl get hpa` 和 `kubectl describe hpa`，副本上下限为 1 到 3，且包含 CPU/Memory utilization 指标。
@@ -297,8 +297,11 @@ bash scripts/acceptance/05_hpa.sh
 - 当前 metrics 链路是教学版实现：`sailer` 采集 Pod CPU/memory metrics 并上报给 bridge，bridge 暴露最小 `metrics.k8s.io` API，HPA controller 读取 CPU/Memory utilization 计算目标副本数。
 
 **05.3 扩缩容速度（对应 7.5.3）**
-- 本轮 `05_hpa.sh` 暂不输出 05.3 小节。
-- 当前实现已有固定策略：bridge 默认 HPA sync interval 15s，单次 sync 最多调整 1 个副本，缩容有 30s cooldown；但该策略不是 HPA YAML 中可配置字段，因此脚本先不做 speed policy YAML 对比。
+- `hpa_05_acceptance.yaml` 显式配置教学版 `spec.behavior`：`syncIntervalSeconds: 15`、扩容每次最多 `1` 个副本、缩容每次最多 `1` 个副本、缩容 `cooldownSeconds: 30`。
+- `05_hpa.sh` 在 05.1 的 manifest summary 和 `kubectl describe hpa` 中展示该策略；05.2 的 replica path 继续展示实际副本数按配置逐步变化。
+- 05.3 会额外应用 `hpa_05_fast.yaml`，把 `syncIntervalSeconds` 改为 `5`，把扩容/缩容单轮最大步长改为 `2`，并把缩容 cooldown 改为 `0`。脚本会展示 fast YAML 摘要、`kubectl describe hpa` 中的 fast behavior，以及 1 到 3、3 到 1 的快速副本变化路径。
+- 05.3 结束时会重新 apply 普通 `hpa_05_acceptance.yaml`，让 05.4 继续使用常规策略做扩缩容后访问验证。
+- 当前实现参考 Kubernetes HPA behavior 的结构，但只支持固定副本步长和缩容冷却，不支持 `policies[]`、Percent、`periodSeconds`、`selectPolicy` 和 stabilization window。
 
 **05.4 扩缩容后访问目标 Pod（对应 7.5.4）**
 - 在 05.2 缩回 1 个副本后，删除当前 RS-owned Pod，让 ReplicaSet 用同一模板重建 fresh Pod，重新触发 stress sidecar 并再次扩容到 3。

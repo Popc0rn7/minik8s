@@ -1746,12 +1746,17 @@ func describeReplicaSet(out io.Writer, rs *replicaset.ReplicaSet) error {
 }
 
 func describeHPA(out io.Writer, autoscaler *hpa.HorizontalPodAutoscaler) error {
+	behavior := autoscaler.Spec.EffectiveBehavior()
 	lines := []string{
 		fmt.Sprintf("Name: %s", autoscaler.Name),
 		fmt.Sprintf("Namespace: %s", autoscaler.Namespace),
 		fmt.Sprintf("Target: %s", formatHPATarget(autoscaler)),
 		fmt.Sprintf("MinReplicas: %d", autoscaler.Spec.MinReplicas),
 		fmt.Sprintf("MaxReplicas: %d", autoscaler.Spec.MaxReplicas),
+		fmt.Sprintf("SyncIntervalSeconds: %d", behavior.SyncIntervalSeconds),
+		fmt.Sprintf("ScaleUpMaxReplicaDeltaPerSync: %d", behavior.ScaleUp.MaxReplicaDeltaPerSync),
+		fmt.Sprintf("ScaleDownMaxReplicaDeltaPerSync: %d", behavior.ScaleDown.MaxReplicaDeltaPerSync),
+		fmt.Sprintf("ScaleDownCooldownSeconds: %d", behavior.ScaleDown.CooldownSeconds),
 		fmt.Sprintf("CurrentReplicas: %d", autoscaler.Status.CurrentReplicas),
 		fmt.Sprintf("DesiredReplicas: %d", autoscaler.Status.DesiredReplicas),
 		fmt.Sprintf("Metrics: %s", formatHPAMetrics(autoscaler.Status.CurrentMetrics)),

@@ -60,6 +60,10 @@ func DefaultAndValidateHPA(autoscaler *hpa.HorizontalPodAutoscaler) error {
 	if len(autoscaler.Spec.Metrics) == 0 {
 		return fmt.Errorf("spec.metrics must contain at least one metric")
 	}
+	defaultHPABehavior(&autoscaler.Spec)
+	if err := validateHPABehavior(&autoscaler.Spec); err != nil {
+		return err
+	}
 	for i := range autoscaler.Spec.Metrics {
 		metric := &autoscaler.Spec.Metrics[i]
 		if metric.Type != hpa.MetricTypeResource {
@@ -74,6 +78,30 @@ func DefaultAndValidateHPA(autoscaler *hpa.HorizontalPodAutoscaler) error {
 		if metric.Resource.Target.AverageUtilization <= 0 {
 			return fmt.Errorf("spec.metrics[%d].resource.target.averageUtilization must be greater than 0", i)
 		}
+	}
+	return nil
+}
+
+func defaultHPABehavior(spec *hpa.HorizontalPodAutoscalerSpec) {
+	defaults := hpa.DefaultBehavior()
+	if spec.Behavior == nil {
+		spec.Behavior = &defaults
+	}
+}
+
+func validateHPABehavior(spec *hpa.HorizontalPodAutoscalerSpec) error {
+	behavior := spec.Behavior
+	if behavior.SyncIntervalSeconds <= 0 {
+		return fmt.Errorf("spec.behavior.syncIntervalSeconds must be greater than 0")
+	}
+	if behavior.ScaleUp.MaxReplicaDeltaPerSync <= 0 {
+		return fmt.Errorf("spec.behavior.scaleUp.maxReplicaDeltaPerSync must be greater than 0")
+	}
+	if behavior.ScaleDown.MaxReplicaDeltaPerSync <= 0 {
+		return fmt.Errorf("spec.behavior.scaleDown.maxReplicaDeltaPerSync must be greater than 0")
+	}
+	if behavior.ScaleDown.CooldownSeconds < 0 {
+		return fmt.Errorf("spec.behavior.scaleDown.cooldownSeconds must be greater than or equal to 0")
 	}
 	return nil
 }

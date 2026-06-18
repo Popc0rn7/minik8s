@@ -2448,6 +2448,10 @@ spec:
 	require.NoError(t, app.Run(context.Background(), []string{"describe", "hpa", "nginx-hpa"}, &out))
 	assert.Contains(t, out.String(), "Name: nginx-hpa")
 	assert.Contains(t, out.String(), "Target: ReplicaSet/nginx-rs")
+	assert.Contains(t, out.String(), "SyncIntervalSeconds: 15")
+	assert.Contains(t, out.String(), "ScaleUpMaxReplicaDeltaPerSync: 1")
+	assert.Contains(t, out.String(), "ScaleDownMaxReplicaDeltaPerSync: 1")
+	assert.Contains(t, out.String(), "ScaleDownCooldownSeconds: 30")
 
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"delete", "hpa/nginx-hpa"}, &out))
