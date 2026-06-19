@@ -5,9 +5,9 @@
 ## Submission
 
 - Repository: https://github.com/Popc0rn7/minik8s
-- Final branch: `fix/release`
+- Final branch: `main`
 - Final tag: `v0.1.0`（最终提交后同步更新 tag）
-- Final commit: 以最终 push 的 `fix/release` HEAD 和 Canvas/GitHub 页面为准
+- Final commit: 以TAG为主
 - Install root on target machines: `/opt/minik8s`。
 - Developer Contribution: 100% by 王启源522021910372
 
