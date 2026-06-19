@@ -51,6 +51,14 @@ func (c *controlPlaneClient) GetConfigMap(ctx context.Context, name, namespace s
 	return &cm, nil
 }
 
+func (c *controlPlaneClient) DeleteConfigMap(ctx context.Context, name, namespace string) error {
+	endpoint, err := c.resourceURL(path.Join("/api/v1/namespaces", podNamespace(namespace), "configmaps", name))
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
+}
+
 func (c *controlPlaneClient) ApplyDaemonSet(ctx context.Context, ds *k8scompat.DaemonSet) (*k8scompat.DaemonSet, error) {
 	created, err := c.createDaemonSet(ctx, ds)
 	if apiErr, ok := err.(controlPlaneError); ok && apiErr.statusCode == http.StatusConflict {
@@ -69,6 +77,14 @@ func (c *controlPlaneClient) GetDaemonSet(ctx context.Context, name, namespace s
 		return nil, err
 	}
 	return &ds, nil
+}
+
+func (c *controlPlaneClient) DeleteDaemonSet(ctx context.Context, name, namespace string) error {
+	endpoint, err := c.resourceURL(path.Join("/apis/apps/v1/namespaces", podNamespace(namespace), "daemonsets", name))
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, http.StatusOK, nil)
 }
 
 func (c *controlPlaneClient) ApplyGenericCompat(ctx context.Context, obj *k8scompat.GenericObject) (*k8scompat.GenericObject, error) {

@@ -1,0 +1,9 @@
+{
+  "source": "demo",
+  "title": "NodePort has intermittent packet drops",
+  "log": "pod is running, service endpoint exists, iptables rules installed, cloud security group and node port mapping should be checked",
+  "labels": {
+    "cluster": "minik8s-demo",
+    "namespace": "default"
+  }
+}

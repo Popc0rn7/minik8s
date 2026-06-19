@@ -16,14 +16,15 @@
 1. 读取：
    - `docs/testcase/README.md`
    - 当前要跑的 `docs/testcase/<feature>.md`
-   - 相关 `manifest/` YAML
+   - 相关 `manifests/` YAML
 2. 检查工作区：
    - `git status --short`
    - 标出已有未提交改动，后续不要覆盖。
 3. 检查远端：
    - `ssh node-1`、`ssh node-2` 是否可用。
    - 两台机器的 `/opt/minik8s`、Docker、`ip`、`bridge`、`iptables`、`nsenter` 是否可用。
-   - Node YAML 中的 `InternalIP` 是否匹配实际 IP。
+   - `sailer join` 自动探测的 node IP 是否符合实际内网 IP；多网卡时记录并显式传
+     `--node-ip`。
 4. 如果 SSH 被本机系统配置或沙箱阻止，先记录原因，再用合规的方式请求提升权限或绕过只读系统配置，例如 `ssh -F ~/.ssh/config`。
 
 ## 执行策略
@@ -31,12 +32,12 @@
 - 优先使用当前 README/testcase 的主路径，例如 `sailer join`/`sailer run`，不要混用旧文档中的过时启动方式，除非是为了验证兼容路径。
 - 验证本地代码改动时，必须使用项目发布路径构建和同步产物：带上可用代理环境执行
   `make prod-build`，再执行 `make prod-push`。不要手工 `scp`/`rsync` 临时二进制覆盖
-  `/opt/minik8s/minik8s` 或 `/opt/minik8s/kubectl`；如果代理、Docker 构建或同步失败，
+  `/opt/minik8s/bin/minik8s` 或 `/opt/minik8s/bin/kubectl`；如果代理、Docker 构建或同步失败，
   先报告阻塞原因，不要改用绕过发布流程的手工替换。
 - 远端命令尽量统一用 `sh -lc` 包裹，避免 fish/bash 语法差异导致测试命令没执行。
 - 长时间运行的 `bridge`、`sailer run` 要作为独立会话处理；结束前不要留下依赖当前 agent 会话的前台进程。
 - 重启长时间进程时不要用宽泛 `pgrep -f` 匹配整段测试命令；使用能匹配真实进程
-  argv 开头的模式，例如 `pgrep -af '^\\./minik8s bridge --listen :18080'`。
+  argv 开头的模式，例如 `pgrep -af '^\\./bin/minik8s bridge --listen :18080'`。
 - bridge 重启会同时重启私有 dependency sailer/etcd，但 etcd 数据目录会保留；公开
   `sailer run` 不应在 Harbor 短暂不可用时退出。LOGBOOK-05 必须记录重启前后的 worker
   PID，只有 node-a/node-b 原公开 `sailer run` 仍保持运行，且 Node Ready、Pod 状态和
@@ -57,11 +58,11 @@
 对 API 对象：
 
 ```bash
-./kubectl get nodes
-./kubectl get pods
-./kubectl get pod <name> -o yaml
-./kubectl describe pod <name>
-./kubectl describe service <name>
+./bin/kubectl get nodes
+./bin/kubectl get pods
+./bin/kubectl get pod <name> -o yaml
+./bin/kubectl describe pod <name>
+./bin/kubectl describe service <name>
 ```
 
 对运行时：

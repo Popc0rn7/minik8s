@@ -9,6 +9,7 @@
 *.dylib
 /minik8s
 /kubectl
+/bin/
 /.minik8s/
 /dist/
 
@@ -51,3 +52,8 @@ go.work.sum
 
 # env
 .env
+# secrets/
+
+scripts/acceptance/lib/*_test.sh
+scripts/acceptance/*_test.sh
+logs

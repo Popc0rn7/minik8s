@@ -1,0 +1,8 @@
+{
+  "source": "demo",
+  "title": "Pod restarts after reading mounted volume",
+  "log": "container restart count keeps increasing, exit code 1, permission denied when opening mounted volume",
+  "labels": {
+    "namespace": "default"
+  }
+}

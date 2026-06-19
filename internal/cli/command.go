@@ -163,7 +163,7 @@ func addRuntimeCommands(root *cobra.Command, app *App, out io.Writer, bind func(
 
 func newInitCommand(app *App, out io.Writer) *cobra.Command {
 	var force bool
-	var dnsListen, ingressListen string
+	var ingressListen string
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize local Minik8s startup files",
@@ -173,9 +173,6 @@ func newInitCommand(app *App, out io.Writer) *cobra.Command {
 			if force {
 				legacy = append(legacy, "--force")
 			}
-			if dnsListen != "" {
-				legacy = append(legacy, "--dns-listen", dnsListen)
-			}
 			if ingressListen != "" {
 				legacy = append(legacy, "--ingress-listen", ingressListen)
 			}
@@ -183,7 +180,6 @@ func newInitCommand(app *App, out io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite generated startup files")
-	cmd.Flags().StringVar(&dnsListen, "dns-listen", "", "DNS host listen port/address")
 	cmd.Flags().StringVar(&ingressListen, "ingress-listen", "", "HTTP ingress host listen port/address")
 	return cmd
 }
@@ -279,8 +275,8 @@ func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete pod|service|dns|replicaset|hpa|job|node <name>",
-		Short: "Delete a Pod, Service, DNS, ReplicaSet, HPA, Job, or Node",
+		Use:   "delete pod|service|dns|replicaset|hpa|job|node|configmap|daemonset <name>",
+		Short: "Delete a Pod, Service, DNS, ReplicaSet, HPA, Job, Node, ConfigMap, or DaemonSet",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bind()
@@ -338,8 +334,26 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 					return err
 				}
 				return writes(out, cliui.SuccessLine("workflowrun/%s deleted", ref.name))
+			case resourceConfigMaps:
+				client, err := app.controlPlaneClient()
+				if err != nil {
+					return err
+				}
+				if err := client.DeleteConfigMap(cmd.Context(), ref.name, app.namespace); err != nil {
+					return err
+				}
+				return writes(out, cliui.SuccessLine("configmap/%s deleted", ref.name))
+			case resourceDaemonSets:
+				client, err := app.controlPlaneClient()
+				if err != nil {
+					return err
+				}
+				if err := client.DeleteDaemonSet(cmd.Context(), ref.name, app.namespace); err != nil {
+					return err
+				}
+				return writes(out, cliui.SuccessLine("daemonset/%s deleted", ref.name))
 			default:
-				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, jobs, nodes, functions, eventtriggers, workflows, and workflowruns")
+				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, jobs, nodes, functions, eventtriggers, workflows, workflowruns, configmaps, and daemonsets")
 			}
 			return nil
 		},
@@ -561,7 +575,7 @@ func newRouteProxyCommand(app *App, out io.Writer) *cobra.Command {
 }
 
 func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
-	var listen, addons, serviceSyncInterval, dnsSyncInterval, replicaSetSyncInterval, hpaSyncInterval, clusterCIDR, serviceCIDR, nodePortRange, gatewayIP, dnsListen, ingressListen string
+	var listen, addons, serviceSyncInterval, dnsSyncInterval, replicaSetSyncInterval, hpaSyncInterval, clusterCIDR, serviceCIDR, nodePortRange, gatewayIP, ingressListen string
 	var nodeCIDRMaskSize int
 	cmd := &cobra.Command{
 		Use:   "bridge",
@@ -582,9 +596,6 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 			}
 			if gatewayIP != "" {
 				legacy = append(legacy, "--gateway-ip", gatewayIP)
-			}
-			if dnsListen != "" {
-				legacy = append(legacy, "--dns-listen", dnsListen)
 			}
 			if ingressListen != "" {
 				legacy = append(legacy, "--ingress-listen", ingressListen)
@@ -615,7 +626,6 @@ func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&serviceSyncInterval, "service-sync-interval", "", "Service sync interval")
 	cmd.Flags().StringVar(&dnsSyncInterval, "dns-sync-interval", "", "DNS sync interval")
 	cmd.Flags().StringVar(&gatewayIP, "gateway-ip", "", "DNS answer gateway IP")
-	cmd.Flags().StringVar(&dnsListen, "dns-listen", "", "DNS host listen port/address")
 	cmd.Flags().StringVar(&ingressListen, "ingress-listen", "", "HTTP ingress host listen port/address")
 	cmd.Flags().StringVar(&replicaSetSyncInterval, "replicaset-sync-interval", "", "ReplicaSet sync interval")
 	cmd.Flags().StringVar(&hpaSyncInterval, "hpa-sync-interval", "", "HPA sync interval")
@@ -703,18 +713,19 @@ func newSailerCommand(app *App, out io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&vxlanName, "vxlan-name", "", "VXLAN device name")
 	cmd.Flags().BoolVar(&once, "once", false, "Run one sync and exit")
 	cmd.Flags().BoolVar(&proxyDisabled, "proxy-disabled", false, "Disable node-local Service proxy sync")
-	var joinAPIServer, joinToken, joinFile string
+	var joinAPIServer, joinToken, joinNodeName, joinNodeIP string
 	joinCmd := &cobra.Command{
-		Use:   "join --apiserver <url> --token <token> -f <node.yaml>",
+		Use:   "join --apiserver <url> --token <token> [--node-name <name>] [--node-ip <ip>]",
 		Short: "Join this worker to a bridge using a bootstrap token",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return app.sailerJoin(cmd.Context(), joinAPIServer, joinToken, joinFile, out)
+			return app.sailerJoin(cmd.Context(), joinAPIServer, joinToken, joinNodeName, joinNodeIP, out)
 		},
 	}
 	joinCmd.Flags().StringVar(&joinAPIServer, "apiserver", "", "Bridge Harbor API URL")
 	joinCmd.Flags().StringVar(&joinToken, "token", "", "Bootstrap token")
-	joinCmd.Flags().StringVarP(&joinFile, "filename", "f", "", "Node YAML")
+	joinCmd.Flags().StringVar(&joinNodeName, "node-name", "", "Node name; defaults to node-xxxxx")
+	joinCmd.Flags().StringVar(&joinNodeIP, "node-ip", "", "Node host IP; defaults to the local source IP used to reach apiserver")
 	cmd.AddCommand(joinCmd)
 
 	runCmd := &cobra.Command{
@@ -772,6 +783,8 @@ const (
 	resourceEventTriggers resourceName = "eventtriggers"
 	resourceWorkflows     resourceName = "workflows"
 	resourceWorkflowRuns  resourceName = "workflowruns"
+	resourceConfigMaps    resourceName = "configmaps"
+	resourceDaemonSets    resourceName = "daemonsets"
 )
 
 type resourceRef struct {
@@ -826,6 +839,10 @@ func normalizeResource(resource string) (resourceName, error) {
 		return resourceWorkflows, nil
 	case "workflowrun", "workflowruns", "wfr":
 		return resourceWorkflowRuns, nil
+	case "configmap", "configmaps", "cm":
+		return resourceConfigMaps, nil
+	case "daemonset", "daemonsets", "ds":
+		return resourceDaemonSets, nil
 	default:
 		return "", fmt.Errorf("unsupported resource %q", resource)
 	}
@@ -1729,12 +1746,17 @@ func describeReplicaSet(out io.Writer, rs *replicaset.ReplicaSet) error {
 }
 
 func describeHPA(out io.Writer, autoscaler *hpa.HorizontalPodAutoscaler) error {
+	behavior := autoscaler.Spec.EffectiveBehavior()
 	lines := []string{
 		fmt.Sprintf("Name: %s", autoscaler.Name),
 		fmt.Sprintf("Namespace: %s", autoscaler.Namespace),
 		fmt.Sprintf("Target: %s", formatHPATarget(autoscaler)),
 		fmt.Sprintf("MinReplicas: %d", autoscaler.Spec.MinReplicas),
 		fmt.Sprintf("MaxReplicas: %d", autoscaler.Spec.MaxReplicas),
+		fmt.Sprintf("SyncIntervalSeconds: %d", behavior.SyncIntervalSeconds),
+		fmt.Sprintf("ScaleUpMaxReplicaDeltaPerSync: %d", behavior.ScaleUp.MaxReplicaDeltaPerSync),
+		fmt.Sprintf("ScaleDownMaxReplicaDeltaPerSync: %d", behavior.ScaleDown.MaxReplicaDeltaPerSync),
+		fmt.Sprintf("ScaleDownCooldownSeconds: %d", behavior.ScaleDown.CooldownSeconds),
 		fmt.Sprintf("CurrentReplicas: %d", autoscaler.Status.CurrentReplicas),
 		fmt.Sprintf("DesiredReplicas: %d", autoscaler.Status.DesiredReplicas),
 		fmt.Sprintf("Metrics: %s", formatHPAMetrics(autoscaler.Status.CurrentMetrics)),

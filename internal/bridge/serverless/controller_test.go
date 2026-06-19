@@ -70,6 +70,7 @@ func TestFunctionControllerDoesNotScaleRecentColdStartToZero(t *testing.T) {
 	require.NoError(t, functions.Create(fn))
 	rs := BuildFunctionReplicaSet(fn)
 	rs.Spec.Replicas = 1
+	rs.Status.Replicas = 1
 	require.NoError(t, replicaSets.Create(rs))
 
 	ctrl := NewFunctionController(functions, replicaSets, services)
@@ -78,6 +79,56 @@ func TestFunctionControllerDoesNotScaleRecentColdStartToZero(t *testing.T) {
 	got, err := replicaSets.Get("fn-echo", "default")
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), got.Spec.Replicas)
+	syncedFn, err := functions.Get("echo", "default")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), syncedFn.Status.Replicas)
+	assert.Equal(t, int32(1), syncedFn.Status.ReadyReplicas)
+}
+
+func TestFunctionControllerSyncsFunctionReplicasFromReplicaSet(t *testing.T) {
+	functions := store.NewInMemoryFunctionStore()
+	replicaSets := store.NewInMemoryReplicaSetStore()
+	services := store.NewInMemoryServiceStore()
+	fn := testFunction("echo", "def handler(event):\n  return event\n")
+	require.NoError(t, functions.Create(fn))
+	rs := BuildFunctionReplicaSet(fn)
+	rs.Spec.Replicas = 2
+	rs.Status.Replicas = 1
+	require.NoError(t, replicaSets.Create(rs))
+
+	ctrl := NewFunctionController(functions, replicaSets, services)
+	require.NoError(t, ctrl.Sync(context.Background()))
+
+	syncedFn, err := functions.Get("echo", "default")
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), syncedFn.Status.Replicas)
+	assert.Equal(t, int32(1), syncedFn.Status.ReadyReplicas)
+}
+
+func TestFunctionControllerClearsReadyReplicasOnScaleToZero(t *testing.T) {
+	functions := store.NewInMemoryFunctionStore()
+	replicaSets := store.NewInMemoryReplicaSetStore()
+	services := store.NewInMemoryServiceStore()
+	fn := testFunction("echo", "def handler(event):\n  return event\n")
+	fn.Status.LastInvocation = time.Now().Add(-time.Minute)
+	fn.Status.Replicas = 1
+	fn.Status.ReadyReplicas = 1
+	require.NoError(t, functions.Create(fn))
+	rs := BuildFunctionReplicaSet(fn)
+	rs.Spec.Replicas = 1
+	rs.Status.Replicas = 1
+	require.NoError(t, replicaSets.Create(rs))
+
+	ctrl := NewFunctionController(functions, replicaSets, services)
+	require.NoError(t, ctrl.Sync(context.Background()))
+
+	got, err := replicaSets.Get("fn-echo", "default")
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), got.Spec.Replicas)
+	syncedFn, err := functions.Get("echo", "default")
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), syncedFn.Status.Replicas)
+	assert.Equal(t, int32(0), syncedFn.Status.ReadyReplicas)
 }
 
 func testFunction(name, code string) *function.Function {

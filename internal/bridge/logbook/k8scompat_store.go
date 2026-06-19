@@ -13,8 +13,10 @@ type K8sCompatStore interface {
 	UpsertGeneric(obj *k8scompat.GenericObject) error
 	UpsertConfigMap(cm *k8scompat.ConfigMap) error
 	GetConfigMap(name, namespace string) (*k8scompat.ConfigMap, error)
+	DeleteConfigMap(name, namespace string) error
 	UpsertDaemonSet(ds *k8scompat.DaemonSet) error
 	GetDaemonSet(name, namespace string) (*k8scompat.DaemonSet, error)
+	DeleteDaemonSet(name, namespace string) error
 }
 
 type InMemoryK8sCompatStore struct {
@@ -64,6 +66,17 @@ func (s *InMemoryK8sCompatStore) GetConfigMap(name, namespace string) (*k8scompa
 	return &copy, nil
 }
 
+func (s *InMemoryK8sCompatStore) DeleteConfigMap(name, namespace string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := k8sKey(namespace, name)
+	if _, ok := s.configMaps[key]; !ok {
+		return ErrK8sObjectNotFound
+	}
+	delete(s.configMaps, key)
+	return nil
+}
+
 func (s *InMemoryK8sCompatStore) UpsertDaemonSet(ds *k8scompat.DaemonSet) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -83,6 +96,17 @@ func (s *InMemoryK8sCompatStore) GetDaemonSet(name, namespace string) (*k8scompa
 	copy := *ds
 	copy.ObjectMeta = ds.DeepCopy()
 	return &copy, nil
+}
+
+func (s *InMemoryK8sCompatStore) DeleteDaemonSet(name, namespace string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := k8sKey(namespace, name)
+	if _, ok := s.daemonSets[key]; !ok {
+		return ErrK8sObjectNotFound
+	}
+	delete(s.daemonSets, key)
+	return nil
 }
 
 func k8sKey(namespace, name string) string {

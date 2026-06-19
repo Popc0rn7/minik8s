@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -44,6 +45,12 @@ import (
 	"minik8s/internal/service"
 	"minik8s/pkg/runtime"
 	podyaml "minik8s/pkg/yaml"
+)
+
+var (
+	randomReader       io.Reader = rand.Reader
+	interfaceAddrsFunc           = net.InterfaceAddrs
+	udpDialFunc                  = dialUDP
 )
 
 // Config contains CLI dependencies.
@@ -1209,10 +1216,6 @@ func (a *App) initialize(ctx context.Context, args []string, out io.Writer) erro
 	if err := writeTextFile(DefaultDNSRoutesPath(), "{\"hosts\":[]}\n"); err != nil {
 		return fmt.Errorf("initializing dns routes: %w", err)
 	}
-	routeProxyBinaryPath, err := currentExecutablePath()
-	if err != nil {
-		return err
-	}
 	if err := writeBridgeStaticPodManifests(initManifestOptions{
 		Force:                options.force,
 		EtcdDir:              etcdDir,
@@ -1220,7 +1223,7 @@ func (a *App) initialize(ctx context.Context, args []string, out io.Writer) erro
 		DNSHostIP:            "127.0.0.1",
 		DNSListenPort:        options.dnsListenPort,
 		IngressListenPort:    options.ingressListenPort,
-		RouteProxyBinaryPath: routeProxyBinaryPath,
+		RouteProxyBinaryPath: DefaultMinik8sBinaryPath(),
 	}); err != nil {
 		return err
 	}
@@ -1228,25 +1231,20 @@ func (a *App) initialize(ctx context.Context, args []string, out io.Writer) erro
 	if err := writes(out, cliui.SuccessLine("static pod manifests initialized at %s", DefaultStaticPodDir())); err != nil {
 		return err
 	}
-	return writes(out, cliui.InfoLine("next: ./minik8s bridge --listen :18080"))
+	return writes(out, cliui.InfoLine("next: ./bin/minik8s bridge --listen :18080"))
 }
 
 func parseInitOptions(args []string) (initOptions, error) {
 	options := initOptions{dnsListenPort: 53, ingressListenPort: 80}
+	if port, err := dnsPortFromEnv(options.dnsListenPort); err != nil {
+		return options, err
+	} else {
+		options.dnsListenPort = port
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--force":
 			options.force = true
-		case "--dns-listen":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("missing value for --dns-listen")
-			}
-			port, err := listenPort(args[i])
-			if err != nil {
-				return options, fmt.Errorf("invalid --dns-listen %q: %w", args[i], err)
-			}
-			options.dnsListenPort = port
 		case "--ingress-listen":
 			i++
 			if i >= len(args) {
@@ -1390,7 +1388,7 @@ func cniInitConfig(args []string) (cniInitPluginConfig, error) {
 		Bridge:     "mk8s0",
 		PodCIDR:    "10.244.0.0/24",
 		Gateway:    "10.244.0.1",
-		IPAM:       cniInitIPAM{StatePath: ".minik8s/state/cni-ipam.json"},
+		IPAM:       cniInitIPAM{StatePath: filepath.Join(DefaultStateDir(), "cni-ipam.json")},
 	}
 
 	for i := 0; i < len(args); i++ {
@@ -1782,7 +1780,14 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	a.controlBridge.SetHarborURL(harborURL)
 	a.controlBridge.SetNodeCIDRConfig(options.clusterCIDR, options.nodeCIDRMaskSize)
 	a.controlBridge.SetServiceAllocationConfig(options.serviceCIDR, options.nodePortRange)
-	a.controlBridge.SetClusterDNSConfig(options.addons.Enabled(AddonDNS), options.gatewayIP, "cluster.local")
+	clusterDNS := ""
+	if options.addons.Enabled(AddonDNS) {
+		clusterDNS, err = a.controlBridge.EnsureClusterDNSService(options.gatewayIP, options.dnsListenPort)
+		if err != nil {
+			return err
+		}
+	}
+	a.controlBridge.SetClusterDNSConfig(options.addons.Enabled(AddonDNS), clusterDNS, "cluster.local")
 	server := &http.Server{
 		Addr:    options.listen,
 		Handler: a.controlBridge.Handler(),
@@ -2274,6 +2279,11 @@ func dockerAddonPodRunning(name string) bool {
 
 func parseBridgeOptions(args []string) (bridgeOptions, error) {
 	options := bridgeOptions{listen: ":8080", addons: defaultAddonSet(), serviceSyncInterval: 5 * time.Second, dnsSyncInterval: 5 * time.Second, replicaSetSyncInterval: 5 * time.Second, hpaSyncInterval: 15 * time.Second, clusterCIDR: "10.244.0.0/16", nodeCIDRMaskSize: 24, serviceCIDR: service.DefaultServiceCIDR, nodePortRange: service.DefaultNodePortRange, gatewayIP: "127.0.0.1", dnsListenPort: 53, ingressListenPort: 80}
+	if port, err := dnsPortFromEnv(options.dnsListenPort); err != nil {
+		return options, err
+	} else {
+		options.dnsListenPort = port
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--listen":
@@ -2321,16 +2331,6 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 				return options, fmt.Errorf("invalid --gateway-ip %q", args[i])
 			}
 			options.gatewayIP = args[i]
-		case "--dns-listen":
-			i++
-			if i >= len(args) {
-				return options, fmt.Errorf("missing value for --dns-listen")
-			}
-			port, err := listenPort(args[i])
-			if err != nil {
-				return options, fmt.Errorf("invalid --dns-listen %q: %w", args[i], err)
-			}
-			options.dnsListenPort = port
 		case "--ingress-listen":
 			i++
 			if i >= len(args) {
@@ -2430,6 +2430,18 @@ func listenPort(value string) (int32, error) {
 		return 0, fmt.Errorf("port must be between 1 and 65535")
 	}
 	return int32(port), nil
+}
+
+func dnsPortFromEnv(fallback int32) (int32, error) {
+	value := strings.TrimSpace(os.Getenv("MINIK8S_DNS_PORT"))
+	if value == "" {
+		return fallback, nil
+	}
+	port, err := listenPort(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid MINIK8S_DNS_PORT %q: %w", value, err)
+	}
+	return port, nil
 }
 
 func (a *App) runDNSSyncLoop(ctx context.Context, interval time.Duration, gatewayIP string) {
@@ -2557,22 +2569,16 @@ func (a *App) sailer(ctx context.Context, args []string, out io.Writer) error {
 	return a.runAssignedSailer(ctx, options, podClient, assignedNode, out)
 }
 
-func (a *App) sailerJoin(ctx context.Context, apiserver, token, nodeFile string, out io.Writer) error {
+func (a *App) sailerJoin(ctx context.Context, apiserver, token, nodeName, nodeIP string, out io.Writer) error {
 	if strings.TrimSpace(apiserver) == "" {
 		return fmt.Errorf("--apiserver is required")
 	}
 	if strings.TrimSpace(token) == "" {
 		return fmt.Errorf("--token is required")
 	}
-	if strings.TrimSpace(nodeFile) == "" {
-		return fmt.Errorf("missing required -f flag")
-	}
-	nodeConfig, err := podyaml.LoadNodeFromFile(nodeFile)
+	nodeConfig, err := buildJoinNode(apiserver, nodeName, nodeIP)
 	if err != nil {
 		return err
-	}
-	if nodeConfig.InternalIP() == "" {
-		return fmt.Errorf("node InternalIP is required")
 	}
 	client := nodeSailer.NewHTTPPodClient(apiserver, a.httpClient)
 	joined, err := client.JoinNode(ctx, token, nodeConfig)
@@ -2599,6 +2605,157 @@ func (a *App) sailerJoin(ctx context.Context, apiserver, token, nodeFile string,
 		return err
 	}
 	return writes(out, cliui.SuccessLine("sailer joined node=%s apiserver=%s", conf.NodeName, conf.APIServer))
+}
+
+func buildJoinNode(apiserver, nodeName, nodeIP string) (*node.Node, error) {
+	name := strings.TrimSpace(nodeName)
+	if name == "" {
+		generated, err := randomNodeName()
+		if err != nil {
+			return nil, err
+		}
+		name = generated
+	}
+	ip := strings.TrimSpace(nodeIP)
+	var err error
+	if ip == "" {
+		ip, err = detectNodeIP(apiserver)
+		if err != nil {
+			return nil, err
+		}
+	} else if err := validateNodeIPForAPIServer(ip, apiserver); err != nil {
+		return nil, err
+	}
+	n := node.New(name, node.NodeSpec{Role: node.NodeRoleWorker}, node.NodeStatus{
+		Addresses: []node.NodeAddress{{Type: node.NodeAddressInternalIP, Address: ip}},
+	})
+	n.Labels["node"] = name
+	return n, nil
+}
+
+func randomNodeName() (string, error) {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(randomReader, buf); err != nil {
+		return "", fmt.Errorf("generating node name: %w", err)
+	}
+	for i := range buf {
+		buf[i] = alphabet[int(buf[i])%len(alphabet)]
+	}
+	return "node-" + string(buf), nil
+}
+
+func detectNodeIP(apiserver string) (string, error) {
+	addr, err := apiServerUDPAddress(apiserver)
+	if err != nil {
+		return "", err
+	}
+	local, err := udpDialFunc(nil, addr)
+	if err != nil {
+		return "", fmt.Errorf("detecting node IP via %s: %w", addr, err)
+	}
+	ip := local.IP.String()
+	if err := validateUsableNodeIP(ip); err != nil {
+		return "", fmt.Errorf("detected node IP %q is not usable: %w", ip, err)
+	}
+	return ip, nil
+}
+
+func validateNodeIPForAPIServer(value, apiserver string) error {
+	parsed := net.ParseIP(strings.TrimSpace(value))
+	if parsed == nil {
+		return fmt.Errorf("invalid --node-ip %q", value)
+	}
+	if err := validateUsableNodeIP(parsed.String()); err != nil {
+		return fmt.Errorf("invalid --node-ip %q: %w", value, err)
+	}
+	if ok, err := localInterfaceHasIP(parsed); err != nil {
+		return fmt.Errorf("validating --node-ip %q: %w", value, err)
+	} else if !ok {
+		return fmt.Errorf("--node-ip %q is not assigned to a local interface", value)
+	}
+	addr, err := apiServerUDPAddress(apiserver)
+	if err != nil {
+		return err
+	}
+	if _, err := udpDialFunc(parsed, addr); err != nil {
+		return fmt.Errorf("--node-ip %q cannot reach apiserver %s: %w", value, addr, err)
+	}
+	return nil
+}
+
+func validateUsableNodeIP(value string) error {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil {
+		return fmt.Errorf("not an IP address")
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("unspecified address is not allowed")
+	}
+	if ip.IsLoopback() {
+		return fmt.Errorf("loopback address is not allowed")
+	}
+	return nil
+}
+
+func localInterfaceHasIP(ip net.IP) (bool, error) {
+	addrs, err := interfaceAddrsFunc()
+	if err != nil {
+		return false, err
+	}
+	for _, addr := range addrs {
+		switch v := addr.(type) {
+		case *net.IPNet:
+			if v.IP.Equal(ip) {
+				return true, nil
+			}
+		case *net.IPAddr:
+			if v.IP.Equal(ip) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func apiServerUDPAddress(apiserver string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(apiserver))
+	if err != nil {
+		return "", fmt.Errorf("invalid --apiserver %q: %w", apiserver, err)
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return "", fmt.Errorf("invalid --apiserver %q: host is required", apiserver)
+	}
+	port := parsed.Port()
+	if port == "" {
+		switch parsed.Scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return "", fmt.Errorf("invalid --apiserver %q: port is required", apiserver)
+		}
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
+func dialUDP(localIP net.IP, remote string) (*net.UDPAddr, error) {
+	dialer := net.Dialer{}
+	if localIP != nil {
+		dialer.LocalAddr = &net.UDPAddr{IP: localIP}
+	}
+	conn, err := dialer.Dial("udp", remote)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return nil, fmt.Errorf("local address is %T, want *net.UDPAddr", conn.LocalAddr())
+	}
+	return addr, nil
 }
 
 func (a *App) sailerRun(ctx context.Context, args []string, out io.Writer) error {
@@ -2655,30 +2812,39 @@ func getNodeWithRetry(ctx context.Context, client *nodeSailer.HTTPPodClient, nod
 }
 
 func (a *App) runAssignedSailer(ctx context.Context, options sailerOptions, podClient *nodeSailer.HTTPPodClient, assignedNode *node.Node, out io.Writer) error {
-	networkMode, bridgeName, err := a.ensureManifestCNIIfApplied(ctx, options.harbor, assignedNode)
-	if err != nil {
-		return err
-	}
-	if bridgeName != "" {
-		options.bridgeName = bridgeName
-	}
-	if networkMode == sailerNetworkBuiltIn {
-		hasConfig, err := cniConfigExists(DefaultCNIConfDir())
+	cniDisabled := os.Getenv("MINIK8S_CNI_DISABLED") == "1"
+	networkMode := sailerNetworkBuiltIn
+	if !cniDisabled {
+		var bridgeName string
+		var err error
+		networkMode, bridgeName, err = a.ensureManifestCNIIfApplied(ctx, options.harbor, assignedNode)
 		if err != nil {
 			return err
 		}
-		if !hasConfig {
-			cniConfig, err := cniConfigForPodCIDR(options.podCIDR)
+		if bridgeName != "" {
+			options.bridgeName = bridgeName
+		}
+		if networkMode == sailerNetworkBuiltIn {
+			hasConfig, err := cniConfigExists(DefaultCNIConfDir())
 			if err != nil {
 				return err
 			}
-			options.bridgeName = cniConfig.Bridge
-			if _, err := writeCNIConfig(cniConfig); err != nil {
-				return err
+			if !hasConfig {
+				cniConfig, err := cniConfigForPodCIDR(options.podCIDR)
+				if err != nil {
+					return err
+				}
+				options.bridgeName = cniConfig.Bridge
+				if _, err := writeCNIConfig(cniConfig); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	network := cniNetworkManager{runner: cni.NewRunner(cni.Config{BinDir: DefaultCNIBinDir(), ConfDir: DefaultCNIConfDir()})}
+	var network nodeSailer.PodNetworkManager
+	if !cniDisabled {
+		network = cniNetworkManager{runner: cni.NewRunner(cni.Config{BinDir: DefaultCNIBinDir(), ConfDir: DefaultCNIConfDir()})}
+	}
 	k := nodeSailer.New(nodeSailer.Config{
 		Node:         assignedNode,
 		Runtime:      a.runtime,
@@ -2689,11 +2855,12 @@ func (a *App) runAssignedSailer(ctx context.Context, options sailerOptions, podC
 		ClusterDNS:   options.clusterDNS,
 	})
 	var networkAgent *netagent.Agent
-	if networkMode != sailerNetworkFlannel {
+	if !cniDisabled && networkMode != sailerNetworkFlannel {
+		var err error
 		networkAgent, err = a.sailerNetworkAgent(options)
-	}
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 	if options.once {
 		if networkAgent != nil {
@@ -3370,33 +3537,39 @@ func writes(out io.Writer, s string) error {
 	return err
 }
 
+func DefaultInstallRoot() string {
+	return filepath.Join(string(os.PathSeparator), "opt", "minik8s")
+}
+
+func DefaultStateDir() string {
+	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
+		return dir
+	}
+	return filepath.Join(DefaultInstallRoot(), "state")
+}
+
+func DefaultMinik8sBinaryPath() string {
+	return filepath.Join(DefaultInstallRoot(), "bin", "minik8s")
+}
+
 // DefaultStatePath returns the default local state file path.
 func DefaultStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "pods.json")
-	}
-	return filepath.Join(".minik8s", "state", "pods.json")
+	return filepath.Join(DefaultStateDir(), "pods.json")
 }
 
 func DefaultServiceStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "services.json")
-	}
-	return filepath.Join(".minik8s", "state", "services.json")
+	return filepath.Join(DefaultStateDir(), "services.json")
 }
 
 func DefaultDNSStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "dns.json")
-	}
-	return filepath.Join(".minik8s", "state", "dns.json")
+	return filepath.Join(DefaultStateDir(), "dns.json")
 }
 
 func DefaultDNSDir() string {
 	if dir := os.Getenv("MINIK8S_DNS_DIR"); dir != "" {
 		return dir
 	}
-	return filepath.Join(".minik8s", "dns")
+	return filepath.Join(DefaultInstallRoot(), "dns")
 }
 
 func DefaultDNSHostsPath() string {
@@ -3419,7 +3592,7 @@ func DefaultStaticPodDir() string {
 	if dir := os.Getenv("MINIK8S_STATIC_POD_DIR"); dir != "" {
 		return dir
 	}
-	return filepath.Join(".minik8s", "manifests")
+	return filepath.Join(DefaultInstallRoot(), "static-pods")
 }
 
 func DefaultStorageManifestPath() string {
@@ -3447,31 +3620,19 @@ func DefaultBridgeDNSManifestPath() string {
 }
 
 func DefaultReplicaSetStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "replicasets.json")
-	}
-	return filepath.Join(".minik8s", "state", "replicasets.json")
+	return filepath.Join(DefaultStateDir(), "replicasets.json")
 }
 
 func DefaultHPAStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "hpas.json")
-	}
-	return filepath.Join(".minik8s", "state", "hpas.json")
+	return filepath.Join(DefaultStateDir(), "hpas.json")
 }
 
 func DefaultJobStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "jobs.json")
-	}
-	return filepath.Join(".minik8s", "state", "jobs.json")
+	return filepath.Join(DefaultStateDir(), "jobs.json")
 }
 
 func DefaultNodeStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "nodes.json")
-	}
-	return filepath.Join(".minik8s", "state", "nodes.json")
+	return filepath.Join(DefaultStateDir(), "nodes.json")
 }
 
 func DefaultBootstrapTokenPath() string {
@@ -3479,45 +3640,30 @@ func DefaultBootstrapTokenPath() string {
 }
 
 func DefaultSailerConfigPath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "sailer.json")
-	}
-	return filepath.Join(".minik8s", "state", "sailer.json")
+	return filepath.Join(DefaultStateDir(), "sailer.json")
 }
 
 func DefaultLocalConfigPath() string {
 	if path := os.Getenv("MINIK8S_CONFIG"); path != "" {
 		return path
 	}
-	return filepath.Join(".minik8s", "config.json")
+	return filepath.Join(DefaultInstallRoot(), "config.json")
 }
 
 func DefaultFunctionStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "functions.json")
-	}
-	return filepath.Join(".minik8s", "state", "functions.json")
+	return filepath.Join(DefaultStateDir(), "functions.json")
 }
 
 func DefaultEventTriggerStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "eventtriggers.json")
-	}
-	return filepath.Join(".minik8s", "state", "eventtriggers.json")
+	return filepath.Join(DefaultStateDir(), "eventtriggers.json")
 }
 
 func DefaultWorkflowStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "workflows.json")
-	}
-	return filepath.Join(".minik8s", "state", "workflows.json")
+	return filepath.Join(DefaultStateDir(), "workflows.json")
 }
 
 func DefaultWorkflowRunStatePath() string {
-	if dir := os.Getenv("MINIK8S_STATE_DIR"); dir != "" {
-		return filepath.Join(dir, "workflowruns.json")
-	}
-	return filepath.Join(".minik8s", "state", "workflowruns.json")
+	return filepath.Join(DefaultStateDir(), "workflowruns.json")
 }
 
 // DefaultCNIBinDir returns the default CNI plugin directory.

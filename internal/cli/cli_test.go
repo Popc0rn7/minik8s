@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,7 +38,7 @@ func TestCLIApplyGetDeletePod(t *testing.T) {
 	localStore := store.NewInMemoryPodStore()
 	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: serverStore, NodeStore: store.NewInMemoryNodeStore()}), localStore, store.NewInMemoryServiceStore())
 
-	manifest := filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")
+	manifest := filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
@@ -132,7 +133,28 @@ func TestCLIApplyMooringCNIManifestStoresCompatObjects(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, ds.Spec.Template.Spec.InitContainers, 1)
 	assert.Equal(t, "install-cni-plugin", ds.Spec.Template.Spec.InitContainers[0].Name)
-	assert.Equal(t, "ghcr.io/popc0rn7/mooring-cni:latest", ds.Spec.Template.Spec.InitContainers[0].Image)
+	assert.Equal(t, "ghcr.io/popc0rn7/mooring-cni:v0.1.0", ds.Spec.Template.Spec.InitContainers[0].Image)
+}
+
+func TestCLIDeleteK8sCompatConfigMapAndDaemonSet(t *testing.T) {
+	k8sStore := store.NewInMemoryK8sCompatStore()
+	handler := harbor.New(harbor.Config{K8sCompatStore: k8sStore, NodeStore: store.NewInMemoryNodeStore()})
+	app := newHTTPTestApp(t, handler, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
+	manifest := writeTempManifest(t, mooringCNIConfigMapManifest)
+	var out bytes.Buffer
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"delete", "configmap", "mooring-cni-cfg", "-n", "kube-mooring"}, &out))
+	assert.Contains(t, out.String(), "configmap/mooring-cni-cfg deleted")
+	_, err := k8sStore.GetConfigMap(k8scompat.MooringCNIConfigMap, k8scompat.MooringCNINamespace)
+	require.ErrorIs(t, err, store.ErrK8sObjectNotFound)
+
+	out.Reset()
+	require.NoError(t, app.Run(context.Background(), []string{"delete", "daemonset", "mooring-cni-ds", "-n", "kube-mooring"}, &out))
+	assert.Contains(t, out.String(), "daemonset/mooring-cni-ds deleted")
+	_, err = k8sStore.GetDaemonSet(k8scompat.MooringCNIDaemonSet, k8scompat.MooringCNINamespace)
+	require.ErrorIs(t, err, store.ErrK8sObjectNotFound)
 }
 
 const mooringCNIConfigMapManifest = `---
@@ -148,7 +170,7 @@ metadata:
   namespace: kube-mooring
 data:
   cni-conf.json: |
-    {"cniVersion":"1.0.0","name":"minik8s","type":"mooring","bridge":"mk8s0","ipam":{"statePath":".minik8s/state/cni-ipam.json"}}
+    {"cniVersion":"1.0.0","name":"minik8s","type":"mooring","bridge":"mk8s0","ipam":{"statePath":"/opt/minik8s/state/cni-ipam.json"}}
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -160,7 +182,7 @@ spec:
     spec:
       initContainers:
       - name: install-cni-plugin
-        image: ghcr.io/popc0rn7/mooring-cni:latest
+        image: ghcr.io/popc0rn7/mooring-cni:v0.1.0
 `
 
 func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
@@ -175,8 +197,8 @@ func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
 	var out bytes.Buffer
 
 	for _, args := range [][]string{
-		{"apply", "-f", filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")},
-		{"apply", "-f", filepath.Join("..", "..", "manifest", "service", "service_clusterip_nginx.yaml")},
+		{"apply", "-f", filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")},
+		{"apply", "-f", filepath.Join("..", "..", "manifests", "service", "service_clusterip_nginx.yaml")},
 		{"get", "pods"},
 		{"delete", "pod", "nginx-pod"},
 		{"get", "services"},
@@ -197,11 +219,30 @@ func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
 
 func TestDefaultLocalConfigPathCanBeOverridden(t *testing.T) {
 	t.Setenv("MINIK8S_CONFIG", "")
-	assert.Equal(t, filepath.Join(".minik8s", "config.json"), DefaultLocalConfigPath())
+	assert.Equal(t, filepath.Join(string(os.PathSeparator), "opt", "minik8s", "config.json"), DefaultLocalConfigPath())
 
 	override := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("MINIK8S_CONFIG", override)
 	assert.Equal(t, override, DefaultLocalConfigPath())
+}
+
+func TestDefaultInstallLayoutPaths(t *testing.T) {
+	t.Setenv("MINIK8S_STATE_DIR", "")
+	t.Setenv("MINIK8S_DNS_DIR", "")
+	t.Setenv("MINIK8S_STATIC_POD_DIR", "")
+	t.Setenv("MINIK8S_CNI_BIN_DIR", "")
+	t.Setenv("MINIK8S_CNI_CONF_DIR", "")
+	t.Setenv("MINIK8S_CONFIG", "")
+
+	root := filepath.Join(string(os.PathSeparator), "opt", "minik8s")
+	assert.Equal(t, filepath.Join(root, "state", "pods.json"), DefaultStatePath())
+	assert.Equal(t, filepath.Join(root, "state", "services.json"), DefaultServiceStatePath())
+	assert.Equal(t, filepath.Join(root, "state", "sailer.json"), DefaultSailerConfigPath())
+	assert.Equal(t, filepath.Join(root, "config.json"), DefaultLocalConfigPath())
+	assert.Equal(t, filepath.Join(root, "dns"), DefaultDNSDir())
+	assert.Equal(t, filepath.Join(root, "static-pods"), DefaultStaticPodDir())
+	assert.Equal(t, filepath.Join(string(os.PathSeparator), "opt", "cni", "bin"), DefaultCNIBinDir())
+	assert.Equal(t, filepath.Join(string(os.PathSeparator), "etc", "cni", "net.d"), DefaultCNIConfDir())
 }
 
 func TestWriteAndReadLocalConfig(t *testing.T) {
@@ -418,6 +459,24 @@ func TestBridgeOptionsDefaultToNoAddons(t *testing.T) {
 	assert.Equal(t, "none", options.addons.String())
 }
 
+func TestBridgeOptionsReadDNSPortFromEnvironment(t *testing.T) {
+	t.Setenv("MINIK8S_DNS_PORT", "153")
+
+	options, err := parseBridgeOptions([]string{"--listen", ":18080"})
+
+	require.NoError(t, err)
+	assert.Equal(t, int32(153), options.dnsListenPort)
+}
+
+func TestInitOptionsReadDNSPortFromEnvironment(t *testing.T) {
+	t.Setenv("MINIK8S_DNS_PORT", "153")
+
+	options, err := parseInitOptions([]string{})
+
+	require.NoError(t, err)
+	assert.Equal(t, int32(153), options.dnsListenPort)
+}
+
 func TestAddonProbePortsForDNSIncludesDNSAndIngress(t *testing.T) {
 	assert.Equal(t, []string{"53", "80"}, addonProbePorts(AddonDNS))
 }
@@ -507,13 +566,11 @@ func TestAddonReadinessReadyUsesManifestHostPorts(t *testing.T) {
 
 func TestBridgeDependencyEtcdDirIsAbsolute(t *testing.T) {
 	t.Setenv("MINIK8S_STATE_DIR", "")
-	cwd, err := os.Getwd()
-	require.NoError(t, err)
 
 	dir, err := bridgeDependencyEtcdDir()
 
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(cwd, ".minik8s", "state", "bridge-deps", "etcd"), dir)
+	assert.Equal(t, filepath.Join(string(os.PathSeparator), "opt", "minik8s", "state", "bridge-deps", "etcd"), dir)
 }
 
 func TestWaitForBridgeDependenciesReadyUsesEtcdProbe(t *testing.T) {
@@ -601,6 +658,7 @@ func TestCLIInitWritesStaticDependencyManifests(t *testing.T) {
 	t.Setenv("MINIK8S_STATE_DIR", filepath.Join(root, "state"))
 	t.Setenv("MINIK8S_DNS_DIR", filepath.Join(root, "dns"))
 	t.Setenv("MINIK8S_STATIC_POD_DIR", filepath.Join(root, "manifests"))
+	t.Setenv("MINIK8S_DNS_PORT", "153")
 	app := New(Config{Runtime: mock.NewMockRuntime(), Store: store.NewInMemoryPodStore()})
 	var out bytes.Buffer
 
@@ -617,12 +675,16 @@ func TestCLIInitWritesStaticDependencyManifests(t *testing.T) {
 
 	dns := readPodManifest(t, filepath.Join(root, "manifests", "dns-gateway.yaml"))
 	assert.Equal(t, "dns-gateway", dns.Name)
+	coredns := dns.Spec.Containers[0]
+	require.Len(t, coredns.Ports, 2)
+	assert.Equal(t, int32(153), coredns.Ports[0].HostPort)
+	assert.Equal(t, int32(153), coredns.Ports[1].HostPort)
 	metricsPod := readPodManifest(t, filepath.Join(root, "manifests", "metrics-server.yaml"))
 	assert.Equal(t, "metrics-server", metricsPod.Name)
 	serverlessPod := readPodManifest(t, filepath.Join(root, "manifests", "serverless-nats.yaml"))
 	assert.Equal(t, "serverless-nats", serverlessPod.Name)
 	assert.Contains(t, out.String(), "static pod manifests initialized")
-	assert.Contains(t, out.String(), "next: ./minik8s bridge --listen :18080")
+	assert.Contains(t, out.String(), "next: ./bin/minik8s bridge --listen :18080")
 	assert.NotContains(t, out.String(), "--addons")
 }
 
@@ -866,7 +928,7 @@ func TestCLICNIInitAndDoctorNetwork(t *testing.T) {
 	assert.Contains(t, out.String(), "bridge: mk8s0")
 	assert.Contains(t, out.String(), "podCIDR: 10.244.0.0/24")
 	assert.Contains(t, out.String(), "gateway: 10.244.0.1")
-	assert.Contains(t, out.String(), "ipam: .minik8s/state/cni-ipam.json")
+	assert.Contains(t, out.String(), "ipam: /opt/minik8s/state/cni-ipam.json")
 	assert.Contains(t, out.String(), "󱈸  mooring: missing")
 }
 
@@ -882,7 +944,7 @@ func TestCLIDoctorNetworkShowsRoutesFromConfig(t *testing.T) {
   "bridge": "mk8s0",
   "podCIDR": "10.244.0.0/24",
   "gateway": "10.244.0.1",
-  "ipam": {"statePath": ".minik8s/state/cni-ipam.json"},
+  "ipam": {"statePath": "/opt/minik8s/state/cni-ipam.json"},
   "routes": [{"dst": "10.244.1.0/24", "gw": "192.168.1.11"}]
 }`), 0o644))
 	app := New(Config{
@@ -1039,6 +1101,49 @@ status:
 	require.NoError(t, json.Unmarshal(data, &conf))
 	assert.Equal(t, "10.244.0.0/24", conf.PodCIDR)
 	assert.Equal(t, "10.244.0.1", conf.Gateway)
+}
+
+func TestCLISailerRunRespectsCNIDisabledInAssignedMode(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MINIK8S_CNI_BIN_DIR", filepath.Join(root, "bin"))
+	t.Setenv("MINIK8S_CNI_CONF_DIR", filepath.Join(root, "net.d"))
+	t.Setenv("MINIK8S_CNI_DISABLED", "1")
+	t.Setenv("MINIK8S_HARBOR", "http://minik8s.test")
+	nodePath := filepath.Join(root, "node-a.yaml")
+	require.NoError(t, os.WriteFile(nodePath, []byte(`kind: Node
+apiVersion: v1
+metadata:
+  name: node-a
+status:
+  addresses:
+  - type: InternalIP
+    address: 192.168.1.8
+`), 0o644))
+	nodeStore := store.NewInMemoryNodeStore()
+	srv := harbor.New(harbor.Config{
+		NodeStore:        nodeStore,
+		ClusterCIDR:      "10.244.0.0/16",
+		NodeCIDRMaskSize: 24,
+	})
+	app := New(Config{
+		Runtime:      mock.NewMockRuntime(),
+		Store:        store.NewInMemoryPodStore(),
+		ServiceProxy: nil,
+		HTTPClient: &http.Client{Transport: cliRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptestResponseRecorder(req)
+			srv.ServeHTTP(rec, req)
+			return rec.Result(), nil
+		})},
+		NetRunner: func(name string, args ...string) error {
+			return fmt.Errorf("netagent should not run when CNI is disabled")
+		},
+	})
+	var out bytes.Buffer
+
+	require.NoError(t, app.Run(context.Background(), []string{"sailer", nodePath, "--harbor", "http://minik8s.test", "--once"}, &out))
+
+	_, err := os.Stat(filepath.Join(root, "net.d", "10-mooring.conf"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestCLISailerRunRequiresLocalJoinConfig(t *testing.T) {
@@ -1286,7 +1391,7 @@ status:
 		TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindDaemonSet, APIVersion: "apps/v1"},
 		ObjectMeta: pod.ObjectMeta{Name: k8scompat.MooringCNIDaemonSet, Namespace: k8scompat.MooringCNINamespace},
 		Spec: k8scompat.DaemonSetSpec{Template: k8scompat.PodTemplateSpec{Spec: k8scompat.PodTemplatePodSpec{
-			InitContainers: []k8scompat.Container{{Name: "install-cni-plugin", Image: "ghcr.io/popc0rn7/mooring-cni:latest"}},
+			InitContainers: []k8scompat.Container{{Name: "install-cni-plugin", Image: "ghcr.io/popc0rn7/mooring-cni:v0.1.0"}},
 		}}},
 	}))
 	srv := harbor.New(harbor.Config{
@@ -1360,7 +1465,7 @@ func TestLocalMooringCNIRunnerInstallsPluginFromDaemonSetImage(t *testing.T) {
 			TypeMeta:   pod.TypeMeta{Kind: k8scompat.KindConfigMap, APIVersion: "v1"},
 			ObjectMeta: pod.ObjectMeta{Name: k8scompat.MooringCNIConfigMap, Namespace: k8scompat.MooringCNINamespace},
 			Data: map[string]string{
-				"cni-conf.json": `{"cniVersion":"1.0.0","name":"minik8s","type":"mooring","bridge":"mk8s0","ipam":{"statePath":".minik8s/state/cni-ipam.json"}}`,
+				"cni-conf.json": `{"cniVersion":"1.0.0","name":"minik8s","type":"mooring","bridge":"mk8s0","ipam":{"statePath":"/opt/minik8s/state/cni-ipam.json"}}`,
 			},
 		},
 		DaemonSet: &k8scompat.DaemonSet{
@@ -1663,17 +1768,20 @@ func TestSailerJoinWritesLocalConfig(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MINIK8S_STATE_DIR", filepath.Join(root, "state"))
 	t.Setenv("MINIK8S_CONFIG", filepath.Join(root, "config.json"))
-	nodePath := filepath.Join(root, "node.yaml")
-	require.NoError(t, os.WriteFile(nodePath, []byte(`
-apiVersion: v1
-kind: Node
-metadata:
-  name: node-a
-status:
-  addresses:
-  - type: InternalIP
-    address: 192.168.1.8
-`), 0o644))
+	oldAddrs := interfaceAddrsFunc
+	oldDial := udpDialFunc
+	interfaceAddrsFunc = func() ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.8"), Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	udpDialFunc = func(localIP net.IP, remote string) (*net.UDPAddr, error) {
+		require.Equal(t, "192.168.1.8", localIP.String())
+		require.Equal(t, "10.0.0.1:18080", remote)
+		return &net.UDPAddr{IP: localIP, Port: 12345}, nil
+	}
+	t.Cleanup(func() {
+		interfaceAddrsFunc = oldAddrs
+		udpDialFunc = oldDial
+	})
 	app := New(Config{
 		Runtime: mock.NewMockRuntime(),
 		Store:   store.NewInMemoryPodStore(),
@@ -1681,6 +1789,15 @@ status:
 			rec := httptestResponseRecorder(req)
 			require.Equal(t, http.MethodPost, req.Method)
 			require.Equal(t, "/api/v1/nodes/join", req.URL.Path)
+			var body struct {
+				Token string    `json:"token"`
+				Node  node.Node `json:"node"`
+			}
+			require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+			assert.Equal(t, "bootstrap-secret", body.Token)
+			assert.Equal(t, "node-a", body.Node.Name())
+			assert.Equal(t, "192.168.1.8", body.Node.InternalIP())
+			assert.Equal(t, "node-a", body.Node.Labels["node"])
 			rec.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(rec).Encode(map[string]any{
 				"node": map[string]any{
@@ -1699,14 +1816,78 @@ status:
 	})
 	var out bytes.Buffer
 
-	require.NoError(t, app.sailerJoin(context.Background(), "http://10.0.0.1:18080/", "bootstrap-secret", nodePath, &out))
+	require.NoError(t, app.sailerJoin(context.Background(), "http://10.0.0.1:18080/", "bootstrap-secret", "node-a", "192.168.1.8", &out))
 
 	sailerConf, err := readLocalSailerConfig(DefaultSailerConfigPath())
 	require.NoError(t, err)
 	assert.Equal(t, "http://10.0.0.1:18080", sailerConf.APIServer)
+	assert.Equal(t, "node-a", sailerConf.NodeName)
+	assert.Equal(t, "192.168.1.8", sailerConf.NodeIP)
 	localConf, err := readLocalConfig(DefaultLocalConfigPath())
 	require.NoError(t, err)
 	assert.Equal(t, "http://10.0.0.1:18080", localConf.Harbor)
+}
+
+func TestBuildJoinNodeGeneratesNameAndDetectsNodeIP(t *testing.T) {
+	oldRandom := randomReader
+	oldDial := udpDialFunc
+	randomReader = strings.NewReader("abcde")
+	udpDialFunc = func(localIP net.IP, remote string) (*net.UDPAddr, error) {
+		require.Nil(t, localIP)
+		require.Equal(t, "10.0.0.1:18080", remote)
+		return &net.UDPAddr{IP: net.ParseIP("192.168.1.9"), Port: 43210}, nil
+	}
+	t.Cleanup(func() {
+		randomReader = oldRandom
+		udpDialFunc = oldDial
+	})
+
+	n, err := buildJoinNode("http://10.0.0.1:18080", "", "")
+
+	require.NoError(t, err)
+	assert.Regexp(t, `^node-[a-z0-9]{5}$`, n.Name())
+	assert.Equal(t, "192.168.1.9", n.InternalIP())
+	assert.Equal(t, n.Name(), n.Labels["node"])
+}
+
+func TestBuildJoinNodeRejectsNodeIPNotOnLocalInterface(t *testing.T) {
+	oldAddrs := interfaceAddrsFunc
+	interfaceAddrsFunc = func() ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.8"), Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	t.Cleanup(func() { interfaceAddrsFunc = oldAddrs })
+
+	_, err := buildJoinNode("http://10.0.0.1:18080", "node-a", "192.168.1.9")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not assigned to a local interface")
+}
+
+func TestBuildJoinNodeRejectsNodeIPWithoutUDPRoute(t *testing.T) {
+	oldAddrs := interfaceAddrsFunc
+	oldDial := udpDialFunc
+	interfaceAddrsFunc = func() ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.8"), Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	udpDialFunc = func(localIP net.IP, remote string) (*net.UDPAddr, error) {
+		return nil, fmt.Errorf("no route")
+	}
+	t.Cleanup(func() {
+		interfaceAddrsFunc = oldAddrs
+		udpDialFunc = oldDial
+	})
+
+	_, err := buildJoinNode("http://10.0.0.1:18080", "node-a", "192.168.1.8")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot reach apiserver")
+}
+
+func TestAPIServerUDPAddressDefaultsHTTPPort(t *testing.T) {
+	got, err := apiServerUDPAddress("http://10.0.0.1")
+
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1:80", got)
 }
 
 func TestSailerOnceRegistersNetworkNodeWhenConfigured(t *testing.T) {
@@ -1811,7 +1992,7 @@ func TestCLIDoctorDockerPullsImage(t *testing.T) {
 func TestCLIGetPodsShowsPodIP(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore, NodeStore: store.NewInMemoryNodeStore()}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
-	manifest := filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")
+	manifest := filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
@@ -2034,7 +2215,7 @@ func TestCLIApplyStoresPendingPodWithoutRuntimeSync(t *testing.T) {
 	runtime.ShouldFailCreateSandbox = true
 	podStore := store.NewInMemoryPodStore()
 	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
-	manifest := filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")
+	manifest := filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
@@ -2072,7 +2253,7 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	localServiceStore := store.NewInMemoryServiceStore()
 	server := harbor.New(harbor.Config{PodStore: podStore, ServiceStore: serviceStore})
 	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), localServiceStore)
-	manifest := filepath.Join("..", "..", "manifest", "service", "service_clusterip_nginx.yaml")
+	manifest := filepath.Join("..", "..", "manifests", "service", "service_clusterip_nginx.yaml")
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
@@ -2169,6 +2350,7 @@ spec:
       containers:
       - name: nginx
         image: nginx
+        imageTag: 1.27-alpine
 `), 0o644))
 	var out bytes.Buffer
 
@@ -2266,6 +2448,10 @@ spec:
 	require.NoError(t, app.Run(context.Background(), []string{"describe", "hpa", "nginx-hpa"}, &out))
 	assert.Contains(t, out.String(), "Name: nginx-hpa")
 	assert.Contains(t, out.String(), "Target: ReplicaSet/nginx-rs")
+	assert.Contains(t, out.String(), "SyncIntervalSeconds: 15")
+	assert.Contains(t, out.String(), "ScaleUpMaxReplicaDeltaPerSync: 1")
+	assert.Contains(t, out.String(), "ScaleDownMaxReplicaDeltaPerSync: 1")
+	assert.Contains(t, out.String(), "ScaleDownCooldownSeconds: 30")
 
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"delete", "hpa/nginx-hpa"}, &out))
@@ -2357,14 +2543,14 @@ func TestCLICobraResourceAliasesAndNamedGet(t *testing.T) {
 	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")}, &out))
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"get", "po", "nginx-pod"}, &out))
 	assert.Contains(t, out.String(), "nginx-pod")
 	assert.Contains(t, out.String(), "Pending")
 
 	out.Reset()
-	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "service", "service_clusterip_nginx.yaml")}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifests", "service", "service_clusterip_nginx.yaml")}, &out))
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"get", "svc", "nginx-service"}, &out))
 	assert.Contains(t, out.String(), "nginx-service")
@@ -2378,7 +2564,7 @@ func TestCLIDeleteResourceSlashName(t *testing.T) {
 	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")}, &out))
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"delete", "pod/nginx-pod"}, &out))
 
@@ -2392,7 +2578,7 @@ func TestCLIOutputJSONAndYAML(t *testing.T) {
 	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")}, &out))
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"get", "pod", "nginx-pod", "-o", "json"}, &out))
 	var got pod.Pod
@@ -2417,7 +2603,7 @@ func TestCLIDescribeAPIResourcesVersionUseLocalConfig(t *testing.T) {
 	t.Setenv("MINIK8S_HARBOR", "")
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")}, &out))
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"describe", "pod", "nginx-pod"}, &out))
 	assert.Contains(t, out.String(), "Name: nginx-pod")

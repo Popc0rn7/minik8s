@@ -171,7 +171,7 @@ Minik8s改造了CNI插件接口，把编译好的Mooring插件上传到DockerHub
 
 默认 CNI 配置目录是 `/etc/cni/net.d`，插件目录是 `/opt/cni/bin`，可分别用 `MINIK8S_CNI_CONF_DIR` 和 `MINIK8S_CNI_BIN_DIR` 覆盖。`make build` 默认把 `mooring` 构建到 `.minik8s/cni/bin/mooring`；真实 root 网络测试需要安装到 `/opt/cni/bin/mooring`，或显式覆盖插件目录。
 
-当前支持三种模式：默认内置 mooring 模式、`manifest/cni/mooring.yaml` 激活的自研 CNI 模式、flannel 兼容模式。CNI 和 kube-proxy 依赖 Linux network namespace、`ip`、`bridge`、`iptables`、`nsenter` 和通常的 root 权限；只演示控制面对象和 Pod lifecycle 时，可以使用 `MINIK8S_CNI_DISABLED=1` 或 `sailer --proxy-disabled` 降低环境要求。
+当前支持三种模式：默认内置 mooring 模式、`manifests/cni/mooring.yaml` 激活的自研 CNI 模式、flannel 兼容模式。CNI 和 kube-proxy 依赖 Linux network namespace、`ip`、`bridge`、`iptables`、`nsenter` 和通常的 root 权限；只演示控制面对象和 Pod lifecycle 时，可以使用 `MINIK8S_CNI_DISABLED=1` 或 `sailer --proxy-disabled` 降低环境要求。
 
 ### Addons
 
@@ -189,8 +189,10 @@ Harbor、Navigator 和 Captain。启用 addon 时，Bridge 会按 `--addons` 加
 manifest，而不是默认全部运行。
 
 Node Join 是多机闭环的入口。控制面通过 `bridge token set` 维护 join token，
-worker 用 `sailer join --apiserver ... --token ... -f manifest/node/*.yaml` 注册
-Node；Harbor 分配或校验 PodCIDR，并在后续 heartbeat 中把 Node 标记为 Ready。
+worker 用 `sailer join --apiserver ... --token ... [--node-name ...] [--node-ip ...]`
+注册 Node；未传 node name 时自动生成 `node-xxxxx`，未传 node IP 时按访问
+apiserver 的 UDP 路由探测本机 IP。Harbor 分配 PodCIDR，并在后续 heartbeat 中把
+Node 标记为 Ready。
 心跳超时后 Node 会转为 Unknown，新 Pod 调度会避开该节点，Service endpoints 也会随
 controller 收敛。
 
@@ -302,7 +304,7 @@ Job 创建独立 submitter Pod/Service，由 submitter 通过 SSH/SCP 提交到�
 - CNI bridge 插件、host-local IPAM、Pod IP 分配、同节点通信。
 - 基于 Node YAML 的节点心跳、Ready/Unknown 状态、控制面 PodCIDR 分配。
 - `sailer` 自动写入本机 CNI 配置，并同步 VXLAN/host-gw 风格的跨节点路由。
-- `manifest/cni/mooring.yaml` 可用 ConfigMap + DaemonSet 兼容对象声明自研 CNI，
+- `manifests/cni/mooring.yaml` 可用 ConfigMap + DaemonSet 兼容对象声明自研 CNI，
   `sailer` 会通过 `mooring-cni` 安装镜像落地 `/opt/cni/bin/mooring`。
 - `minik8s doctor network` 可检查本机 CNI 状态；`minik8s doctor clean` 可清理
   mooring bridge、VXLAN、iptables 规则和本地 IPAM 文件。
@@ -326,14 +328,6 @@ Job 创建独立 submitter Pod/Service，由 submitter 通过 SSH/SCP 提交到�
 - Logbook 状态存储：默认本地 JSON；设置 `MINIK8S_LOGBOOK_ENDPOINTS` 后，
   Pod、Service、ReplicaSet、HPA、DNS、Node 使用 etcd-backed store。
 - 控制面重启后可从 file/etcd 恢复声明对象；worker 继续心跳后状态重新收敛。
-
-尚未实现或不应作为当前版本承诺：
-
-- 完整 Kubernetes Ingress 语义、TLS、外部 DNS controller 和 DNS route 的强一致更新。
-- Serverless 的事件 ack/retry/dead-letter、完整 DAG 和 durable execution。
-- PV/PVC 持久化卷、Security Context。
-- 完整 Kubernetes API machinery，例如 watch、resourceVersion、admission、
-  RBAC、EndpointSlice、完整 probe 语义和资源感知调度。
 
 ## 架构
 
@@ -359,7 +353,7 @@ Job 创建独立 submitter Pod/Service，由 submitter 通过 SSH/SCP 提交到�
   runner 和跨节点网络同步。
 - `internal/kubeproxy/`：iptables Service 数据面规则生成。
 - `pkg/yaml/`：Pod、Service、ReplicaSet、HPA、Node YAML loader 与校验。
-- `manifest/`：可直接用于演示的示例 YAML。
+- `manifests/`：最终验收脚本使用的 YAML、GPU Job 源码和 Serverless demo 输入。
 - `docs/testcase/`：按功能拆分的人工验收脚本和排查说明。
 
 一句话拓扑：
@@ -377,219 +371,15 @@ sailer = kubelet 子集 + node network agent + kube-proxy
 make build
 ```
 
-构建后会得到两个主要二进制：
-
-- `./kubectl`：用户侧资源操作，命令形态对齐 Kubernetes 的 `kubectl` 子集。
-- `./minik8s`：运行和诊断 Minik8s 组件，例如 `init`、`bridge`、`sailer`、`doctor`。
-
-可选：复制 `.env.example` 为 `.env`，把常用运行配置放在文件中。`kubectl` 和
-`minik8s` 启动时都会读取当前目录 `.env`，但 shell 中已设置的环境变量优先。
+上传到远端机器：
 
 ```bash
-cp .env.example .env
+DEPLOY_NODES="root@$NA" SSH_OPTS="-i ~/.ssh/id_ed25519_minik8s" make prod-push
 ```
 
-初始化本地启动文件。该命令只写入 `.minik8s/` 下的状态目录、DNS 配置和
-static pod manifests，不启动进程。它会生成核心 `storage-etcd` 以及 `dns`、
-`metrics`、`serverless` addon manifests；实际启动哪些 addon 由后续
-`bridge --addons` 决定：
+常用环境变量激活：
 
 ```bash
-./minik8s init
+cd /opt/minik8s
+source scripts/acceptance/env.sh
 ```
-
-启动控制面。默认 `bridge` 会先读取 `.minik8s/manifests/` 下的 `storage-etcd.yaml`
-并通过私有本地 `sailer` 启动核心依赖 Pod，然后再启动 Harbor API。默认不启用
-addon；启动后会把 Harbor 地址写入 `.minik8s/config.json`，后续 `./kubectl`
-默认读取该配置。需要 DNS、metrics 或 serverless 时显式传 `--addons`：
-
-```bash
-./minik8s bridge \
-  --listen :18080 \
-  --cluster-cidr 10.244.0.0/16 \
-  --node-cidr-mask-size 24
-```
-
-在另一个终端启动本机 worker：
-
-```bash
-./minik8s bridge token set minik8s --ttl 24h
-./minik8s sailer join \
-  --apiserver http://127.0.0.1:18080 \
-  --token minik8s \
-  -f manifest/node/node_a.yaml
-./minik8s sailer run
-```
-
-常用 CLI：
-
-```bash
-./kubectl version
-./kubectl api-resources
-./kubectl get nodes
-
-./kubectl apply -f manifest/pod/pod_nginx.yaml
-./kubectl get pods
-./kubectl describe pod nginx-pod
-./kubectl delete pod nginx-pod
-
-./kubectl apply -f manifest/service/service_clusterip_nginx.yaml
-./kubectl get services
-./kubectl describe service nginx-service
-./kubectl delete service nginx-service
-
-./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
-./kubectl get rs
-./kubectl describe rs nginx-rs
-./kubectl delete rs nginx-rs
-```
-
-CNI 和 kube-proxy 需要 Linux network namespace、`ip`、`bridge`、`iptables`、
-`nsenter` 和通常的 root 权限。只演示控制面对象和 Pod lifecycle 时，可以使用
-`MINIK8S_CNI_DISABLED=1` 或 `sailer --proxy-disabled` 降低环境要求。网络实验后
-可用 `./minik8s doctor clean` 清理 mooring 相关本地网络状态。
-
-## 双机与 etcd 演示
-
-远程服务器部署流程见 [docs/deploy.md](docs/deploy.md)。双机公共验收流程见
-[docs/testcase/two-node.md](docs/testcase/two-node.md)。主路径是：
-
-1. 在 node-a 启动 `bridge --listen :18080`。
-2. 在 node-a/node-b 分别用对应 `manifest/node/*.yaml` 启动 `sailer`。
-3. 控制面自动分配不同 PodCIDR，例如 `10.244.0.0/24` 和 `10.244.1.0/24`。
-4. `sailer` 写入本机 CNI 配置并同步 VXLAN overlay。
-5. 通过 `get nodes`、PodIP 互通、Service endpoints 和 iptables 规则验证结果。
-
-etcd/Logbook 流程见 [docs/testcase/logbook.md](docs/testcase/logbook.md) 和
-[docs/testcase/startup.md](docs/testcase/startup.md)。默认 `bridge` 会启动一个
-私有本地 `sailer`，由该内部 worker 运行 static deps pod manifests 中的
-`storage-etcd` 以及启用的 addon Pod，并把控制面连接到
-`http://127.0.0.1:2379`。只有启用 `serverless` addon 时，bridge 才会同时设置
-`nats://127.0.0.1:4222`。如果没有先运行 `init`，`bridge` 会回退到内置
-`storage-etcd` 模板；启用 addon 时应先运行 `init` 生成对应 manifests。
-
-默认 etcd 模式下，Pod、Service、ReplicaSet、Node 会写入 `/registry/...` 前缀。
-
-## SAM Serverless Workflow Demo
-
-`demo/serverless/sam` 是当前用于实操的图像处理 Serverless Workflow demo。完整验收
-脚本见 [docs/testcase/serverless-image-workflow.md](docs/testcase/serverless-image-workflow.md)，
-下面是精简主流程。该 demo 使用 `artifact-store` 保存图片、mask、score 和 collage，
-Workflow 之间只传 JSON metadata 与 `artifact://...` 引用。
-
-1. 启动带 serverless addon 的 Minik8s：
-
-```bash
-make build
-./minik8s init --force
-./minik8s bridge \
-  --listen :18080 \
-  --cluster-cidr 10.244.0.0/16 \
-  --node-cidr-mask-size 24 \
-  --addons serverless
-```
-
-另开终端启动 worker：
-
-```bash
-export MINIK8S_HARBOR=http://127.0.0.1:18080
-export MINIK8S_NATS_URL=nats://127.0.0.1:4222
-./minik8s bridge token set minik8s --ttl 24h
-./minik8s sailer join --apiserver "$MINIK8S_HARBOR" --token minik8s -f manifest/node/node_a.yaml
-./minik8s sailer run
-```
-
-再开一个测试终端，确认 NATS/serverless 可用：
-
-```bash
-export MINIK8S_HARBOR=http://127.0.0.1:18080
-export MINIK8S_NATS_URL=nats://127.0.0.1:4222
-./minik8s doctor serverless
-```
-
-2. 构建 SAM demo 镜像。双机演示时，每台 worker 都需要能拉取或 `docker load` 该镜像：
-
-```bash
-docker build -t minik8s/sam-cpu:demo demo/serverless/sam
-```
-
-3. 部署 artifact-store，并记录它的 ClusterIP：
-
-```bash
-./kubectl apply -f manifest/pod/pod_artifact_store.yaml
-./kubectl apply -f manifest/service/service_artifact_store.yaml
-./kubectl get pods
-./kubectl get services
-```
-
-Function manifest 默认通过 `http://10.96.0.1:8080` 访问 artifact-store；如果实际
-ClusterIP 不同，先把 `manifest/function/function_extract_metadata.yaml`、
-`function_sam_segment.yaml`、`function_score_mask.yaml` 和
-`function_make_collage.yaml` 中的 `ARTIFACT_STORE_URL` 改成实际地址。
-
-4. 上传 demo 图片和 dataset。下面命令假设宿主机可通过
-`http://127.0.0.1:8080` 访问 artifact-store；如果不行，换成 NodePort、临时端口转发
-或在集群内执行上传：
-
-```bash
-python3 demo/serverless/sam/upload_artifacts.py \
-  --artifact-store http://127.0.0.1:8080 \
-  --dataset demo/serverless/sam/dataset.json \
-  --output-dir /tmp/most-dog-workflow-requests
-```
-
-5. 部署四个 Function 和两个 Workflow：
-
-```bash
-./kubectl apply -f manifest/function/function_extract_metadata.yaml
-./kubectl apply -f manifest/function/function_sam_segment.yaml
-./kubectl apply -f manifest/function/function_score_mask.yaml
-./kubectl apply -f manifest/function/function_make_collage.yaml
-./kubectl apply -f manifest/function/workflow_process_one_image.yaml
-./kubectl apply -f manifest/function/workflow_make_ranking.yaml
-
-./kubectl get functions
-./kubectl get workflows
-./kubectl get replicasets
-```
-
-6. 跑单图 Workflow、批量并发和最终合成：
-
-```bash
-./minik8s invoke workflow process-one-image \
-  --data "$(cat /tmp/most-dog-workflow-requests/01.json)"
-
-for request in /tmp/most-dog-workflow-requests/[0-9][0-9].json; do
-  ./minik8s invoke workflow process-one-image --data "$(cat "$request")" &
-done
-wait
-
-./minik8s invoke workflow make-ranking \
-  --data "$(cat /tmp/most-dog-workflow-requests/make-ranking.json)"
-```
-
-验证点：`process-one-image` 依次调用 `extract-metadata -> sam-segment -> score-mask`；
-批量阶段 `fn-sam-segment` 可观察到从 0 冷启动并在并发下扩到大于 1；最终输出包含
-`rankingRef` 和 `collageRef`，对应 artifact 为
-`artifact://most-dog/outputs/most-dog-ranking.json` 和
-`artifact://most-dog/outputs/most-dog-ranking.png`。
-
-## 测试与当前验证基线
-
-推荐先跑包级测试，再跑人工 testcase：
-
-```bash
-go test ./pkg/yaml ./internal/bridge/logbook ./internal/bridge/captain ./internal/bridge/harbor ./internal/sailer ./internal/kubeproxy ./test/integration -count=1
-```
-
-全量测试目标命令是：
-
-```bash
-go test ./...
-```
-
-## AI 使用说明
-
-本课程 Handout 要求在 README 或附录中标注 AI 辅助使用。本仓库开发过程中使用
-AI 工具辅助梳理架构、生成/修改部分文档、分析测试输出和定位实现缺口。所有最终
-提交内容仍需由小组成员审阅、运行和解释；答辩时应以代码与测试结果为准。

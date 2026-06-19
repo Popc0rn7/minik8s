@@ -124,7 +124,7 @@ func mooringCNIConfigFromConfigMap(cm *k8scompat.ConfigMap) (cniInitPluginConfig
 		conf.Bridge = "mk8s0"
 	}
 	if conf.IPAM.StatePath == "" {
-		conf.IPAM.StatePath = ".minik8s/state/cni-ipam.json"
+		conf.IPAM.StatePath = "/opt/minik8s/state/cni-ipam.json"
 	}
 	return conf, nil
 }

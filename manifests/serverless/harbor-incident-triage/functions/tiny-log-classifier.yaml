@@ -1,0 +1,194 @@
+kind: Function
+apiVersion: v1
+metadata:
+  name: tiny-log-classifier
+  labels:
+    app: harbor-incident-triage
+spec:
+  runtime: python
+  handler: handler
+  port: 8080
+  minReplicas: 0
+  maxReplicas: 5
+  targetConcurrency: 1
+  idleTimeoutSeconds: 30
+  code: |
+    import json
+    import sys
+    import time
+    
+    
+    MODEL = {
+        "name": "tiny-incident-classifier",
+        "version": "2026-final",
+        "categories": {
+            "network": [
+                "nodeport",
+                "service",
+                "endpoint",
+                "iptables",
+                "ipvs",
+                "dns",
+                "cni",
+                "vxlan",
+                "flannel",
+                "timeout",
+                "connection refused",
+                "security group",
+                "port",
+                "clusterip",
+                "cannot be reached",
+            ],
+            "runtime": [
+                "oomkilled",
+                "crashloop",
+                "restart",
+                "exit code",
+                "container",
+                "killed",
+                "segmentation fault",
+                "permission denied",
+                "volume",
+            ],
+            "build": [
+                "docker pull",
+                "docker build",
+                "apt-get",
+                "registry",
+                "image",
+                "proxy",
+                "build",
+                "glibc",
+                "go build",
+                "npm install",
+            ],
+            "app": [
+                "502",
+                "404",
+                "500",
+                "nginx",
+                "upstream",
+                "http",
+                "api",
+                "websocket",
+                "bad gateway",
+                "not found",
+            ],
+        },
+        "severity": {
+            "critical": [
+                "production down",
+                "unreachable",
+                "cannot be reached",
+                "crashloop",
+                "oomkilled",
+                "all requests failed",
+                "timeout",
+            ],
+            "warning": ["slow", "retry", "failed once", "unstable", "high latency"],
+            "info": ["notice", "debug", "question"],
+        },
+    }
+    
+    
+    def compact(data):
+        return json.dumps(data, separators=(",", ":"), sort_keys=True)
+    
+    
+    def append_trace(event, step):
+        trace = list(event.get("trace", []))
+        trace.append(step)
+        event["trace"] = trace
+        return event
+    
+    
+    def matches(text, keywords):
+        return [keyword for keyword in keywords if keyword in text]
+    
+    
+    def feature_score(text, keywords):
+        hits = matches(text, keywords)
+        score = 0.0
+        for keyword in hits:
+            score += 1.0 + min(len(keyword), 16) / 32.0
+        return round(score, 3), hits
+    
+    
+    def score_groups(text, groups):
+        scores = {}
+        hits = {}
+        for name, keywords in groups.items():
+            score, matched = feature_score(text, keywords)
+            scores[name] = score
+            hits[name] = matched
+        return scores, hits
+    
+    
+    def best_label(scores, default):
+        best_name = default
+        best_score = 0.0
+        for name, score in scores.items():
+            if score > best_score:
+                best_name = name
+                best_score = score
+        return best_name, best_score
+    
+    
+    def confidence(best_score, scores):
+        total = sum(scores.values())
+        if best_score <= 0 or total <= 0:
+            return 0.05
+        return min(0.99, max(0.05, round(best_score / total, 2)))
+    
+    
+    def bounded_sleep_ms(value):
+        try:
+            return max(0, min(int(value), 5000))
+        except (TypeError, ValueError):
+            return 0
+    
+    
+    def main(event):
+        sleep_ms = bounded_sleep_ms(event.get("demoSleepMs", 0))
+        if sleep_ms:
+            time.sleep(sleep_ms / 1000)
+        text = str(event.get("normalizedText") or (event.get("title", "") + " " + event.get("log", ""))).lower()
+        category_scores, category_hits = score_groups(text, MODEL["categories"])
+        severity_scores, severity_hits = score_groups(text, MODEL["severity"])
+        category, category_score = best_label(category_scores, "unknown")
+        severity, severity_score = best_label(severity_scores, "info")
+        if severity_score <= 0:
+            severity = "info"
+        out = dict(event)
+        out.update(
+            {
+                "ok": True,
+                "step": "tiny_log_classifier",
+                "modelName": MODEL["name"],
+                "modelVersion": MODEL["version"],
+                "features": {
+                    "textLength": len(text),
+                    "tokenCount": len([token for token in text.split(" ") if token]),
+                    "demoSleepMs": sleep_ms,
+                },
+                "scores": {
+                    "category": category_scores,
+                    "severity": severity_scores,
+                },
+                "category": category,
+                "severity": severity,
+                "confidence": confidence(category_score, category_scores),
+                "matchedKeywords": category_hits.get(category, []),
+                "severityKeywords": severity_hits.get(severity, []),
+            }
+        )
+        return append_trace(out, "tiny_log_classifier")
+    
+    
+    def handler(event):
+        payload = json.loads(event or "{}")
+        return compact(main(payload))
+    
+    
+    if __name__ == "__main__":
+        print(json.dumps(main(json.load(sys.stdin)), indent=2, sort_keys=True))

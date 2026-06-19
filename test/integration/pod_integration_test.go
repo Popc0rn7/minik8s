@@ -55,7 +55,7 @@ func TestLoadPodFromYAML(t *testing.T) {
 	require.Len(t, p.Spec.Containers, 1)
 	assert.Equal(t, "nginx", p.Spec.Containers[0].Name)
 	assert.Equal(t, "nginx", p.Spec.Containers[0].Image)
-	assert.Equal(t, "alpine", p.Spec.Containers[0].ImageTag)
+	assert.Equal(t, "1.27-alpine", p.Spec.Containers[0].ImageTag)
 	assert.Equal(t, []string{"nginx"}, p.Spec.Containers[0].Command)
 	assert.Equal(t, []string{"-g", "daemon off;"}, p.Spec.Containers[0].Args)
 

@@ -64,6 +64,7 @@ func TestServerlessNATSPodShape(t *testing.T) {
 	assert.Equal(t, "serverless-nats", p.Name)
 	require.Len(t, p.Spec.Containers, 1)
 	assert.Equal(t, "nats", p.Spec.Containers[0].Name)
+	assert.Equal(t, "2", p.Spec.Containers[0].ImageTag)
 	assert.Equal(t, int32(4222), p.Spec.Containers[0].Ports[0].HostPort)
 }
 
@@ -100,4 +101,11 @@ func TestDNSPodBindsDNSHostIPAndMountsRouteProxyBinary(t *testing.T) {
 	assert.Equal(t, "route-proxy-bin", routeProxy.VolumeMounts[1].Name)
 	assert.Equal(t, "/usr/local/bin/minik8s", routeProxy.VolumeMounts[1].MountPath)
 	assert.True(t, routeProxy.VolumeMounts[1].ReadOnly)
+}
+
+func TestDNSPodDefaultRouteProxyBinaryUsesInstallBin(t *testing.T) {
+	p := DNSPod("/var/lib/minik8s/dns", 53, 80)
+
+	require.Len(t, p.Spec.Volumes, 2)
+	assert.Equal(t, "/opt/minik8s/bin/minik8s", p.Spec.Volumes[1].HostPath.Path)
 }

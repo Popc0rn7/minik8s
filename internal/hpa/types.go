@@ -20,10 +20,22 @@ type HorizontalPodAutoscaler struct {
 }
 
 type HorizontalPodAutoscalerSpec struct {
-	ScaleTargetRef ScaleTargetRef `json:"scaleTargetRef" yaml:"scaleTargetRef"`
-	MinReplicas    int32          `json:"minReplicas" yaml:"minReplicas"`
-	MaxReplicas    int32          `json:"maxReplicas" yaml:"maxReplicas"`
-	Metrics        []MetricSpec   `json:"metrics" yaml:"metrics"`
+	ScaleTargetRef ScaleTargetRef                   `json:"scaleTargetRef" yaml:"scaleTargetRef"`
+	MinReplicas    int32                            `json:"minReplicas" yaml:"minReplicas"`
+	MaxReplicas    int32                            `json:"maxReplicas" yaml:"maxReplicas"`
+	Metrics        []MetricSpec                     `json:"metrics" yaml:"metrics"`
+	Behavior       *HorizontalPodAutoscalerBehavior `json:"behavior,omitempty" yaml:"behavior,omitempty"`
+}
+
+type HorizontalPodAutoscalerBehavior struct {
+	SyncIntervalSeconds int32           `json:"syncIntervalSeconds" yaml:"syncIntervalSeconds"`
+	ScaleUp             HPAScalingRules `json:"scaleUp" yaml:"scaleUp"`
+	ScaleDown           HPAScalingRules `json:"scaleDown" yaml:"scaleDown"`
+}
+
+type HPAScalingRules struct {
+	MaxReplicaDeltaPerSync int32 `json:"maxReplicaDeltaPerSync" yaml:"maxReplicaDeltaPerSync"`
+	CooldownSeconds        int32 `json:"cooldownSeconds,omitempty" yaml:"cooldownSeconds,omitempty"`
 }
 
 type ScaleTargetRef struct {
@@ -93,7 +105,37 @@ func (s *HorizontalPodAutoscalerSpec) DeepCopy() HorizontalPodAutoscalerSpec {
 		Metrics:        make([]MetricSpec, len(s.Metrics)),
 	}
 	copy(out.Metrics, s.Metrics)
+	if s.Behavior != nil {
+		behavior := *s.Behavior
+		out.Behavior = &behavior
+	}
 	return out
+}
+
+func DefaultBehavior() HorizontalPodAutoscalerBehavior {
+	return HorizontalPodAutoscalerBehavior{
+		SyncIntervalSeconds: 15,
+		ScaleUp:             HPAScalingRules{MaxReplicaDeltaPerSync: 1},
+		ScaleDown:           HPAScalingRules{MaxReplicaDeltaPerSync: 1, CooldownSeconds: 30},
+	}
+}
+
+func (s *HorizontalPodAutoscalerSpec) EffectiveBehavior() HorizontalPodAutoscalerBehavior {
+	behavior := DefaultBehavior()
+	if s == nil || s.Behavior == nil {
+		return behavior
+	}
+	if s.Behavior.SyncIntervalSeconds != 0 {
+		behavior.SyncIntervalSeconds = s.Behavior.SyncIntervalSeconds
+	}
+	if s.Behavior.ScaleUp.MaxReplicaDeltaPerSync != 0 {
+		behavior.ScaleUp.MaxReplicaDeltaPerSync = s.Behavior.ScaleUp.MaxReplicaDeltaPerSync
+	}
+	if s.Behavior.ScaleDown.MaxReplicaDeltaPerSync != 0 {
+		behavior.ScaleDown.MaxReplicaDeltaPerSync = s.Behavior.ScaleDown.MaxReplicaDeltaPerSync
+	}
+	behavior.ScaleDown.CooldownSeconds = s.Behavior.ScaleDown.CooldownSeconds
+	return behavior
 }
 
 func (s *HorizontalPodAutoscalerStatus) DeepCopy() HorizontalPodAutoscalerStatus {

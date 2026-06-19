@@ -1,0 +1,23 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  name: pod-02-sched-1
+  namespace: default
+  labels:
+    app: pod-02-scheduler
+    case: minik8s-acceptance-02
+spec:
+  containers:
+  - name: worker
+    image: busybox
+    imageTag: 1.36
+    command: ["sh", "-c"]
+    args: ["sleep 3600"]
+    resources:
+      requests:
+        cpu: "0.01"
+        memory: "16Mi"
+      limits:
+        cpu: "0.1"
+        memory: "32Mi"
+  restartPolicy: Always

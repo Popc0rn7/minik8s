@@ -22,7 +22,7 @@ SSH/SCP 把 CUDA 程序上传到交我算平台，使用 Slurm 编译运行并�
 需要真机环境补齐：
 
 - submitter Pod 内可用 SSH 凭据。
-- worker 节点能拉取 `ghcr.io/popc0rn7/gpu-submitter:latest`。
+- worker 节点能拉取 `ghcr.io/popc0rn7/gpu-submitter:v0.1.0`。
 - submitter 能访问 Harbor API endpoint。
 - 交我算账号有 `debuga100` 或 `dgx2` 等目标队列权限。
 
@@ -33,8 +33,8 @@ node-a 和 node-b 使用 `docs/testcase/README.md` 的默认启动流程。额�
 ```fish
 set -gx HARBOR http://$NODE_A_IP:18080
 set -gx MINIK8S_HARBOR $HARBOR
-./kubectl get nodes
-./kubectl get pods -n minik8s-system; or true
+./bin/kubectl get nodes
+./bin/kubectl get pods -n minik8s-system; or true
 ```
 
 期望：
@@ -48,7 +48,7 @@ set -gx MINIK8S_HARBOR $HARBOR
 如果使用 GHCR 已发布镜像：
 
 ```fish
-docker pull ghcr.io/popc0rn7/gpu-submitter:latest
+docker pull ghcr.io/popc0rn7/gpu-submitter:v0.1.0
 ```
 
 如果需要从当前分支构建并推送：
@@ -57,12 +57,12 @@ docker pull ghcr.io/popc0rn7/gpu-submitter:latest
 docker login ghcr.io
 make gpu-submitter-image
 make push-gpu-submitter-image
-docker pull ghcr.io/popc0rn7/gpu-submitter:latest
+docker pull ghcr.io/popc0rn7/gpu-submitter:v0.1.0
 ```
 
 期望：
 
-- worker 节点 `docker images` 能看到 `ghcr.io/popc0rn7/gpu-submitter:latest`。
+- worker 节点 `docker images` 能看到 `ghcr.io/popc0rn7/gpu-submitter:v0.1.0`。
 - 如果 GHCR 镜像不可访问，应先改 `JobControllerConfig.SubmitterImage` 或后续 manifest
   注入机制，不要临时改 CUDA Job YAML。
 
@@ -91,11 +91,11 @@ ssh stu1718@sylogin.hpc.sjtu.edu.cn 'hostname && which sbatch && which squeue &&
 ## GPU-02：提交 CUDA vector add Job
 
 ```fish
-./kubectl apply -f manifest/job/cuda-add.yaml
-./kubectl get jobs
-./kubectl describe job cuda-add
-./kubectl get pods
-./kubectl get services
+./bin/kubectl apply -f manifests/job/cuda-add.yaml
+./bin/kubectl get jobs
+./bin/kubectl describe job cuda-add
+./bin/kubectl get pods
+./bin/kubectl get services
 ```
 
 期望：
@@ -124,8 +124,8 @@ Remote Host: sylogin.hpc.sjtu.edu.cn
 当 submitter 成功提交后：
 
 ```fish
-./kubectl get jobs
-./kubectl describe job cuda-add
+./bin/kubectl get jobs
+./bin/kubectl describe job cuda-add
 ```
 
 期望：
@@ -154,7 +154,7 @@ ssh stu1718@sylogin.hpc.sjtu.edu.cn 'squeue -j <SLURM_JOB_ID> || sacct -j <SLURM
 ## GPU-04：查看 CUDA 结果
 
 ```fish
-./kubectl logs job cuda-add
+./bin/kubectl logs job cuda-add
 ```
 
 期望输出包含：
@@ -187,10 +187,10 @@ Result: PASS
 ## GPU-05：隔离性
 
 ```fish
-./kubectl apply -f manifest/job/cuda-add-2.yaml
-./kubectl get jobs
-./kubectl describe job cuda-add
-./kubectl describe job cuda-add-2
+./bin/kubectl apply -f manifests/job/cuda-add-2.yaml
+./bin/kubectl get jobs
+./bin/kubectl describe job cuda-add
+./bin/kubectl describe job cuda-add-2
 ```
 
 期望：
@@ -208,10 +208,10 @@ Result: PASS
 tile、block 内同步，以及结果回收。
 
 ```fish
-./kubectl apply -f manifest/job/cuda-matmul.yaml
-./kubectl get jobs
-./kubectl describe job cuda-matmul-tiled
-./kubectl logs job cuda-matmul-tiled
+./bin/kubectl apply -f manifests/job/cuda-matmul.yaml
+./bin/kubectl get jobs
+./bin/kubectl describe job cuda-matmul-tiled
+./bin/kubectl logs job cuda-matmul-tiled
 ```
 
 期望：
@@ -258,12 +258,12 @@ Result: PASS
 ## GPU-07：删除和清理
 
 ```fish
-./kubectl delete job cuda-add
-./kubectl delete job cuda-add-2
-./kubectl delete job cuda-matmul-tiled
-./kubectl get jobs
-./kubectl get pods
-./kubectl get services
+./bin/kubectl delete job cuda-add
+./bin/kubectl delete job cuda-add-2
+./bin/kubectl delete job cuda-matmul-tiled
+./bin/kubectl get jobs
+./bin/kubectl get pods
+./bin/kubectl get services
 ```
 
 期望：
@@ -276,7 +276,7 @@ Result: PASS
 ## 故障定位
 
 - `ImagePullBackOff` 或 Pod 创建失败：确认 worker 能拉取
-  `ghcr.io/popc0rn7/gpu-submitter:latest`，或先执行 `make gpu-submitter-image` 和
+  `ghcr.io/popc0rn7/gpu-submitter:v0.1.0`，或先执行 `make gpu-submitter-image` 和
   `make push-gpu-submitter-image`。
 - submitter 无法访问 Harbor：当前 controller 给 submitter 的默认 Harbor 参数是
   `http://127.0.0.1:18080`，这只适合同节点/host 网络假设。多机真机环境需要后续补显式

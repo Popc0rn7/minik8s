@@ -64,6 +64,16 @@ func TestHTTPPodClientListsServices(t *testing.T) {
 		ObjectMeta: pod.ObjectMeta{Name: "nginx-service", Namespace: "default"},
 		Status:     service.ServiceStatus{ClusterIP: "10.96.0.1"},
 	}))
+	require.NoError(t, serviceStore.Create(&service.Service{
+		ObjectMeta: pod.ObjectMeta{Name: "minik8s-dns", Namespace: "minik8s-system"},
+		Spec: service.ServiceSpec{Ports: []service.ServicePort{{
+			Name:       "dns",
+			Protocol:   "UDP",
+			Port:       53,
+			TargetPort: 53,
+		}}},
+		Status: service.ServiceStatus{ClusterIP: "10.96.0.2"},
+	}))
 	srv := harbor.New(harbor.Config{ServiceStore: serviceStore})
 	client := NewHTTPPodClient("http://minik8s.test", &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -76,9 +86,13 @@ func TestHTTPPodClientListsServices(t *testing.T) {
 	services, err := client.ListServices(t.Context())
 	require.NoError(t, err)
 
-	require.Len(t, services, 1)
-	assert.Equal(t, "nginx-service", services[0].Name)
-	assert.Equal(t, "10.96.0.1", services[0].Status.ClusterIP)
+	require.Len(t, services, 2)
+	byName := map[string]*service.Service{}
+	for _, svc := range services {
+		byName[svc.Namespace+"/"+svc.Name] = svc
+	}
+	assert.Equal(t, "10.96.0.1", byName["default/nginx-service"].Status.ClusterIP)
+	assert.Equal(t, "10.96.0.2", byName["minik8s-system/minik8s-dns"].Status.ClusterIP)
 }
 
 func TestHTTPPodClientGetsClusterConfig(t *testing.T) {

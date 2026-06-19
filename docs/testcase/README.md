@@ -6,13 +6,14 @@
 
 ## 默认拓扑
 
-除单个 testcase 明确说明外，默认使用两台 Linux root 节点、fish shell、启用 mooring
-CNI、启用两个 worker。
+除单个 testcase 明确说明外，默认使用三台 Linux root 节点、fish shell、启用 mooring
+CNI、启用三个 worker。
 
 | 角色 | 主机 | Node 名 | 默认 IP | 运行组件 |
 | --- | --- | --- | --- | --- |
-| 控制面 + worker | node-a | `node-a` | `192.168.1.8` | `bridge`、`sailer` |
-| worker | node-b | `node-b` | `192.168.1.6` | `sailer` |
+| 控制面 + worker | node-a | `node-a` | `192.168.1.4` | `bridge`、`sailer` |
+| worker | node-b | `node-b` | `192.168.1.10` | `sailer` |
+| worker | node-c | `node-c` | `192.168.1.15` | `sailer` |
 
 默认网络：
 
@@ -20,13 +21,14 @@ CNI、启用两个 worker。
 - Cluster CIDR：`10.244.0.0/16`
 - node-a PodCIDR：`10.244.0.0/24`
 - node-b PodCIDR：`10.244.1.0/24`
+- node-c PodCIDR：`10.244.2.0/24`
 - Service CIDR 默认从 `10.96.0.0/12` 分配，示例 ClusterIP 通常从 `10.96.0.1` 开始
-- 跨节点 CNI 需要两节点之间双向 UDP `4789`
+- 跨节点 CNI 需要三节点之间双向 UDP `4789`
 
-两台机器都需要 Docker、`ip`、`bridge`、`iptables`、`nsenter`、`curl` 或 `wget`。
-确认 `manifest/node/node_a.yaml` 和 `manifest/node/node_b.yaml` 中的
-`status.addresses[type=InternalIP]` 与实际主机 IP 一致。Node YAML 不需要手写
-`spec.podCIDR`，控制面会按 `CLUSTER_CIDR` 自动分配。
+三台机器都需要 Docker、`ip`、`bridge`、`iptables`、`nsenter`、`curl` 或 `wget`。
+`sailer join` 默认按访问 Harbor 的 UDP 路由探测 node IP；多网卡环境下如果探测结果
+不符合预期，显式传 `--node-ip <本机内网 IP>`。`spec.podCIDR` 由控制面按
+`CLUSTER_CIDR` 自动分配。
 
 如果 root 的 fish 配置设置了代理，确认 `NO_PROXY/no_proxy` 覆盖
 `192.168.0.0/16`、`10.244.0.0/16` 和 `10.96.0.0/12`。访问 Harbor LAN 地址时优先使用
@@ -34,14 +36,14 @@ CNI、启用两个 worker。
 
 ## 默认启动流程
 
-node-a 和 node-b 的每个测试终端先设置变量；如果 IP 不同，先改前两个值：
+node-a、node-b 和 node-c 的每个测试终端先设置变量；如果 IP 不同，先改前三个值：
 
 ```fish
-set -gx NODE_A_IP 192.168.1.8; set -gx NODE_B_IP 192.168.1.6; set -gx CLUSTER_CIDR 10.244.0.0/16; set -gx HARBOR http://$NODE_A_IP:18080; set -gx MINIK8S_HARBOR $HARBOR; set -gx MINIK8S_STATE_DIR .minik8s/testcase-state; set -gx MINIK8S_TOKEN minik8s
+set -gx NODE_A_IP 192.168.1.4; set -gx NODE_B_IP 192.168.1.10; set -gx NODE_C_IP 192.168.1.15; set -gx CLUSTER_CIDR 10.244.0.0/16; set -gx HARBOR http://$NODE_A_IP:18080; set -gx MINIK8S_HARBOR $HARBOR; set -gx MINIK8S_STATE_DIR .minik8s/testcase-state; set -gx MINIK8S_TOKEN minik8s
 set -e MINIK8S_CNI_DISABLED
 ```
 
-两台机器都在仓库根目录构建和同步产物：
+三台机器都在仓库根目录构建和同步产物：
 
 ```fish
 make prod-deploy
@@ -50,7 +52,7 @@ make prod-deploy
 node-a 终端 1 启动控制面：
 
 ```fish
-./minik8s bridge \
+./bin/minik8s bridge \
   --listen :18080 \
   --cluster-cidr $CLUSTER_CIDR \
   --node-cidr-mask-size 24
@@ -59,45 +61,56 @@ node-a 终端 1 启动控制面：
 node-a 测试终端启用 mooring CNI 并设置 bootstrap token：
 
 ```fish
-./kubectl apply -f manifest/cni/mooring.yaml
-./minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
+./bin/kubectl apply -f manifests/cni/mooring.yaml
+./bin/minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
 ```
 
 node-a worker 终端：
 
 ```fish
-./minik8s sailer join \
+./bin/minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
-  -f manifest/node/node_a.yaml
+  --node-name node-a
 
-./minik8s sailer run
+./bin/minik8s sailer run
 ```
 
 node-b worker 终端：
 
 ```fish
-./minik8s sailer join \
+./bin/minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
-  -f manifest/node/node_b.yaml
+  --node-name node-b
 
-./minik8s sailer run
+./bin/minik8s sailer run
+```
+
+node-c worker 终端：
+
+```fish
+./bin/minik8s sailer join \
+  --apiserver http://$NODE_A_IP:18080 \
+  --token $MINIK8S_TOKEN \
+  --node-name node-c
+
+./bin/minik8s sailer run
 ```
 
 node-a 测试终端检查默认环境：
 
 ```fish
-./kubectl version
-./kubectl get nodes
+./bin/kubectl version
+./bin/kubectl get nodes
 curl --noproxy '*' -fsS $HARBOR/nodes
 ip route | grep 10.244
 ip link show mk8s-vxlan
 bridge fdb show dev mk8s-vxlan
 ```
 
-期望 `node-a` 和 `node-b` 均为 `Ready`，并分别显示 `10.244.0.0/24` 和
-`10.244.1.0/24`。
+期望 `node-a`、`node-b` 和 `node-c` 均为 `Ready`，并分别显示 `10.244.0.0/24`、
+`10.244.1.0/24` 和 `10.244.2.0/24`。
 
 ## Handout 覆盖矩阵
 
@@ -119,7 +132,7 @@ bridge fdb show dev mk8s-vxlan
 
 | 文件 | 默认环境 | 说明 |
 | --- | --- | --- |
-| `two-node.md` | 可单独从 0 开始 | 双节点预检、启动、Ready、CNI 基线。 |
+| `two-node.md` | 可单独从 0 开始 | 三节点预检、启动、Ready、CNI 基线。 |
 | `pod.md` | 大部分使用默认环境 | Pod 生命周期、调度、NodeLost 和删除 Node；偏离默认环境的步骤见文档内 case 前置。 |
 | `cni.md` | 使用默认环境 | mooring CNI 主路径、manifest 激活、route fallback。 |
 | `service.md` | 使用默认环境 | Service endpoints、ClusterIP、NodePort、负载均衡、iptables 清理。 |
@@ -143,7 +156,7 @@ bridge fdb show dev mk8s-vxlan
 恢复环境后，才把条目标为已完成。
 
 - [x] `startup.md`：`init`、static deps pod、bridge dependency startup。
-- [x] `two-node.md`：双节点预检、启动、Ready、CNI 基线。
+- [x] `two-node.md`：三节点预检、启动、Ready、CNI 基线。
 - [ ] `pod.md`：Pod lifecycle、调度、NodeLost 和删除 Node；新增多容器 localhost 与共享 volume 后需补测。
 - [x] `cni.md`：mooring CNI、Pod IP、同节点和跨节点通信。
 - [ ] `service.md`：Service endpoints、ClusterIP、NodePort、负载均衡、iptables 清理；新增集群外 NodePort 证据后需补测。
@@ -179,16 +192,16 @@ bridge fdb show dev mk8s-vxlan
 node-a 测试终端：
 
 ```fish
-./kubectl get nodes; or true
-./kubectl get pods; or true
-./kubectl get services; or true
-./kubectl get rs; or true
-./kubectl get hpa; or true
-./kubectl get dns; or true
-./kubectl get functions; or true
-./kubectl get eventtriggers; or true
-./kubectl get workflows; or true
-./kubectl get jobs; or true
+./bin/kubectl get nodes; or true
+./bin/kubectl get pods; or true
+./bin/kubectl get services; or true
+./bin/kubectl get rs; or true
+./bin/kubectl get hpa; or true
+./bin/kubectl get dns; or true
+./bin/kubectl get functions; or true
+./bin/kubectl get eventtriggers; or true
+./bin/kubectl get workflows; or true
+./bin/kubectl get jobs; or true
 ```
 
 清理常见 API 对象：
@@ -215,23 +228,23 @@ for item in \
   "pod busybox-node-b" \
   "pod busybox-client" \
   "pod volume-resource-pod -n demo"
-    ./kubectl delete (string split ' ' -- $item); or true
+    ./bin/kubectl delete (string split ' ' -- $item); or true
 end
 
 sleep 8
-./kubectl get nodes
-./kubectl get pods
+./bin/kubectl get nodes
+./bin/kubectl get pods
 ```
 
-如果要结束本轮测试或重置网络，在 node-a 和 node-b 先停止对应 `sailer run`，再分别检查
+如果要结束本轮测试或重置网络，在 node-a、node-b 和 node-c 先停止对应 `sailer run`，再分别检查
 并清理本机网络状态：
 
 ```fish
-./minik8s doctor network; or true
-./minik8s doctor clean; or true
-./minik8s doctor network; or true
+./bin/minik8s doctor network; or true
+./bin/minik8s doctor clean; or true
+./bin/minik8s doctor network; or true
 ```
 
-`doctor clean` 是本机操作。两台 worker 都跑一遍，才能同时清掉 mooring bridge、
+`doctor clean` 是本机操作。三台节点都跑一遍，才能同时清掉 mooring bridge、
 VXLAN、iptables 规则、CNI 配置和 IPAM 文件。清理后如果要继续跑默认环境 testcase，
 需要重新启动对应 worker，让 `sailer` 重新写入 CNI 配置并注册网络。

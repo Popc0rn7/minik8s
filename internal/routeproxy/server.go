@@ -16,6 +16,7 @@ type FileHandler struct {
 	picker  *EndpointPicker
 	mu      sync.RWMutex
 	modTime time.Time
+	size    int64
 	matcher *Matcher
 }
 
@@ -65,12 +66,13 @@ func (h *FileHandler) reloadIfChanged() error {
 			h.mu.Lock()
 			h.matcher = NewMatcher(Snapshot{})
 			h.modTime = time.Time{}
+			h.size = 0
 			h.mu.Unlock()
 		}
 		return nil
 	}
 	h.mu.RLock()
-	unchanged := !info.ModTime().After(h.modTime)
+	unchanged := info.ModTime().Equal(h.modTime) && info.Size() == h.size
 	h.mu.RUnlock()
 	if unchanged {
 		return nil
@@ -88,6 +90,7 @@ func (h *FileHandler) reloadIfChanged() error {
 	h.mu.Lock()
 	h.matcher = NewMatcher(snapshot)
 	h.modTime = info.ModTime()
+	h.size = info.Size()
 	h.mu.Unlock()
 	return nil
 }

@@ -21,6 +21,7 @@ type Job struct {
 
 type JobSpec struct {
 	Selector     pod.LabelSelector `json:"selector" yaml:"selector"`
+	NodeSelector map[string]string `json:"nodeSelector,omitempty" yaml:"nodeSelector,omitempty"`
 	Source       JobSourceSpec     `json:"source" yaml:"source"`
 	Slurm        JobSlurmSpec      `json:"slurm" yaml:"slurm"`
 	Remote       JobRemoteSpec     `json:"remote" yaml:"remote"`
@@ -100,6 +101,7 @@ func (s *JobSpec) DeepCopy() JobSpec {
 			MatchLabels:      make(map[string]string),
 			MatchExpressions: make([]pod.LabelExpression, len(s.Selector.MatchExpressions)),
 		},
+		NodeSelector: make(map[string]string),
 		Source:       JobSourceSpec{Files: append([]string(nil), s.Source.Files...), Command: s.Source.Command, Artifacts: append([]JobSourceArtifact(nil), s.Source.Artifacts...)},
 		Slurm:        s.Slurm,
 		Remote:       s.Remote,
@@ -107,6 +109,11 @@ func (s *JobSpec) DeepCopy() JobSpec {
 	}
 	for k, v := range s.Selector.MatchLabels {
 		out.Selector.MatchLabels[k] = v
+	}
+	if s.NodeSelector != nil {
+		for k, v := range s.NodeSelector {
+			out.NodeSelector[k] = v
+		}
 	}
 	copy(out.Selector.MatchExpressions, s.Selector.MatchExpressions)
 	return out

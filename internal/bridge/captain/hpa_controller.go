@@ -225,15 +225,30 @@ func metricsFreshnessTime(pm *metrics.PodMetrics) time.Time {
 }
 
 func (c *HPAController) applyScalePolicy(autoscaler *hpa.HorizontalPodAutoscaler, current, desired int32) int32 {
-	if desired > current+1 {
-		return current + 1
+	if desired == current {
+		return desired
+	}
+	behavior := autoscaler.Spec.EffectiveBehavior()
+	if autoscaler.Spec.Behavior == nil && c.cooldown > 0 {
+		behavior.ScaleDown.CooldownSeconds = int32(c.cooldown / time.Second)
+	}
+	if autoscaler.Status.LastScaleTime != 0 && c.now().Sub(time.Unix(autoscaler.Status.LastScaleTime, 0)) < time.Duration(behavior.SyncIntervalSeconds)*time.Second {
+		return current
+	}
+	if desired > current {
+		limit := current + behavior.ScaleUp.MaxReplicaDeltaPerSync
+		if desired > limit {
+			return limit
+		}
+		return desired
 	}
 	if desired < current {
-		if autoscaler.Status.LastScaleTime != 0 && c.now().Sub(time.Unix(autoscaler.Status.LastScaleTime, 0)) < c.cooldown {
+		if autoscaler.Status.LastScaleTime != 0 && c.now().Sub(time.Unix(autoscaler.Status.LastScaleTime, 0)) < time.Duration(behavior.ScaleDown.CooldownSeconds)*time.Second {
 			return current
 		}
-		if desired < current-1 {
-			return current - 1
+		limit := current - behavior.ScaleDown.MaxReplicaDeltaPerSync
+		if desired < limit {
+			return limit
 		}
 	}
 	return desired

@@ -138,7 +138,19 @@ func (c *HTTPPodClient) ListAssignedPods(ctx context.Context, heartbeat NodeHear
 }
 
 func (c *HTTPPodClient) ListServices(ctx context.Context) ([]*service.Service, error) {
-	endpoint, err := c.url("/api/v1/namespaces/default/services")
+	defaultServices, err := c.listServicesInNamespace(ctx, "default")
+	if err != nil {
+		return nil, err
+	}
+	systemServices, err := c.listServicesInNamespace(ctx, "minik8s-system")
+	if err != nil {
+		return nil, err
+	}
+	return append(defaultServices, systemServices...), nil
+}
+
+func (c *HTTPPodClient) listServicesInNamespace(ctx context.Context, namespace string) ([]*service.Service, error) {
+	endpoint, err := c.url("/api/v1/namespaces/" + namespace + "/services")
 	if err != nil {
 		return nil, err
 	}

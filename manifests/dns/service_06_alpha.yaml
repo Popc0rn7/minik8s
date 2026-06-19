@@ -1,0 +1,19 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: service-06-alpha
+  namespace: default
+  labels:
+    app: rs-06-alpha
+    case: minik8s-acceptance-06
+spec:
+  type: ClusterIP
+  selector:
+    matchLabels:
+      app: rs-06-alpha
+      case: minik8s-acceptance-06
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 8080

@@ -88,7 +88,7 @@ spec:
 }
 
 func TestPodVolumeResourceManifestLeavesSchedulingToNavigator(t *testing.T) {
-	path := filepath.Join("..", "..", "manifest", "pod", "pod_volume_resource.yaml")
+	path := filepath.Join("..", "..", "manifests", "pod", "pod_volume_resource.yaml")
 
 	p, err := LoadPodFromFile(path)
 
@@ -97,7 +97,7 @@ func TestPodVolumeResourceManifestLeavesSchedulingToNavigator(t *testing.T) {
 }
 
 func TestMostDogCollagePodManifest(t *testing.T) {
-	path := filepath.Join("..", "..", "manifest", "pod", "pod_most_dog_collage.yaml")
+	path := filepath.Join("..", "..", "manifests", "pod", "pod_most_dog_collage.yaml")
 
 	p, err := LoadPodFromFile(path)
 

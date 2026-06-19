@@ -1043,6 +1043,16 @@ func (s *Server) handleConfigMaps(w http.ResponseWriter, r *http.Request, namesp
 			return
 		}
 		writeJSON(w, http.StatusOK, cm)
+	case http.MethodDelete:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target a configmap")
+			return
+		}
+		if err := s.k8sCompat.DeleteConfigMap(name, namespace); err != nil {
+			writeStoreError(w, err, "configmaps", name)
+			return
+		}
+		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("configmap %q deleted", name))
 	default:
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 	}
@@ -1101,6 +1111,16 @@ func (s *Server) handleDaemonSets(w http.ResponseWriter, r *http.Request, namesp
 			return
 		}
 		writeJSON(w, http.StatusOK, ds)
+	case http.MethodDelete:
+		if name == "" {
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "delete must target a daemonset")
+			return
+		}
+		if err := s.k8sCompat.DeleteDaemonSet(name, namespace); err != nil {
+			writeStoreError(w, err, "daemonsets", name)
+			return
+		}
+		writeStatus(w, http.StatusOK, "Success", fmt.Sprintf("daemonset %q deleted", name))
 	default:
 		writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "method not allowed")
 	}
@@ -2250,7 +2270,7 @@ func (s *Server) readServiceWithAllocation(r io.Reader, namespace, name string) 
 	if err := podyaml.DefaultAndValidateService(&svc); err != nil {
 		return nil, err
 	}
-	existing, err := s.services.List(svc.Namespace, nil)
+	existing, err := s.services.List("", nil)
 	if err != nil {
 		return nil, err
 	}

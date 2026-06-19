@@ -21,7 +21,7 @@ degraded 类状态。
 ```fish
 make prod-deploy
 rm -rf .minik8s
-./minik8s init --force
+./bin/minik8s init --force
 find .minik8s/manifests -maxdepth 1 -type f | sort
 ```
 
@@ -38,15 +38,15 @@ find .minik8s/manifests -maxdepth 1 -type f | sort
 目标：启动 storage、DNS gateway 和 metrics adapter，但不启动 serverless NATS。
 
 ```fish
-./minik8s bridge --listen :18080 --addons dns,metrics
+./bin/minik8s bridge --listen :18080 --addons dns,metrics
 ```
 
 另一个终端：
 
 ```fish
-./kubectl version
+./bin/kubectl version
 docker ps --filter label=minik8s.pod.namespace=minik8s-system
-./minik8s doctor addons
+./bin/minik8s doctor addons
 ```
 
 期望：
@@ -58,10 +58,10 @@ docker ps --filter label=minik8s.pod.namespace=minik8s-system
 ## ADDON-03：doctor readiness
 
 ```fish
-./minik8s doctor addons
-./minik8s doctor addon dns
-./minik8s doctor addon metrics
-./minik8s doctor addon serverless
+./bin/minik8s doctor addons
+./bin/minik8s doctor addon dns
+./bin/minik8s doctor addon metrics
+./bin/minik8s doctor addon serverless
 ```
 
 期望：
@@ -77,7 +77,7 @@ docker ps --filter label=minik8s.pod.namespace=minik8s-system
 
 ```fish
 rm -rf .minik8s/manifests
-./minik8s bridge --listen :18080 --addons dns
+./bin/minik8s bridge --listen :18080 --addons dns
 ```
 
 期望：
@@ -88,7 +88,7 @@ rm -rf .minik8s/manifests
 恢复：
 
 ```fish
-./minik8s init --force
+./bin/minik8s init --force
 ```
 
 ## ADDON-05：只启用 serverless
@@ -97,12 +97,12 @@ rm -rf .minik8s/manifests
 
 ```fish
 rm -rf .minik8s
-./minik8s init --force
+./bin/minik8s init --force
 test -f .minik8s/manifests/storage-etcd.yaml
 test -f .minik8s/manifests/serverless-nats.yaml
 test -f .minik8s/manifests/dns-gateway.yaml
 
-./minik8s bridge --listen :18080 --addons serverless
+./bin/minik8s bridge --listen :18080 --addons serverless
 ```
 
 期望：

@@ -137,12 +137,15 @@ ssh node-2 'docker load -i /tmp/sam-cpu-demo.tar'
 
 ## Function
 
-Apply the Function:
+This SAM demo is legacy material and is not part of the final acceptance
+manifests. To revive it, create a Function manifest for the built image first.
+
+Apply the Function if you have restored that manifest:
 
 ```bash
-./kubectl apply -f manifest/function/function_sam_segment.yaml
-./kubectl get functions
-./kubectl describe function sam-segment
+./bin/kubectl apply -f <sam-function.yaml>
+./bin/kubectl get functions
+./bin/kubectl describe function sam-segment
 ```
 
 The Function uses:
@@ -233,7 +236,7 @@ python3 demo/serverless/sam/make_request.py \
 Invoke with base64 request JSON:
 
 ```bash
-./minik8s invoke function sam-segment --data "$(cat /tmp/01.json)"
+./bin/minik8s invoke function sam-segment --data "$(cat /tmp/01.json)"
 ```
 
 For the full ranking demo, save each SAM response under:
@@ -242,11 +245,11 @@ For the full ranking demo, save each SAM response under:
 /tmp/most-dog/results/<case-id>.json
 ```
 
-Then run the collage Pod:
+Then run a one-shot collage Pod if you have restored that manifest:
 
 ```bash
-./kubectl delete pod most-dog-collage -n demo; true
-./kubectl apply -f manifest/pod/pod_most_dog_collage.yaml
+./bin/kubectl delete pod most-dog-collage -n demo; true
+./bin/kubectl apply -f <most-dog-collage-pod.yaml>
 ```
 
 It writes:
@@ -263,14 +266,14 @@ Function Pod can access the public image URL.
 URL point prompt:
 
 ```bash
-./minik8s invoke function sam-segment \
+./bin/minik8s invoke function sam-segment \
   --data "$(tr -d '\n' < demo/serverless/sam/sample_request_point.json)"
 ```
 
 URL box prompt:
 
 ```bash
-./minik8s invoke function sam-segment \
+./bin/minik8s invoke function sam-segment \
   --data "$(tr -d '\n' < demo/serverless/sam/sample_request_box.json)"
 ```
 
@@ -327,6 +330,6 @@ box coordinates by the same ratio before calling SAM.
 - The image is large because it contains PyTorch and the SAM checkpoint.
 - The demo assumes worker nodes already have network access during image build
   or receive the built image through `docker save/load`.
-- `manifest/pod/pod_most_dog_collage.yaml` pins the hostPath workspace to
-  `node-a` via `nodeSelector`. If `/tmp/most-dog` lives on another worker,
-  change the selector before applying the Pod.
+- The old collage Pod manifest pinned the hostPath workspace to `node-a` via
+  `nodeSelector`. If `/tmp/most-dog` lives on another worker, use the matching
+  selector before applying a restored Pod manifest.

@@ -16,8 +16,8 @@
   Linux 且具备 `ip`、`bridge`、`iptables`、`nsenter` 权限的环境中演示。
 - [ ] 给无权限环境保留降级演示：Pod lifecycle 可用 `MINIK8S_CNI_DISABLED=1`，
   Service 对象/endpoints 可用 `sailer --proxy-disabled`。
-- [ ] 清理/确认示例 Node IP：`manifest/node/node_a.yaml` 和 `node_b.yaml` 中的
-  `InternalIP` 应在演示前改成真实机器地址。
+- [x] 移除旧 Node manifest 演示入口；最终验收统一使用
+  `sailer join --node-name <node>` 注册节点。
 
 ## P1：基础功能补齐
 
@@ -45,7 +45,7 @@
 
 - [x] 自研 bridge CNI、host-local IPAM、同节点 Pod IP 通信。
 - [x] 控制面分配 PodCIDR，sailer 写入 CNI 配置并同步 VXLAN/host-gw route。
-- [x] 自研 `mooring` 可通过 `manifest/cni/mooring.yaml` 的
+- [x] 自研 `mooring` 可通过 `manifests/cni/mooring.yaml` 的
   ConfigMap + DaemonSet 兼容对象激活，`sailer` 可从 `mooring-cni` 安装镜像复制
   插件并写入节点本地 CNI 配置。
 - [x] 增加 `minik8s doctor clean`，用于清理 mooring bridge、VXLAN、iptables
@@ -153,7 +153,8 @@
 - [x] Serverless 调用控制流已统一经 NATS：HTTP invoke、EventTrigger 和 Workflow step
   都通过 `minik8s.serverless.invoke` request/reply 进入 invocation worker，再由
   worker 调用 Activator 转发到函数 Pod。
-- [x] `manifest/function/` 和 `docs/testcase/serverless.md` 提供 P0/P1 展示材料。
+- [x] `manifests/serverless/harbor-incident-triage/` 和
+  `README_ACCEPTANCE.md` 提供最终 Serverless 展示材料。
 - [ ] EventTrigger ack/retry、dead-letter、订阅状态可视化尚未实现。
 - [ ] Workflow 复杂 DAG 自动执行、并行节点、fan-out/fan-in、重试策略和尚未实现的
   durable execution 仍需补齐。
@@ -171,11 +172,19 @@
 
 - [x] `Job` + Slurm submitter 最小抽象已接入：`kind: Job`、
   `selector.matchLabels.accelerator=gpu`、Slurm 字段、submitter Pod/Service、状态和日志。
-- [x] CUDA vector add 示例和 `docs/testcase/job-gpu.md` 验收步骤已添加。
-- [ ] SSH 凭据的 Secret/volume 注入尚未实现；当前不能把密码写入 YAML。
-- [ ] Harbor endpoint 注入仍是简化默认值，多机真机环境需要显式配置为 node-a LAN 地址。
-- [ ] submitter 镜像需要发布到 GHCR 并确保 worker 可拉取。
-- [ ] tiled matrix multiplication 加分示例未实现。
+- [x] CUDA vector add 示例、tiled matrix multiplication 示例和 `docs/testcase/job-gpu.md`
+  验收步骤已添加。
+- [x] `scripts/acceptance/20_personal_gpu.sh` 支持真机验收：若 CUDA Job 在默认约 2 分钟
+  脚本窗口内完成，使用 `kubectl logs job <name>` 展示回收的 `.out/.err` 结果；若交我算队列或
+  运行时间导致窗口内未完成，但已经拿到 Slurm Job ID、remote dir、当前 phase 和
+  `squeue/sacct` 查询命令，则以 pending/running 状态证据完成该小节验收，并在退出时清理
+  Job、submitter Pod 和 Service。
+- [x] GPU submitter 镜像已固定为 `ghcr.io/popc0rn7/gpu-submitter:v0.1.0`。
+- [x] 多机真机环境下 submitter Pod 通过 Job `nodeSelector` 固定到 node-a，避免把
+  SSH 凭据分发到每个 worker。
+- [ ] SSH 凭据仍以 `/opt/minik8s/secrets/gpu-ssh` hostPath 管理，尚未实现
+  Kubernetes-like Secret 对象和 Secret volume 注入；答辩时需说明这是交付部署约束，
+  不是原生 Secret 能力。
 
 ### Security Context
 

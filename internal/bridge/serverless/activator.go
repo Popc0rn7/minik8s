@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -185,7 +186,7 @@ func functionPodReachable(ip string, port int32) bool {
 		return false
 	}
 	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
-	conn, err := dialer.Dial("tcp", fmt.Sprintf("%s:%d", ip, port))
+	conn, err := dialer.Dial("tcp", net.JoinHostPort(ip, strconv.Itoa(int(port))))
 	if err != nil {
 		return false
 	}
@@ -214,7 +215,7 @@ func (a *Activator) pickPod(key string, pods []*pod.Pod) *pod.Pod {
 }
 
 func (a *Activator) forward(ctx context.Context, fn *function.Function, p *pod.Pod, data string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://%s:%d/invoke", p.Status.PodIP, fn.Spec.Port), bytes.NewBufferString(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+net.JoinHostPort(p.Status.PodIP, strconv.Itoa(int(fn.Spec.Port)))+"/invoke", bytes.NewBufferString(data))
 	if err != nil {
 		return "", err
 	}
