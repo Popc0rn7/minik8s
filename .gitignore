@@ -54,3 +54,4 @@ go.work.sum
 
 scripts/acceptance/lib/*_test.sh
 scripts/acceptance/*_test.sh
+logs

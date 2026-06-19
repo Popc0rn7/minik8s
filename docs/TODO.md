@@ -171,11 +171,18 @@
 
 - [x] `Job` + Slurm submitter 最小抽象已接入：`kind: Job`、
   `selector.matchLabels.accelerator=gpu`、Slurm 字段、submitter Pod/Service、状态和日志。
-- [x] CUDA vector add 示例和 `docs/testcase/job-gpu.md` 验收步骤已添加。
-- [ ] SSH 凭据的 Secret/volume 注入尚未实现；当前不能把密码写入 YAML。
-- [ ] Harbor endpoint 注入仍是简化默认值，多机真机环境需要显式配置为 node-a LAN 地址。
-- [ ] submitter 镜像需要发布到 GHCR 并确保 worker 可拉取。
-- [ ] tiled matrix multiplication 加分示例未实现。
+- [x] CUDA vector add 示例、tiled matrix multiplication 示例和 `docs/testcase/job-gpu.md`
+  验收步骤已添加。
+- [x] `scripts/acceptance/20_personal_gpu.sh` 支持真机验收：若 CUDA Job 在脚本窗口内
+  完成，使用 `kubectl logs job <name>` 展示回收的 `.out/.err` 结果；若交我算队列或
+  运行时间导致窗口内未完成，但已经拿到 Slurm Job ID、remote dir、当前 phase 和
+  `squeue/sacct` 查询命令，则以 pending/running 状态证据完成该小节验收。
+- [x] GPU submitter 镜像已固定为 `ghcr.io/popc0rn7/gpu-submitter:v0.1.0`。
+- [x] 多机真机环境下 submitter Pod 通过 Job `nodeSelector` 固定到 node-a，避免把
+  SSH 凭据分发到每个 worker。
+- [ ] SSH 凭据仍以 `/opt/minik8s/secrets/gpu-ssh` hostPath 管理，尚未实现
+  Kubernetes-like Secret 对象和 Secret volume 注入；答辩时需说明这是交付部署约束，
+  不是原生 Secret 能力。
 
 ### Security Context
 

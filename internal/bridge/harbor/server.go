@@ -2270,7 +2270,7 @@ func (s *Server) readServiceWithAllocation(r io.Reader, namespace, name string) 
 	if err := podyaml.DefaultAndValidateService(&svc); err != nil {
 		return nil, err
 	}
-	existing, err := s.services.List(svc.Namespace, nil)
+	existing, err := s.services.List("", nil)
 	if err != nil {
 		return nil, err
 	}

@@ -565,6 +565,44 @@ func TestHarborServiceAllocatesClusterIPAndNodePortFromConfig(t *testing.T) {
 	assert.Contains(t, update.Body.String(), `"nodePort":31000`)
 }
 
+func TestHarborServiceAllocationAvoidsClusterIPAcrossNamespaces(t *testing.T) {
+	serviceStore := store.NewInMemoryServiceStore()
+	require.NoError(t, serviceStore.Create(&service.Service{
+		TypeMeta: pod.TypeMeta{Kind: "Service", APIVersion: "v1"},
+		ObjectMeta: pod.ObjectMeta{
+			Name:      "minik8s-dns",
+			Namespace: "minik8s-system",
+			Labels:    map[string]string{"app": "minik8s-dns"},
+		},
+		Spec: service.ServiceSpec{
+			Type: service.ServiceTypeClusterIP,
+			Ports: []service.ServicePort{{
+				Name:       "dns",
+				Protocol:   "UDP",
+				Port:       53,
+				TargetPort: 53,
+			}},
+		},
+		Status: service.ServiceStatus{ClusterIP: "10.96.0.1"},
+	}))
+	srv := New(Config{
+		PodStore:     store.NewInMemoryPodStore(),
+		ServiceStore: serviceStore,
+		NodeStore:    store.NewInMemoryNodeStore(),
+	})
+	body := `{
+		"kind":"Service",
+		"apiVersion":"v1",
+		"metadata":{"name":"nginx-service","namespace":"default","labels":{"app":"nginx"}},
+		"spec":{"type":"ClusterIP","selector":{"matchLabels":{"app":"nginx"}},"ports":[{"port":80,"targetPort":80,"protocol":"TCP"}]}
+	}`
+
+	create := serve(t, srv, http.MethodPost, "/api/v1/namespaces/default/services", body)
+	require.Equal(t, http.StatusCreated, create.Code, create.Body.String())
+	assert.NotContains(t, create.Body.String(), `"clusterIP":"10.96.0.1"`)
+	assert.Contains(t, create.Body.String(), `"clusterIP":"10.96.0.2"`)
+}
+
 func TestHarborServiceCRUDUpdatesEndpointsWithoutServiceProxy(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()

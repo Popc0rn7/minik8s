@@ -43,12 +43,15 @@ WAIT_SLEEP_SECONDS="${MINIK8S_ACCEPTANCE_WAIT_SLEEP_SECONDS:-2}"
 HTTP_TIMEOUT_SECONDS="${MINIK8S_ACCEPTANCE_HTTP_TIMEOUT_SECONDS:-3}"
 LOCAL_NODE_NAME="${MINIK8S_ACCEPTANCE_LOCAL_NODE:-${MINIK8S_NODE_A_NAME:-node-a}}"
 LOCAL_NODE_IP="${MINIK8S_NODE_A_IP:-192.168.1.4}"
+SURVIVOR_NODE_NAME="${MINIK8S_ACCEPTANCE_07_SURVIVOR_NODE:-${MINIK8S_NODE_B_NAME:-node-b}}"
+SURVIVOR_NODE_IP="${MINIK8S_ACCEPTANCE_07_SURVIVOR_IP:-${MINIK8S_NODE_B_IP:-192.168.1.10}}"
 NODEPORT="${MINIK8S_ACCEPTANCE_07_NODEPORT:-30085}"
 
 RS_NAME="rs-07-web"
 RS_SERVICE_NAME="rs-07-web"
 BARE_POD_NAME="pod-07-bare"
 BARE_SERVICE_NAME="pod-07-bare"
+LOCAL_PENDING_POD_NAME="pod-07-local-pending"
 CASE_LABEL="minik8s-acceptance-07"
 
 SECTION_STATUS="PASS"
@@ -71,6 +74,7 @@ RS_MANIFEST="$MANIFEST_DIR/replicaset_07_acceptance.yaml"
 RS_SERVICE_MANIFEST="$MANIFEST_DIR/service_07_acceptance.yaml"
 BARE_POD_MANIFEST="$MANIFEST_DIR/pod_07_bare.yaml"
 BARE_SERVICE_MANIFEST="$MANIFEST_DIR/service_07_bare.yaml"
+LOCAL_PENDING_POD_MANIFEST="$MANIFEST_DIR/pod_07_local_pending.yaml"
 
 section_begin() {
   SECTION_STATUS="PASS"
@@ -205,6 +209,10 @@ pod_node() {
 
 pod_ip() {
   "$KUBECTL_BIN" get pod "$1" -o yaml | sed -n 's/^[[:space:]]*podIP:[[:space:]]*//p' | head -n 1 | tr -d '"'
+}
+
+pod_phase() {
+  "$KUBECTL_BIN" get pod "$1" -o yaml | sed -n 's/^[[:space:]]*phase:[[:space:]]*//p' | head -n 1 | tr -d '"'
 }
 
 rs_nodes() {
@@ -429,6 +437,7 @@ cleanup_all() {
   start_bridge_quiet
   start_sailer_quiet
   wait_for_node_phase_quiet "$LOCAL_NODE_NAME" Ready >/dev/null 2>&1 || true
+  delete_if_exists pod "$LOCAL_PENDING_POD_NAME"
   delete_if_exists svc "$BARE_SERVICE_NAME"
   delete_if_exists pod "$BARE_POD_NAME"
   delete_if_exists svc "$RS_SERVICE_NAME"
@@ -452,7 +461,7 @@ preflight() {
   quiet_check "$LOCAL_NODE_NAME is Ready" bash -c '"$1" get node "$2" -o yaml | grep -Eq "phase:[[:space:]]*Ready"' _ "$KUBECTL_BIN" "$LOCAL_NODE_NAME" || return 1
   quiet_check "minik8s-bridge.service is active before fault injection" systemctl is-active --quiet minik8s-bridge.service || return 1
   quiet_check "minik8s-sailer.service is active before fault injection" systemctl is-active --quiet minik8s-sailer.service || return 1
-  quiet_check "07 fault tolerance manifests exist" test -f "$RS_MANIFEST" -a -f "$RS_SERVICE_MANIFEST" -a -f "$BARE_POD_MANIFEST" -a -f "$BARE_SERVICE_MANIFEST" || return 1
+  quiet_check "07 fault tolerance manifests exist" test -f "$RS_MANIFEST" -a -f "$RS_SERVICE_MANIFEST" -a -f "$BARE_POD_MANIFEST" -a -f "$BARE_SERVICE_MANIFEST" -a -f "$LOCAL_PENDING_POD_MANIFEST" || return 1
   PREFLIGHT_DONE=1
 }
 
@@ -518,6 +527,39 @@ verify_endpoint_pods_do_not_include() {
       return 1
     fi
   done
+}
+
+apply_local_pending_probe_pod() {
+  "$KUBECTL_BIN" apply -f "$LOCAL_PENDING_POD_MANIFEST"
+}
+
+verify_local_pending_probe_unscheduled() {
+  "$KUBECTL_BIN" describe pod "$LOCAL_PENDING_POD_NAME"
+  local yaml phase node_name
+  yaml="$("$KUBECTL_BIN" get pod "$LOCAL_PENDING_POD_NAME" -o yaml)"
+  phase="$(printf '%s\n' "$yaml" | sed -n 's/^[[:space:]]*phase:[[:space:]]*//p' | head -n 1 | tr -d '"')"
+  node_name="$(printf '%s\n' "$yaml" | sed -n 's/^[[:space:]]*nodeName:[[:space:]]*//p' | head -n 1 | tr -d '"')"
+  printf 'probePod=%s phase=%s nodeName=%s expectedNodeSelector=%s\n' "$LOCAL_PENDING_POD_NAME" "${phase:-<none>}" "${node_name:-<none>}" "$LOCAL_NODE_NAME"
+  test "$phase" = "Pending"
+  test -z "$node_name"
+}
+
+wait_for_local_pending_probe_running_on_local_node() {
+  local attempt=1
+  while [ "$attempt" -le "$WAIT_ATTEMPTS" ]; do
+    local phase node_name
+    phase="$(pod_phase "$LOCAL_PENDING_POD_NAME" 2>/dev/null || true)"
+    node_name="$(pod_node "$LOCAL_PENDING_POD_NAME" 2>/dev/null || true)"
+    if [ "$phase" = "Running" ] && [ "$node_name" = "$LOCAL_NODE_NAME" ]; then
+      "$KUBECTL_BIN" describe pod "$LOCAL_PENDING_POD_NAME"
+      printf 'probePod=%s phase=%s nodeName=%s\n' "$LOCAL_PENDING_POD_NAME" "$phase" "$node_name"
+      return 0
+    fi
+    sleep "$WAIT_SLEEP_SECONDS"
+    attempt=$((attempt + 1))
+  done
+  "$KUBECTL_BIN" describe pod "$LOCAL_PENDING_POD_NAME"
+  return 1
 }
 
 delete_one_nonlocal_rs_pod() {
@@ -600,13 +642,21 @@ section_replicaset_recovery() {
       evidence_run "$RS_NAME no Running Pods remain scheduled on $LOCAL_NODE_NAME" verify_no_running_rs_pods_on_local_node &&
       wait_for_service_endpoints "$RS_SERVICE_NAME" 3 &&
       evidence_run "$RS_SERVICE_NAME endpoints after local node loss" service_summary "$RS_SERVICE_NAME" &&
-      evidence_run "$RS_SERVICE_NAME endpoint pods exclude lost node-a Pods" verify_endpoint_pods_do_not_include "$local_pods_before"
+      evidence_run "$RS_SERVICE_NAME endpoint pods exclude lost node-a Pods" verify_endpoint_pods_do_not_include "$local_pods_before" &&
+      evidence_run "$LOCAL_PENDING_POD_NAME Pod with nodeSelector=$LOCAL_NODE_NAME applied while node is Unknown" apply_local_pending_probe_pod &&
+      evidence_run "$LOCAL_PENDING_POD_NAME remains Pending and unscheduled while $LOCAL_NODE_NAME is Unknown" verify_local_pending_probe_unscheduled
   fi
   if [ "$SECTION_STATUS" = "PASS" ]; then
     local node_port
     node_port="$(node_port_of)"
     quiet_check "$RS_SERVICE_NAME keeps NodePort $NODEPORT" test "$node_port" = "$NODEPORT" &&
-      wait_for_http "node-a reaches Service after $LOCAL_NODE_NAME loss through remaining endpoints $LOCAL_NODE_IP:$node_port" "http://$LOCAL_NODE_IP:$node_port/"
+      quiet_check "$SURVIVOR_NODE_NAME is Ready after $LOCAL_NODE_NAME loss" bash -c '"$1" get node "$2" -o yaml | grep -Eq "phase:[[:space:]]*Ready"' _ "$KUBECTL_BIN" "$SURVIVOR_NODE_NAME" &&
+      wait_for_http "$SURVIVOR_NODE_NAME NodePort reaches Service after $LOCAL_NODE_NAME loss through remaining endpoints $SURVIVOR_NODE_IP:$node_port" "http://$SURVIVOR_NODE_IP:$node_port/"
+  fi
+  if [ "$SECTION_STATUS" = "PASS" ]; then
+    evidence_run "local minik8s-sailer.service restarted for $LOCAL_PENDING_POD_NAME recovery" systemctl start minik8s-sailer.service &&
+      wait_for_node_phase "$LOCAL_NODE_NAME" Ready &&
+      evidence_run "$LOCAL_PENDING_POD_NAME schedules and runs on recovered $LOCAL_NODE_NAME" wait_for_local_pending_probe_running_on_local_node
   fi
   cleanup_all
   section_end "07.2 cleaned ReplicaSet fault resources and restarted sailer"

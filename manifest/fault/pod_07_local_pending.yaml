@@ -1,0 +1,26 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  name: pod-07-local-pending
+  namespace: default
+  labels:
+    app: pod-07-local-pending
+    case: minik8s-acceptance-07
+    tier: local-pending-probe
+spec:
+  nodeSelector:
+    node: node-a
+  containers:
+  - name: sleep
+    image: busybox
+    imageTag: 1.36
+    command: ["sh", "-c"]
+    args: ["sleep 3600"]
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "8Mi"
+      limits:
+        cpu: "50m"
+        memory: "32Mi"
+  restartPolicy: Always
