@@ -12,7 +12,7 @@ import (
 )
 
 func TestHarborIncidentTriageFinalManifests(t *testing.T) {
-	root := filepath.Join("..", "..", "manifest", "serverless", "harbor-incident-triage")
+	root := filepath.Join("..", "..", "manifests", "serverless", "harbor-incident-triage")
 	functionDir := filepath.Join(root, "functions")
 	functionFiles, err := filepath.Glob(filepath.Join(functionDir, "*.yaml"))
 	require.NoError(t, err)
@@ -81,7 +81,7 @@ func TestHarborIncidentTriageFinalManifests(t *testing.T) {
 }
 
 func TestHarborIncidentTriageFinalInputs(t *testing.T) {
-	inputDir := filepath.Join("..", "..", "manifest", "serverless", "harbor-incident-triage", "inputs")
+	inputDir := filepath.Join("..", "..", "manifests", "serverless", "harbor-incident-triage", "inputs")
 	inputFiles, err := filepath.Glob(filepath.Join(inputDir, "*.json"))
 	require.NoError(t, err)
 	require.Len(t, inputFiles, 8)

@@ -1,0 +1,30 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  name: volume-resource-pod
+  namespace: demo
+  labels:
+    app: volume-test
+spec:
+  containers:
+  - name: writer
+    image: busybox
+    imageTag: 1.36
+    command: ["sh", "-c"]
+    args: ["echo volume-ok > /data/marker; sleep 3600"]
+    volumeMounts:
+    - name: data
+      mountPath: /data
+    resources:
+      requests:
+        cpu: "0.1"
+        memory: "64Mi"
+      limits:
+        cpu: "0.5"
+        memory: "128Mi"
+  volumes:
+  - name: data
+    hostPath:
+      path: /tmp/minik8s-case-data
+      type: Directory
+  restartPolicy: Always

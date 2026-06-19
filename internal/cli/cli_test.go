@@ -38,7 +38,7 @@ func TestCLIApplyGetDeletePod(t *testing.T) {
 	localStore := store.NewInMemoryPodStore()
 	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: serverStore, NodeStore: store.NewInMemoryNodeStore()}), localStore, store.NewInMemoryServiceStore())
 
-	manifest := filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")
+	manifest := filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
@@ -197,8 +197,8 @@ func TestCLIApplyGetDeleteRequireHarbor(t *testing.T) {
 	var out bytes.Buffer
 
 	for _, args := range [][]string{
-		{"apply", "-f", filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")},
-		{"apply", "-f", filepath.Join("..", "..", "manifest", "service", "service_clusterip_nginx.yaml")},
+		{"apply", "-f", filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")},
+		{"apply", "-f", filepath.Join("..", "..", "manifests", "service", "service_clusterip_nginx.yaml")},
 		{"get", "pods"},
 		{"delete", "pod", "nginx-pod"},
 		{"get", "services"},
@@ -1992,7 +1992,7 @@ func TestCLIDoctorDockerPullsImage(t *testing.T) {
 func TestCLIGetPodsShowsPodIP(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore, NodeStore: store.NewInMemoryNodeStore()}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
-	manifest := filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")
+	manifest := filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
@@ -2215,7 +2215,7 @@ func TestCLIApplyStoresPendingPodWithoutRuntimeSync(t *testing.T) {
 	runtime.ShouldFailCreateSandbox = true
 	podStore := store.NewInMemoryPodStore()
 	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
-	manifest := filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")
+	manifest := filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
@@ -2253,7 +2253,7 @@ func TestCLIApplyGetDeleteService(t *testing.T) {
 	localServiceStore := store.NewInMemoryServiceStore()
 	server := harbor.New(harbor.Config{PodStore: podStore, ServiceStore: serviceStore})
 	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), localServiceStore)
-	manifest := filepath.Join("..", "..", "manifest", "service", "service_clusterip_nginx.yaml")
+	manifest := filepath.Join("..", "..", "manifests", "service", "service_clusterip_nginx.yaml")
 	var out bytes.Buffer
 
 	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", manifest}, &out))
@@ -2543,14 +2543,14 @@ func TestCLICobraResourceAliasesAndNamedGet(t *testing.T) {
 	app := newHTTPTestApp(t, server, store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")}, &out))
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"get", "po", "nginx-pod"}, &out))
 	assert.Contains(t, out.String(), "nginx-pod")
 	assert.Contains(t, out.String(), "Pending")
 
 	out.Reset()
-	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "service", "service_clusterip_nginx.yaml")}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifests", "service", "service_clusterip_nginx.yaml")}, &out))
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"get", "svc", "nginx-service"}, &out))
 	assert.Contains(t, out.String(), "nginx-service")
@@ -2564,7 +2564,7 @@ func TestCLIDeleteResourceSlashName(t *testing.T) {
 	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")}, &out))
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"delete", "pod/nginx-pod"}, &out))
 
@@ -2578,7 +2578,7 @@ func TestCLIOutputJSONAndYAML(t *testing.T) {
 	app := newHTTPTestApp(t, harbor.New(harbor.Config{PodStore: podStore}), store.NewInMemoryPodStore(), store.NewInMemoryServiceStore())
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")}, &out))
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"get", "pod", "nginx-pod", "-o", "json"}, &out))
 	var got pod.Pod
@@ -2603,7 +2603,7 @@ func TestCLIDescribeAPIResourcesVersionUseLocalConfig(t *testing.T) {
 	t.Setenv("MINIK8S_HARBOR", "")
 	var out bytes.Buffer
 
-	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifest", "pod", "pod_nginx.yaml")}, &out))
+	require.NoError(t, app.Run(context.Background(), []string{"apply", "-f", filepath.Join("..", "..", "manifests", "pod", "pod_nginx.yaml")}, &out))
 	out.Reset()
 	require.NoError(t, app.Run(context.Background(), []string{"describe", "pod", "nginx-pod"}, &out))
 	assert.Contains(t, out.String(), "Name: nginx-pod")
