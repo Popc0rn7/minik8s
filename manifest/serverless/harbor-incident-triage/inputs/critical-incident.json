@@ -1,0 +1,9 @@
+{
+  "source": "demo",
+  "title": "Production API all requests failed",
+  "log": "production down, nginx returns 502 bad gateway, upstream api all requests failed",
+  "labels": {
+    "service": "frontend",
+    "namespace": "default"
+  }
+}

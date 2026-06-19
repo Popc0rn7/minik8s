@@ -1,0 +1,11 @@
+{
+  "source": "load-demo",
+  "title": "Production NodePort service timeout",
+  "log": "production down, all requests failed, service endpoint cannot be reached, timeout from nodeport and iptables path",
+  "demoSleepMs": 3000,
+  "labels": {
+    "cluster": "minik8s-demo",
+    "namespace": "default",
+    "scenario": "autoscale"
+  }
+}
