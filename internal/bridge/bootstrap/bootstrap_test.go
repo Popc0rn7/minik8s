@@ -64,6 +64,7 @@ func TestServerlessNATSPodShape(t *testing.T) {
 	assert.Equal(t, "serverless-nats", p.Name)
 	require.Len(t, p.Spec.Containers, 1)
 	assert.Equal(t, "nats", p.Spec.Containers[0].Name)
+	assert.Equal(t, "2", p.Spec.Containers[0].ImageTag)
 	assert.Equal(t, int32(4222), p.Spec.Containers[0].Ports[0].HostPort)
 }
 

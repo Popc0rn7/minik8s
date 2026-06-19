@@ -259,7 +259,7 @@ Activator 先读取 Function 和对应的 `fn-<function>` ReplicaSet：
 - sailer 在节点上创建并启动容器。
 
 函数 runtime 目前是 Python HTTP wrapper。Function 的 `spec.code` 通过环境变量注入到
-`python:3.11.9-slim` 容器中，容器启动后监听 `/invoke`。
+`python:3.11-slim` 容器中，容器启动后监听 `/invoke`。
 
 ### 5. Activator 等待函数 Pod 真正可用
 

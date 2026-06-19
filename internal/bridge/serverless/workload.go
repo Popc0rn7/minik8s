@@ -85,7 +85,7 @@ func functionContainer(fn *function.Function) pod.ContainerSpec {
 	return pod.ContainerSpec{
 		Name:     "python-runtime",
 		Image:    "python",
-		ImageTag: "3.11.9-slim",
+		ImageTag: "3.11-slim",
 		Command:  []string{"python3", "-c", pythonRuntimeServer},
 		Ports:    ports,
 		Env:      env,

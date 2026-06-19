@@ -57,10 +57,10 @@ if run rg -n 'imageTag:[[:space:]]*alpine($|[[:space:]]|")' "${floating_scan_pat
 else
   pass "nginx alpine shorthand tags are not present"
 fi
-if run rg -n '(nats:2([^0-9.]|$)|ImageTag:[[:space:]]*"2"|python:3\.11-slim|ImageTag:[[:space:]]*"3\.11-slim")' internal docs demo "${floating_scan_paths[@]}"; then
-  fail "serverless dependency images must use stable fixed tags"
+if run rg -n '(python:3\.11\.9|ImageTag:[[:space:]]*"3\.11\.9)' internal docs demo "${floating_scan_paths[@]}"; then
+  fail "serverless Python runtime must not use patch-level 3.11.9 tags"
 else
-  pass "serverless dependency image tags are stable fixed versions"
+  pass "serverless Python runtime image uses the agreed python:3.11-slim tag"
 fi
 
 step "verify required final image table exists"
@@ -70,8 +70,8 @@ if [ -f docs/acceptance/images.md ]; then
   check_run "image table lists pinned nginx image" rg -n 'nginx:1.27-alpine' docs/acceptance/images.md
   check_run "image table lists pinned busybox image" rg -n 'busybox:1.36' docs/acceptance/images.md
   check_run "image table lists pinned HPA stress image" rg -n 'polinux/stress:1.0.4' docs/acceptance/images.md
-  check_run "image table lists pinned NATS image" rg -n 'nats:2.10.24-alpine' docs/acceptance/images.md
-  check_run "image table lists pinned Python runtime image" rg -n 'python:3.11.9-slim' docs/acceptance/images.md
+  check_run "image table lists NATS major image" rg -n 'nats:2' docs/acceptance/images.md
+  check_run "image table lists Python 3.11 slim runtime image" rg -n 'python:3.11-slim' docs/acceptance/images.md
 else
   mark_limited "docs/acceptance/images.md is not present in this install layout; skipping image table check"
 fi

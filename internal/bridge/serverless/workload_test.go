@@ -37,7 +37,7 @@ func TestBuildFunctionReplicaSetCreatesRuntimePod(t *testing.T) {
 	container := rs.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, "python-runtime", container.Name)
 	assert.Equal(t, "python", container.Image)
-	assert.Equal(t, "3.11.9-slim", container.ImageTag)
+	assert.Equal(t, "3.11-slim", container.ImageTag)
 	assert.Equal(t, int32(8080), container.Ports[0].ContainerPort)
 	assert.Contains(t, container.Command, "python3")
 	assert.Contains(t, envValue(container.Env, "MINIK8S_FUNCTION_CODE"), "def handler")

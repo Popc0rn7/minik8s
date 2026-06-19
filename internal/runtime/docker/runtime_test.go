@@ -171,7 +171,7 @@ func TestApplyResourcesUsesDockerCPUAndMemoryLimits(t *testing.T) {
 
 func TestContainerConfigLeavesImageDefaultsWhenCommandAndArgsEmpty(t *testing.T) {
 	config := dockerContainerConfig(&runtime.ContainerConfig{
-		Image:   "nats:2.10.24-alpine",
+		Image:   "nats:2",
 		Command: []string{},
 		Args:    []string{},
 	})

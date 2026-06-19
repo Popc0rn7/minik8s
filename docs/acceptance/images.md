@@ -37,8 +37,8 @@ bash scripts/acceptance/00_env_check.sh
 | DNS | CoreDNS | `coredns/coredns:1.11.1` | Docker Hub | 启用 `--addons dns` 时使用。 |
 | DNS | DNS gateway nginx | `nginx:1.27-alpine` | Docker Hub | 启用 `--addons dns` 时使用。 |
 | DNS | route-proxy sidecar base | `alpine:3.20` | Docker Hub | 挂载本地 `minik8s` 二进制运行 route-proxy。 |
-| Serverless | NATS event bus | `nats:2.10.24-alpine` | Docker Hub | 启用 `--addons serverless` 时使用。 |
-| Serverless | Python Function runtime | `python:3.11.9-slim` | Docker Hub | 内联 Python Function 后端使用。 |
+| Serverless | NATS event bus | `nats:2` | Docker Hub | 启用 `--addons serverless` 时使用；验收环境统一预拉取该 major tag。 |
+| Serverless | Python Function runtime | `python:3.11-slim` | Docker Hub | 内联 Python Function 后端使用。 |
 | Serverless demo | SAM / image workflow runtime | `minik8s/sam-cpu:demo` | 本地构建 | 由 `docker build -t minik8s/sam-cpu:demo demo/serverless/sam` 生成。 |
 | GPU personal | Slurm submitter | `ghcr.io/popc0rn7/gpu-submitter:v0.1.0` | GHCR | GPU Job 个人作业使用。 |
 
@@ -54,8 +54,8 @@ docker pull quay.io/coreos/etcd:v3.5.15
 docker pull ghcr.io/popc0rn7/mooring-cni:v0.1.0
 docker pull coredns/coredns:1.11.1
 docker pull alpine:3.20
-docker pull nats:2.10.24-alpine
-docker pull python:3.11.9-slim
+docker pull nats:2
+docker pull python:3.11-slim
 docker pull ghcr.io/popc0rn7/gpu-submitter:v0.1.0
 ```
 
@@ -77,8 +77,8 @@ docker save \
   ghcr.io/popc0rn7/mooring-cni:v0.1.0 \
   coredns/coredns:1.11.1 \
   alpine:3.20 \
-  nats:2.10.24-alpine \
-  python:3.11.9-slim \
+  nats:2 \
+  python:3.11-slim \
   ghcr.io/popc0rn7/gpu-submitter:v0.1.0 \
   minik8s/sam-cpu:demo \
   -o /tmp/minik8s-images/minik8s-acceptance-images.tar

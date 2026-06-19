@@ -320,7 +320,7 @@ func ServerlessNATSPod() *pod.Pod {
 			Containers: []pod.ContainerSpec{{
 				Name:     "nats",
 				Image:    "nats",
-				ImageTag: "2.10.24-alpine",
+				ImageTag: "2",
 				Ports: []pod.ContainerPort{{
 					ContainerPort: 4222,
 					HostPort:      4222,
