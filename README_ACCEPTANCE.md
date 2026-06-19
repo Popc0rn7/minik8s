@@ -6,7 +6,7 @@
 
 - Repository: https://github.com/Popc0rn7/minik8s
 - Final tag: v0.1.0
-- Final commit: TODO
+- Final commit: `ae9d70de0b30ce375ec45f53e2aa6c498db717f2`（提交前以最终 tag 指向的 commit 为准）
 - Install root on target machines: `/opt/minik8s`。
 
 现有交付布局固定为：
@@ -34,6 +34,57 @@
 /opt/cni/ # CNI安装
 └── bin/
 ```
+
+## Project Overview
+
+Minik8s 是一个教学版 Kubernetes 核心闭环实现，控制面由 `bridge` 组合 API server 子集、controller-manager 子集和 scheduler 子集，数据面由 `sailer` 组合 kubelet 子集、node network agent 和 kube-proxy。CLI 入口在 `cmd/minik8s/`，主要业务实现位于 `internal/`，YAML 解析和默认值/校验位于 `pkg/yaml/`。
+
+主要组件和代码路径：
+
+| 组件 | 职责 | 代码路径 |
+| --- | --- | --- |
+| CLI | `apply/get/describe/delete`、bridge/sailer 启动和 serverless invoke/request | `cmd/minik8s/` |
+| Harbor API | 资源 HTTP API、node join、metrics API、DNS API | `internal/bridge/harbor/` |
+| Logbook | in-memory/file/etcd-backed 状态存储 | `internal/bridge/logbook/` |
+| Navigator | Pod 调度，当前为 Ready 节点过滤加 Round-Robin | `internal/bridge/navigator/` |
+| Controllers | Service、ReplicaSet、HPA、Job、Node lifecycle 等控制循环 | `internal/bridge/captain/` |
+| Sailer | 节点本地 Pod 生命周期、CNI、proxy reconcile | `internal/sailer/` |
+| CNI / Network | mooring CNI、跨节点 VXLAN/route 同步、iptables Service proxy | `internal/cniplugin/`, `internal/netagent/`, `internal/kubeproxy/` |
+| Runtime | Docker/containerd 运行时适配 | `internal/runtime/` |
+| Serverless | Function/EventTrigger/Workflow、activator、invocation worker | `internal/bridge/serverless/`, `internal/functionrunner/`, `internal/function/`, `internal/workflow/` |
+| GPU Job | Job 类型、Slurm 脚本生成和 submitter controller | `internal/job/`, `internal/slurm/`, `internal/bridge/captain/job_controller.go` |
+
+主要开源组件及用途：
+
+| 组件 | 用途 |
+| --- | --- |
+| Go | 主实现语言 |
+| Docker / containerd | 本地容器运行时 |
+| CNI | Pod 网络插件接口，mooring 插件负责创建 Pod 网络 |
+| Linux bridge / VXLAN / route | Pod 同节点和跨节点通信 |
+| iptables | ClusterIP/NodePort Service 转发和负载均衡 |
+| etcd | 设置 `MINIK8S_LOGBOOK_ENDPOINTS` 后作为 Logbook 后端 |
+| metrics-server 接口 | HPA 读取 Pod CPU/Memory metrics |
+| NATS-lite/本地事件总线 | Serverless invoke、event trigger 和 workflow 调用链 |
+| Slurm | GPU Job 远程提交到交我算平台 |
+| wrk | Serverless 并发压测 |
+
+项目分支说明：
+
+- `main`：主分支，用于稳定代码和最终 tag。
+- `dev`：开发集成分支，CI 对 push 和 PR 执行格式、lint、测试和构建检查。
+- 功能分支：按功能模块开发并通过 PR 合并。
+- `v0.1.0`：最终验收 tag。
+
+组员分工和贡献度需在最终提交前按实际小组成员补齐。当前个人作业验收入口为 GPU Job：`scripts/acceptance/20_personal_gpu.sh`，主要代码路径为 `internal/bridge/captain/job_controller.go`、`internal/job/`、`internal/slurm/`、`manifest/job/`。
+
+已知限制和未完成内容：
+
+- PV/PVC 和 Security Context 尚未实现，本仓库个人作业选择 GPU Job。
+- 自选功能选择 Serverless；MicroService/Service Mesh 未作为最终展示方向。
+- HPA、DNS、GPU Job、Serverless 均为教学版简化实现，依赖指定验收环境和脚本路径展示。
+- CNI、VXLAN、iptables、NodePort 数据面测试需要 Linux 网络工具和 root 权限。
+- 干净模块缓存下，`go test ./...` 可能受 `github.com/docker/docker v27.0.0+incompatible` 依赖解析影响；修复依赖前不声明全量 `go test ./...` 稳定通过。
 
 ## 00 Environment Requirements
 
@@ -256,27 +307,26 @@ bash scripts/acceptance/05_hpa.sh
 该脚本使用 `manifests/hpa/`下的 ReplicaSet、Service 和一个 HPA YAML 执行，脚本小节号对应 `docs/FINAL.md` 的 7.5 小节。
 
 **05.1 HPA 配置和创建（对应 7.5.1）**
-- 只展示 `hpa_05_acceptance.yaml` 的 HPA 摘要，包含 `kind`、`metadata.name`、target workload、`minReplicas`、`maxReplicas`、`behavior` 扩缩容速度策略和 CPU/Memory metrics。
-- 创建 ReplicaSet 和固定 NodePort `30082` Service，并复用这组资源进入 05.2。
+- 展示 `hpa_05_acceptance.yaml` 的 HPA 摘要。
+- 创建 ReplicaSet 和固定 NodePort `30082` Service。
 - 等待 `pods.metrics.k8s.io` 发现 ReplicaSet 的 Pod metrics，metrics server 监控 CPU/Memory，输出 Pod、CPU、memory 和 timestamp 摘要。
 - 通过 `kubectl apply` 创建 HPA，再运行 `kubectl get hpa` 和 `kubectl describe hpa`，副本上下限为 1 到 3，且包含 CPU/Memory utilization 指标。
 
-**05.2 扩缩容时机（对应 7.5.2）**
-- 不重新创建 RS/Service/HPA，直接复用 05.1 的资源。
+**05.2 扩缩容时机**
+- 复用上一节的的资源RS/SRV。
 - ReplicaSet Pod 中的 `polinux/stress:1.0.4` sidecar 执行真实 `stress --cpu 1 --timeout 60s`，制造 CPU load。
 - 脚本固定输出五个 observation 时间点：`before-load`、`scale-up-trigger`、`after-scale-up`、`after-load`、`scale-down-trigger`。
 - 每个 observation 同时展示 metrics 采集值、HPA 判断、RS Desired/Current、Running Pods 和 Service endpoints，最后说明观测到的最大副本数 3 和最小副本数 1。
-- 当前 metrics 链路是教学版实现：`sailer` 采集 Pod CPU/memory metrics 并上报给 bridge，bridge 暴露最小 `metrics.k8s.io` API，HPA controller 读取 CPU/Memory utilization 计算目标副本数。
+- 当前 metrics 实现如下：`sailer` 采集 Pod CPU/memory metrics 并上报给 bridge，bridge 暴露最小 `metrics.k8s.io` API 给 metrics server，HPA controller 读取 metrics server 的 CPU/Memory utilization 信息计算目标副本数。
 
-**05.3 扩缩容速度（对应 7.5.3）**
-- `hpa_05_acceptance.yaml` 显式配置教学版 `spec.behavior`：`syncIntervalSeconds: 15`、扩容每次最多 `1` 个副本、缩容每次最多 `1` 个副本、缩容 `cooldownSeconds: 30`。
-- `05_hpa.sh` 在 05.1 的 manifest summary 和 `kubectl describe hpa` 中展示该策略；05.2 的 replica path 继续展示实际副本数按配置逐步变化。
-- 05.3 会额外应用 `hpa_05_fast.yaml`，把 `syncIntervalSeconds` 改为 `5`，把扩容/缩容单轮最大步长改为 `2`，并把缩容 cooldown 改为 `0`。脚本会展示 fast YAML 摘要、`kubectl describe hpa` 中的 fast behavior，以及 1 到 3、3 到 1 的快速副本变化路径。
-- 05.3 结束时会重新 apply 普通 `hpa_05_acceptance.yaml`，让 05.4 继续使用常规策略做扩缩容后访问验证。
-- 当前实现参考 Kubernetes HPA behavior 的结构，但只支持固定副本步长和缩容冷却，不支持 `policies[]`、Percent、`periodSeconds`、`selectPolicy` 和 stabilization window。
+**05.3 扩缩容速度**
+- `hpa_05_acceptance.yaml` 显式配置简化版 `spec.behavior`：`syncIntervalSeconds: 15`、扩容每次最多 `1` 个副本、缩容每次最多 `1` 个副本、缩容 `cooldownSeconds: 30`。
+- 对比05.2，05.3 会额外应用 `hpa_05_fast.yaml`，把 `syncIntervalSeconds` 改为 `5`，把扩容/缩容单轮最大步长改为 `2`，并把缩容 cooldown 改为 `0`。展示快速扩缩容路径。
+- 当前实现是 Kubernetes HPA 的简化版，只支持比较静态的 policy 改动
 
 **05.4 扩缩容后访问目标 Pod（对应 7.5.4）**
-- 在 05.2 缩回 1 个副本后，删除当前 RS-owned Pod，让 ReplicaSet 用同一模板重建 fresh Pod，重新触发 stress sidecar 并再次扩容到 3。
+- 重新 apply 常规 HPA YAML
+- 重新触发 stress sidecar 并再次扩容到 3。
 - 检查扩容后的 Pod 分布在多个节点，Service endpoints 为 3。
 - 通过 `curl http://<node-a-ip>:30082/` 多次访问 NodePort，统计返回中的 `pod=` 或 `ip=`，证明扩容后的多个后端 Pod 可以接收流量。
 
@@ -295,38 +345,25 @@ source scripts/acceptance/env.sh
 bash scripts/acceptance/06_dns_forwarding.sh
 ```
 
-该脚本使用 `manifests/dns/` 下的固定 manifest：
+该脚本使用 `manifests/dns/` 下的六个固定 manifest：
 
-- `manifests/dns/replicaset_06_alpha.yaml`
-- `manifests/dns/replicaset_06_beta.yaml`
-- `manifests/dns/service_06_alpha.yaml`
-- `manifests/dns/service_06_beta.yaml`
-- `manifests/dns/dns_06_routes.yaml`
-- `manifests/dns/pod_06_client.yaml`
-
-脚本小节号对应 `docs/FINAL.md` 的 7.6 小节：
-
-**06.1 配置域名和子路径（对应 7.6.1）**
+**06.1 配置域名和子路径**
 - 创建两个 1 副本后端 ReplicaSet，分别返回 `route=alpha` 和 `route=beta`。
-- 创建两个 ClusterIP Service：`service-06-alpha` 和 `service-06-beta`，并等待各自 endpoint ready。
-- 创建 DNS 对象 `dns-06-routes`，host 为 `acceptance06.minik8s.local`，`/alpha` 指向 `service-06-alpha:80`，`/beta` 指向 `service-06-beta:80`。
-- 运行 `kubectl get/describe dns dns-06-routes`，并检查 `/opt/minik8s/dns/hosts`、`/opt/minik8s/dns/routes.json` 出现该 host 和两个 Service route target。
+- 创建两个 ClusterIP Service：`service-06-alpha` 和 `service-06-beta` 分别对应后端。
+- 用 `kubectl apply` 创建 DNS 对象 `dns-06-routes`，host 为 `acceptance06.minik8s.local`，`/alpha` 指向 `service-06-alpha:80`，`/beta` 指向 `service-06-beta:80`。
+- 运行 `kubectl get/describe dns dns-06-routes`，并检查配置文件里出现该 host 和两个 Service route target。
 - 检查 DNS addon 自动创建的 `minik8s-system/minik8s-dns` ClusterIP Service，该 Service 对 Pod 暴露 `53/TCP` 和 `53/UDP`，并转发到 node-a 的 DNS addon host port。
 
-**06.2 通过域名和子路径访问 Service（对应 7.6.2 宿主机访问）**
+**06.2 通过域名和子路径访问 Service**
 - 从 node-a 宿主机用 `Host: acceptance06.minik8s.local` 访问 `http://127.0.0.1/alpha` 和 `/beta`。
 - `/alpha` 必须返回 `route=alpha`，`/beta` 必须返回 `route=beta`，证明同一域名下不同路径转发到不同 Service。
 - 输出 `routes.json` 作为 gateway route snapshot 证据。
-
-**06.3 Pod 内访问和删除行为（对应 7.6.2 Pod 内访问，并补充删除状态清理）**
 - 在 DNS addon 已启用后创建 `pod-06-client`，检查 `/etc/resolv.conf` 中的 nameserver 是 `minik8s-dns` Service 的 ClusterIP。
 - 从 Pod 内访问 `http://acceptance06.minik8s.local/alpha` 和 `/beta`，要求分别返回 `route=alpha` 和 `route=beta`。
 - 删除 `dns-06-routes` 后，确认 sync 文件移除该 host，且 host ingress 不再服务该域名。
 
-脚本按 `06.1`、`06.2`、`06.3` 分别清理资源并输出 `[END] status=<PASS|FAIL|LIMITED>`；最后输出总结果，例如 `[END] status=3/3PASS`。单独清理 06 资源：
-
+只有在意外中断下需要手动清理资源：
 ```bash
-cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/06_dns_forwarding.sh cleanup
 ```
@@ -353,8 +390,9 @@ bash scripts/acceptance/07_fault_tolerance.sh
 **07.2 Node 容错**
 - 手动 stop node-a 上的 sailer 服务，模拟失活。
 - 用 `kubectl get nodes` 发现 node-a 失活
-- 网络流量验证：脚本先确保同一个 ReplicaSet 至少有一个 Pod 运行在 node-a；停止 node-a 的 `sailer` 后，检查 Node 变为 `Unknown`，ReplicaSet replacement Pods 全部迁出 node-a，Service endpoints 不再包含失效节点旧 Pod，同时 NodePort 仍能访问剩余健康后端。
-- 节点恢复验证：重新启动 node-a 的 `sailer` 后，检查 Node 恢复为 `Ready`；脚本不重新创建 ReplicaSet，而是在同一个 ReplicaSet 上删除一个非 node-a 的 Pod 触发补副本，观察 replacement Pod 可再次调度到 node-a，证明故障节点恢复后重新进入调度池。
+- 网络流量验证：ReplicaSet replacement Pods 全部迁出 node-a，Service endpoints 不再包含失效节点旧 Pod，同时 NodePort 仍能访问剩余健康后端。
+- Pod 调度验证：手动 apply 一个新的 nodeSelector 为 node-a 的 Pod，Pending。
+- 节点恢复验证：重新启动 node-a 的 `sailer` 后，检查 Node 恢复为 `Ready`；在原本的 ReplicaSet 上删除一个非 node-a 的 Pod 触发补副本，观察 replacement Pod 可再次调度到 node-a，先前nodeSelector 为 node-a 的 Pod 也 由Pending 变为 Running，且 Service endpoints 恢复包含 node-a 的 Pod。
 
 只有在意外中断下需要手动清理资源：
 ```bash
@@ -362,59 +400,53 @@ source scripts/acceptance/env.sh
 bash scripts/acceptance/07_fault_tolerance.sh cleanup
 ```
 
-## 08 GPU / Personal GPU Job
+## 20 Personal GPU Job
 
-`scripts/acceptance/20_personal_gpu.sh` 是个人作业 GPU 验收脚本，对应 `docs/FINAL.md` 9.3。运行前需保证 01 多机部署已完成，脚本只需要在 node-a 上执行。
+`scripts/acceptance/20_personal_gpu.sh` 是个人作业 GPU 验收脚本。运行前需保证 01 多机部署已完成，脚本只需要在 node-a 上执行。
 
-当前实现不是原生 GPU device plugin，也不会把交我算 Slurm 节点加入 Minik8s 集群；它实现的是一个接近 Kubernetes Job 的一次性任务抽象：每个 `Job` 创建独立 submitter Pod/Service，由 submitter 通过 SSH/SCP 把 CUDA 程序上传到交我算平台，使用 Slurm 编译运行并回收结果。
+个人作业映射：本仓库当前提供 GPU Job 方向的独立验收脚本，最终提交时应在小组贡献说明中写明负责该方向的同学姓名、学号、主要代码路径和贡献比例。如果课程要求脚本名包含学号，可将该脚本复制或软链接为 `scripts/acceptance/20_personal_<student_id>_gpu.sh`，脚本内容和入口保持一致。
 
 ```bash
 source scripts/acceptance/env.sh
 bash scripts/acceptance/20_personal_gpu.sh
 ```
 
-GPU 验收依赖交我算 SSH 凭据。仓库不提交私钥；验收前需要按照交付布局把 `secrets/gpu-ssh` 上传到远程机器的 `/opt/minik8s/secrets/gpu-ssh`：
+GPU 验收依赖交我算 SSH 凭据，这里提供我配置好的私钥 `secrets/gpu-ssh`，验收时需保证上传到远程机器的 `/opt/minik8s/secrets/gpu-ssh`，如果需要用自己的私钥可以参考[交我算文档](https://docs.hpc.sjtu.edu.cn/login/sshlogin.html#label-no-password-login)：
 
 ```text
 /opt/minik8s/secrets/gpu-ssh/
-├── <private-key>，例如 id_ed25519_minik8s
-├── <private-key>-cert.pub，例如 id_ed25519_minik8s-cert.pub
+├── id_ed25519_minik8s
+├── id_ed25519_minik8s-cert.pub
 ├── config
 └── known_hosts
 ```
 
-Job controller 会把该目录作为 hostPath 挂载到 submitter Pod 的 `/root/.ssh`。私钥文件名不要求固定为 `id_ed25519` 或 `id_rsa`，最终只以远程机器 `/opt/minik8s/secrets/gpu-ssh/config` 为准；其中 `IdentityFile` 和 `CertificateFile` 必须指向挂载后的 `/root/.ssh/<private-key>` 和 `/root/.ssh/<private-key>-cert.pub`。脚本不会 fallback 或猜测文件名；缺少 config 字段或对应文件会直接失败。脚本会读取该 config，并用同一目录在 node-a 上做非交互 SSH 预检，确认能够访问 `stu1718@sylogin.hpc.sjtu.edu.cn`，并找到 `sbatch`、`squeue` 和 `sacct`。
-
 该脚本使用 `manifests/job/` 下的三个 YAML 和两个 CUDA 程序执行：
 
 **08.1 CUDA 程序、Job YAML 和 Slurm 凭据**
-- 展示 `vector_add.cu`、`matmul_tiled.cu`、`Makefile`、`Makefile.matmul` 路径。
+- 展示 CUDA 程序和编辑脚本。
 - 展示 Job YAML 中的 `apiVersion: batch/v1`、`kind: Job`、`metadata.name`、`selector.matchLabels.accelerator: gpu`、`source.files`、`source.command`、`spec.slurm` 和 `spec.remote`。
-- 检查 `ghcr.io/popc0rn7/gpu-submitter:v0.1.0` 已在本机 Docker 中可用。
-- 检查 Harbor API 可访问，检查 `/opt/minik8s/secrets/gpu-ssh` 已上传，并验证 SSH/Slurm 命令可用。
+- 检查密钥和Slurm连接成功。
 
-**08.2 提交 CUDA vector add Job**
-- 通过 `kubectl apply -f manifests/job/cuda-add.yaml` 创建 `cuda-add`。
+**08.2 Vector Add 实验**
+- 通过 `kubectl apply` 创建 Job `cuda-add`，通过一维 grid/block 把 N = 1048576 个元素并行分配到 GPU 线程执行。
 - 等待控制面创建独立 submitter Pod/Service：`job-cuda-add-submitter`。
-- 运行 `kubectl get jobs`、`kubectl describe job cuda-add`、`kubectl get pod job-cuda-add-submitter -o yaml` 和 `kubectl get svc job-cuda-add-submitter -o yaml`，展示 Job 状态、remote host、remote dir、Slurm Job ID、submitter Pod 和 submitter Service。
-
-**08.3 观察 Slurm 状态和 vector add 结果**
+- 运行 `kubectl get / describe` 等操作，展示 Job 状态、remote host、remote dir、Slurm Job ID、submitter Pod 和 submitter Service。
 - 等待 Job 从 `PodCreating/Preparing/Uploading/Submitted/Running/Collecting` 进入终态。
-- 如果进入 `Succeeded`，运行 `kubectl logs job cuda-add`，要求输出包含 `N = 1048576`、`threadsPerBlock = 256`、`blocksPerGrid = 4096` 和 `Result: PASS`。
-- 如果交我算队列导致任务未在等待窗口内结束，脚本输出当前 phase、Slurm Job ID、remote dir、startTime，以及可复制的 `ssh ... squeue/sacct ...` 查询命令，并以 `[LIMITED]` 标记该小节。
+- 如果进入 `Succeeded`，运行 `kubectl logs job cuda-add`，得到CUDA程序的期望输出。
+- 如果脚本等待窗口内仍未进入 `Succeeded`，但 Job 已经提交到 Slurm，脚本输出当前 `Phase`、`Message`、`Slurm Job ID`、`Remote Dir`、`StartTime` 和可复制的 `squeue/sacct` 查询命令，作为等待交我算队列/运行中的状态证据并判定本小节通过。若超时且没有 Slurm Job ID，则判定失败。
 
-**08.4 Job 隔离性**
+**08.3 Job 隔离性**
 - 通过 `kubectl apply -f manifests/job/cuda-add-2.yaml` 再提交一个同类 GPU Job。
 - 检查两个 Job 各自拥有独立 submitter Pod 和 Service：
   - `job-cuda-add-submitter`
   - `job-cuda-add-2-submitter`
 - 检查两个 Job 的 `Remote Dir` 不同；在两个任务都提交成功时检查 `Slurm Job ID` 不同。
 
-**08.5 复杂 CUDA tiled matrix multiplication**
-- 通过 `kubectl apply -f manifests/job/cuda-matmul.yaml` 提交 `cuda-matmul-tiled`。
-- 该程序展示二维 grid/block、shared memory tile 和 block 内同步。
+**08.4 复杂 CUDA tiled matrix multiplication**
+- 通过 `kubectl apply` 提交 Job `cuda-matmul-tiled`，使用二维 16 x 16 block 和 64 x 64 grid 并行计算，用 shared memory 缓存 A/B 的 tile，并通过 __syncthreads() 协调线程，减少 global memory 访问，体现 GPU 并发和内存层次优化。
 - 如果进入 `Succeeded`，运行 `kubectl logs job cuda-matmul-tiled`，要求输出包含 `Matrix N = 1024`、`Tile size = 16`、`Block = 16 x 16`、`Grid = 64 x 64`、`Kernel: tiled shared-memory matrix multiplication` 和 `Result: PASS`。
-- 如果交我算队列未及时完成，脚本同样输出 pending/running 状态、Slurm Job ID、remote dir、startTime 和查询命令。
+- 如果脚本等待窗口内仍未进入 `Succeeded`，但 Job 已经提交到 Slurm，脚本同样输出当前阶段、Slurm Job ID、远端目录和 `squeue/sacct` 查询命令，以该 pending/running 状态替代 CUDA 程序 stdout 作为通过证据。若超时且没有 Slurm Job ID，则判定失败。
 
 只有在意外中断下需要手动清理资源：
 ```bash
@@ -424,18 +456,117 @@ bash scripts/acceptance/20_personal_gpu.sh cleanup
 
 清理会删除 `cuda-add`、`cuda-add-2` 和 `cuda-matmul-tiled` 三个 Job；如果 Job 已经提交 Slurm，控制面会 best-effort 执行 `scancel <jobid>`。
 
+## Serverless - Minik8s 日志检查应用
+
+本段介绍展示 `harbor-incident-triage` demo，覆盖 Final 中 Serverless 的 Function、Workflow、EventTrigger、按需启动、并发伸缩和 scale-to-zero 要求。
+
+**前置设置**
+```bash
+cd /opt/minik8s
+source scripts/acceptance/env.sh
+
+kubectl apply -f manifests/serverless/harbor-incident-triage/functions/*.yaml
+kubectl apply -f manifests/serverless/harbor-incident-triage/workflow.yaml
+kubectl apply -f manifests/serverless/harbor-incident-triage/eventtrigger.yaml
+```
+
+**01. 查看声明式配置**
+```bash
+kubectl get functions
+kubectl describe workflow harbor-incident-triage
+kubectl describe eventtrigger harbor-incident-created
+```
+
+启动 watch 脚本观察集群工作状态：
+```bash
+cd /opt/minik8s/demo/serverless/harbor-incident-triage
+./scripts/watch-scale.sh tiny-log-classifier
+```
+
+**02. Workflow 普通分支**
+手动 Invoke 简单的 Workflow 对象，输入日志 json 处理
+```bash
+minik8s invoke workflow harbor-incident-triage \
+  --data "$(cat manifests/serverless/harbor-incident-triage/inputs/network-incident.json)"
+```
+
+系统按需创建函数 Pod，并返回分类、风险增强和报告生成结果。展示时检查输出中的分类结果、诊断分支、风险字段和最终报告文本，证明函数输出随输入日志变化，并且上游函数结果会传递给下游函数。
+
+**03. Workflow critical 分支**
+手动 Invoke critical 条件分支的 Workflow 对象，输入日志 json 处理
+```bash
+minik8s invoke workflow harbor-incident-triage \
+  --data "$(cat manifests/serverless/harbor-incident-triage/inputs/critical-incident.json)"
+```
+
+critical 输入会经过 `captain-notifier` 分支，输出中应能看到
+`severity=critical`、`notified=true` 或等价字段，说明 Workflow 支持条件分支。
+
+**04. EventTrigger 主动事件触发**
+通过触发 EventTrigger 的 subject 发送事件，触发 Workflow 执行，注意当前实践没有设计 audit 来绑定 EventTrigger，request是实验的一个模拟接口，模拟 audit 发现事件后激活消息队列对应事件：
+```bash
+minik8s request minik8s.incident.created \
+  --data "$(cat manifests/serverless/harbor-incident-triage/inputs/low-risk-incident.json)" \
+  --timeout 90s
+```
+
+用户向 EventTrigger 绑定的 subject 发送事件。
+
+**05. 并发压测和自动扩缩容**
+
+发起 wrk 压测：
+```bash
+cd /opt/minik8s
+wrk -t2 -c20 -d45s --timeout 120s \
+  -s manifests/serverless/harbor-incident-triage/wrk/tiny-log-classifier.lua \
+  http://127.0.0.1:18080/
+```
+
+展示点：
+- wrk 使用 manifest 中的 Lua 请求体反复调用 `tiny-log-classifier`。
+- 监控窗口中 `fn-tiny-log-classifier` ReplicaSet/Pod 数量会从 0 或 1 增长到多个副本。
+- `kubectl get functions` 的 ready 计数是简化教学实现的聚合状态，录屏时以
+  ReplicaSet 和 Pod 副本变化作为伸缩证据。
+
+**06. scale-to-zero**
+```bash
+sleep 40
+kubectl get functions | grep tiny-log-classifier
+kubectl get replicasets | grep fn-tiny-log-classifier || true
+kubectl get pods | grep fn-tiny-log-classifier || true
+```
+
+展示点：压测停止并超过 idle timeout 后，函数副本会自动收缩，Pod 最终消失或回到 0
+副本，体现 Serverless scale-to-zero。
+
 ## CICD
 
-TODO
+GitHub Actions 配置位于 `.github/workflows/`：
+
+- `ci.yml`：在 PR 以及 push 到 `main`、`dev` 时触发，执行 `golangci-lint fmt --diff`、`golangci-lint`、`go vet ./...`、`go test -race -covermode=atomic -coverprofile=coverage.out ./...` 和 `go build ./...`，并构建 `dist/minik8s`、`dist/kubectl`。
+- `release.yml`：在 `v*` tag push 时触发，先复用格式、lint、vet、test、build 检查，再构建 Linux amd64/arm64 二进制包并发布 GitHub Release。
+- `docker-image.yml`：在 push 到 `main` 或手动触发时构建并推送 `ghcr.io/popc0rn7/minik8s`、`ghcr.io/popc0rn7/mooring-cni`、`ghcr.io/popc0rn7/gpu-submitter`。
+- `ai-summary.yml`：在非 `main/dev/dependabot` 分支 push 或手动触发时生成分支变更摘要；没有配置 API key 时会跳过外部调用。
 
 ## Software Testing
 
-TODO
+测试分为三类：
+
+- 单元测试：常用命令为 `go test ./pkg/yaml ./internal/bridge/logbook ./internal/bridge/captain ./internal/bridge/harbor ./internal/sailer ./internal/kubeproxy ./test/integration -count=1`。
+- 构建验证：运行 `make build` 或 CI 中的 `go build ./...`、`go build -o dist/minik8s ./cmd/minik8s`、`go build -o dist/kubectl ./cmd/kubectl`。
+- 端到端/人工验收：以 `scripts/acceptance/00_env_check.sh` 到 `scripts/acceptance/07_fault_tolerance.sh` 覆盖基础功能，以 `scripts/acceptance/20_personal_gpu.sh` 覆盖 GPU 个人作业，以 Serverless demo 命令覆盖自选功能展示。
+
+全量 `go test ./...` 当前不作为最终通过声明依据，原因见上文“已知限制和未完成内容”。
 
 ## AI Usage
 
-TODO
+项目开发和文档整理过程中使用过 AI 工具辅助生成草稿、分析日志、总结变更和提供测试思路，包括 GitHub Actions 中的 `ai-summary.yml` 变更摘要流程，以及本地/在线 AI 助手。AI 输出不直接作为最终结论提交，所有代码、脚本和验收说明均由小组成员人工审阅，并通过本 README 中列出的构建、测试和验收脚本进行验证。最终代码和解释责任归小组成员。
 
 ## Develop Process
 
-TODO
+开发流程按开源协作方式组织：
+
+1. 从 `dev` 或 `main` 拉出功能分支，按 Pod、Service、ReplicaSet、HPA、DNS、Serverless、GPU Job 等模块独立开发。
+2. 功能完成后本地运行相关单元测试、构建命令和对应验收脚本。
+3. 通过 PR 合并到集成分支，CI 检查格式、lint、vet、测试和构建。
+4. 验收前将稳定版本合入 `main`，打 `v0.1.0` tag，并在 Canvas 中提交仓库地址、最终 tag、最终 commit hash 和特殊环境说明。
