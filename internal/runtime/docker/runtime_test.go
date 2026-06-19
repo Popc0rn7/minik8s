@@ -26,6 +26,19 @@ func TestParsePortBindingsDefaultsTCPAndHostPort(t *testing.T) {
 	assert.Equal(t, "8080", bindings["80/tcp"][0].HostPort)
 }
 
+func TestParsePortBindingsUsesHostIP(t *testing.T) {
+	bindings, _, err := parsePortBindings([]runtime.ContainerPort{{
+		ContainerPort: 53,
+		HostIP:        "192.168.1.8",
+		HostPort:      53,
+		Protocol:      "UDP",
+	}})
+
+	require.NoError(t, err)
+	assert.Equal(t, "192.168.1.8", bindings["53/udp"][0].HostIP)
+	assert.Equal(t, "53", bindings["53/udp"][0].HostPort)
+}
+
 func TestSandboxImageDefaultsToDockerHubAlpine(t *testing.T) {
 	t.Setenv("MINIK8S_PAUSE_IMAGE", "")
 
@@ -50,6 +63,18 @@ func TestSandboxHostConfigAllowsExplicitNetworkMode(t *testing.T) {
 	hostConfig := sandboxHostConfig(nil, "host")
 
 	assert.Equal(t, container.NetworkMode("host"), hostConfig.NetworkMode)
+}
+
+func TestSandboxHostConfigSetsClusterDNS(t *testing.T) {
+	hostConfig := sandboxHostConfig(nil, "", []string{"10.244.0.1"})
+
+	assert.Equal(t, []string{"10.244.0.1"}, hostConfig.DNS)
+}
+
+func TestSandboxHostConfigSetsDNSSearchDomains(t *testing.T) {
+	hostConfig := sandboxHostConfig(nil, "", []string{"10.244.0.1"}, []string{"default.svc.cluster.local", "svc.cluster.local", "cluster.local"})
+
+	assert.Equal(t, []string{"default.svc.cluster.local", "svc.cluster.local", "cluster.local"}, hostConfig.DNSSearch)
 }
 
 func TestResolveDockerEndpointUsesDockerHostFirst(t *testing.T) {
@@ -142,6 +167,28 @@ func TestApplyResourcesUsesDockerCPUAndMemoryLimits(t *testing.T) {
 
 	assert.Equal(t, int64(500000000), hostConfig.NanoCPUs)
 	assert.Equal(t, int64(134217728), hostConfig.Memory)
+}
+
+func TestContainerConfigLeavesImageDefaultsWhenCommandAndArgsEmpty(t *testing.T) {
+	config := dockerContainerConfig(&runtime.ContainerConfig{
+		Image:   "nats:2",
+		Command: []string{},
+		Args:    []string{},
+	})
+
+	assert.Nil(t, config.Entrypoint)
+	assert.Nil(t, config.Cmd)
+}
+
+func TestContainerConfigSetsExplicitCommandAndArgs(t *testing.T) {
+	config := dockerContainerConfig(&runtime.ContainerConfig{
+		Image:   "quay.io/coreos/etcd:v3.5.15",
+		Command: []string{"/usr/local/bin/etcd"},
+		Args:    []string{"--name", "minik8s-etcd"},
+	})
+
+	assert.Equal(t, []string{"/usr/local/bin/etcd"}, []string(config.Entrypoint))
+	assert.Equal(t, []string{"--name", "minik8s-etcd"}, []string(config.Cmd))
 }
 
 func TestProcessPullStreamReturnsDockerError(t *testing.T) {

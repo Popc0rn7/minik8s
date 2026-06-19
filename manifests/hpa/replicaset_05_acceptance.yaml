@@ -1,0 +1,60 @@
+kind: ReplicaSet
+apiVersion: v1
+metadata:
+  name: rs-05-hpa
+  namespace: default
+  labels:
+    app: rs-05-hpa
+    case: minik8s-acceptance-05
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rs-05-hpa
+      case: minik8s-acceptance-05
+  template:
+    metadata:
+      labels:
+        app: rs-05-hpa
+        case: minik8s-acceptance-05
+        tier: frontend
+    spec:
+      restartPolicy: Always
+      containers:
+      - name: web
+        image: busybox
+        imageTag: 1.36
+        command: ["sh", "-c"]
+        args:
+        - |
+          mkdir -p /www
+          while true; do
+            printf 'case=05\npod=%s\nip=%s\n' "$HOSTNAME" "$(hostname -i)" > /www/index.html
+            sleep 1
+          done &
+          httpd -f -p 8080 -h /www
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+      - name: stress
+        image: polinux/stress
+        imageTag: 1.0.4
+        command: ["sh", "-c"]
+        args:
+        - |
+          stress --cpu 1 --timeout 60s
+          sleep 365d
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"

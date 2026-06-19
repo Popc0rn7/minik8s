@@ -1,0 +1,20 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: rs-04-web
+  namespace: default
+  labels:
+    app: rs-04-web
+    case: minik8s-acceptance-04
+spec:
+  type: NodePort
+  selector:
+    matchLabels:
+      app: rs-04-web
+      case: minik8s-acceptance-04
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 8080
+    nodePort: 30081

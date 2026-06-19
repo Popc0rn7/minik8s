@@ -8,7 +8,10 @@
 *.so
 *.dylib
 /minik8s
+/kubectl
+/bin/
 /.minik8s/
+/dist/
 
 # Test binary, built with `go test -c`
 *.test
@@ -18,6 +21,10 @@
 coverage.*
 *.coverprofile
 profile.cov
+
+# Python test artifacts
+__pycache__/
+*.pyc
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
@@ -35,8 +42,18 @@ go.work.sum
 
 # docs
 *.pdf
+*.ppt
+*.pptx
 
 # vibe coding
-AGENTS.md
 /.agents/
 /.claude/
+/.codex/
+
+# env
+.env
+# secrets/
+
+scripts/acceptance/lib/*_test.sh
+scripts/acceptance/*_test.sh
+logs

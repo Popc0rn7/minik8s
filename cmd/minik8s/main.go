@@ -3,35 +3,57 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
+	bridge "minik8s/internal/bridge"
+	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/cli"
 	"minik8s/internal/cliui"
-	kubebridge "minik8s/internal/kubebridge"
-	store "minik8s/internal/kubebridge/etcd"
-	"minik8s/internal/kubeproxy"
+	"minik8s/internal/config"
 	dockerruntime "minik8s/internal/runtime/docker"
 )
 
 func main() {
-	podStore, serviceStore, closeStores, err := openStores()
+	if err := loadRuntimeConfig(".env"); err != nil {
+		fmt.Fprint(os.Stderr, cliui.ErrorLine("loading runtime config: %v", err))
+		os.Exit(1)
+	}
+
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	dependencyCleanup, err := prepareBridgeDependencies(ctx, os.Args[1:], os.Stdout, cli.StartBridgeDependencies)
+	if err != nil {
+		fmt.Fprint(os.Stderr, cliui.ErrorLine("starting bridge dependencies: %v", err))
+		os.Exit(1)
+	}
+	defer dependencyCleanup()
+
+	podStore, serviceStore, dnsStore, replicaSetStore, hpaStore, jobStore, metricsStore, nodeStore, k8sCompatStore, functionStore, eventTriggerStore, workflowStore, workflowRunStore, closeStores, err := openStores()
 	if err != nil {
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening stores: %v", err))
 		os.Exit(1)
 	}
 	defer closeStores()
-	nodeStore, err := store.NewFileNodeStore(cli.DefaultNodeStatePath())
-	if err != nil {
-		fmt.Fprint(os.Stderr, cliui.ErrorLine("opening node store: %v", err))
-		os.Exit(1)
-	}
-	bridge := kubebridge.New(newKubebridgeConfig(podStore, serviceStore, nodeStore))
+	controlBridge := bridge.New(newBridgeConfig(podStore, serviceStore, dnsStore, replicaSetStore, hpaStore, jobStore, metricsStore, nodeStore, k8sCompatStore, functionStore, eventTriggerStore, workflowStore, workflowRunStore))
 
 	config := cli.Config{
-		Store:        podStore,
-		ServiceStore: serviceStore,
-		NodeStore:    nodeStore,
-		Bridge:       bridge,
+		Store:             podStore,
+		ServiceStore:      serviceStore,
+		DNSStore:          dnsStore,
+		ReplicaSetStore:   replicaSetStore,
+		HPAStore:          hpaStore,
+		JobStore:          jobStore,
+		MetricsStore:      metricsStore,
+		NodeStore:         nodeStore,
+		K8sCompatStore:    k8sCompatStore,
+		FunctionStore:     functionStore,
+		EventTriggerStore: eventTriggerStore,
+		WorkflowStore:     workflowStore,
+		WorkflowRunStore:  workflowRunStore,
+		Bridge:            controlBridge,
 	}
 	if needsDockerRuntime(os.Args[1:]) {
 		runtime, err := dockerruntime.NewDockerRuntime()
@@ -50,17 +72,60 @@ func main() {
 	app := cli.New(config)
 	cmd := cli.NewRootCommand(app, os.Stdout)
 	cmd.SetArgs(os.Args[1:])
-	if err := cmd.ExecuteContext(context.Background()); err != nil {
+	if err := cmd.ExecuteContext(ctx); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		fmt.Fprint(os.Stderr, cliui.ErrorLine("minik8s: %v", err))
 		os.Exit(1)
 	}
+}
+
+func loadRuntimeConfig(path string) error {
+	return config.LoadDotEnv(path)
+}
+
+type bridgeDependencyStarter func(context.Context, []string, io.Writer) (func(), error)
+
+func prepareBridgeDependencies(ctx context.Context, args []string, out io.Writer, starter bridgeDependencyStarter) (func(), error) {
+	if len(args) == 0 || args[0] != "bridge" {
+		return func() {}, nil
+	}
+	if len(args) > 1 && args[1] == "token" {
+		return func() {}, nil
+	}
+	cleanup, err := starter(ctx, args, out)
+	if err != nil {
+		return func() {}, err
+	}
+	if os.Getenv("MINIK8S_LOGBOOK_ENDPOINTS") == "" {
+		if err := os.Setenv("MINIK8S_LOGBOOK_ENDPOINTS", "http://127.0.0.1:2379"); err != nil {
+			cleanup()
+			return func() {}, err
+		}
+	}
+	addons, err := cli.BridgeAddons(args)
+	if err != nil {
+		cleanup()
+		return func() {}, err
+	}
+	if addons.Enabled(cli.AddonServerless) && os.Getenv("MINIK8S_NATS_URL") == "" {
+		if err := os.Setenv("MINIK8S_NATS_URL", "nats://127.0.0.1:4222"); err != nil {
+			cleanup()
+			return func() {}, err
+		}
+	}
+	return cleanup, nil
 }
 
 func needsDockerRuntime(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	if args[0] == "kubesailer" {
+	if args[0] == "sailer" {
+		if len(args) > 1 && args[1] == "join" {
+			return false
+		}
 		return true
 	}
 	if args[0] == "doctor" && len(args) > 1 && args[1] == "docker" {
@@ -69,35 +134,78 @@ func needsDockerRuntime(args []string) bool {
 	return false
 }
 
-func openStores() (store.PodStore, store.ServiceStore, func(), error) {
-	endpoints := store.ParseEndpoints(os.Getenv("MINIK8S_ETCD_ENDPOINTS"))
+func openStores() (store.PodStore, store.ServiceStore, store.DNSStore, store.ReplicaSetStore, store.HPAStore, store.JobStore, store.MetricsStore, store.NodeStore, store.K8sCompatStore, store.FunctionStore, store.EventTriggerStore, store.WorkflowStore, store.WorkflowRunStore, func(), error) {
+	endpoints := store.ParseEndpoints(os.Getenv("MINIK8S_LOGBOOK_ENDPOINTS"))
 	if len(endpoints) > 0 {
 		client, err := store.NewClient(endpoints)
 		if err != nil {
-			return nil, nil, func() {}, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, err
 		}
-		return store.NewEtcdPodStore(client), store.NewEtcdServiceStore(client), func() { _ = client.Close() }, nil
+		return store.NewEtcdPodStore(client), store.NewEtcdServiceStore(client), store.NewEtcdDNSStore(client), store.NewEtcdReplicaSetStore(client), store.NewEtcdHPAStore(client), store.NewEtcdJobStore(client), store.NewInMemoryMetricsStore(), store.NewEtcdNodeStore(client), store.NewInMemoryK8sCompatStore(), store.NewEtcdFunctionStore(client), store.NewEtcdEventTriggerStore(client), store.NewEtcdWorkflowStore(client), store.NewEtcdWorkflowRunStore(client), func() { _ = client.Close() }, nil
 	}
 
 	podStore, err := store.NewFilePodStore(cli.DefaultStatePath())
 	if err != nil {
-		return nil, nil, func() {}, fmt.Errorf("opening pod store: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening pod store: %w", err)
 	}
 	serviceStore, err := store.NewFileServiceStore(cli.DefaultServiceStatePath())
 	if err != nil {
-		return nil, nil, func() {}, fmt.Errorf("opening service store: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening service store: %w", err)
 	}
-	return podStore, serviceStore, func() {}, nil
+	dnsStore, err := store.NewFileDNSStore(cli.DefaultDNSStatePath())
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening dns store: %w", err)
+	}
+	replicaSetStore, err := store.NewFileReplicaSetStore(cli.DefaultReplicaSetStatePath())
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening replicaset store: %w", err)
+	}
+	hpaStore, err := store.NewFileHPAStore(cli.DefaultHPAStatePath())
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening hpa store: %w", err)
+	}
+	jobStore, err := store.NewFileJobStore(cli.DefaultJobStatePath())
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening job store: %w", err)
+	}
+	nodeStore, err := store.NewFileNodeStore(cli.DefaultNodeStatePath())
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening node store: %w", err)
+	}
+	functionStore, err := store.NewFileFunctionStore(cli.DefaultFunctionStatePath())
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening function store: %w", err)
+	}
+	eventTriggerStore, err := store.NewFileEventTriggerStore(cli.DefaultEventTriggerStatePath())
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening eventtrigger store: %w", err)
+	}
+	workflowStore, err := store.NewFileWorkflowStore(cli.DefaultWorkflowStatePath())
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening workflow store: %w", err)
+	}
+	workflowRunStore, err := store.NewFileWorkflowRunStore(cli.DefaultWorkflowRunStatePath())
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, func() {}, fmt.Errorf("opening workflowrun store: %w", err)
+	}
+	return podStore, serviceStore, dnsStore, replicaSetStore, hpaStore, jobStore, store.NewInMemoryMetricsStore(), nodeStore, store.NewInMemoryK8sCompatStore(), functionStore, eventTriggerStore, workflowStore, workflowRunStore, func() {}, nil
 }
 
-func newKubebridgeConfig(podStore store.PodStore, serviceStore store.ServiceStore, nodeStore store.NodeStore) kubebridge.Config {
-	config := kubebridge.Config{
-		PodStore:     podStore,
-		ServiceStore: serviceStore,
-		NodeStore:    nodeStore,
+func newBridgeConfig(podStore store.PodStore, serviceStore store.ServiceStore, dnsStore store.DNSStore, replicaSetStore store.ReplicaSetStore, hpaStore store.HPAStore, jobStore store.JobStore, metricsStore store.MetricsStore, nodeStore store.NodeStore, k8sCompatStore store.K8sCompatStore, functionStore store.FunctionStore, eventTriggerStore store.EventTriggerStore, workflowStore store.WorkflowStore, workflowRunStore store.WorkflowRunStore) bridge.Config {
+	return bridge.Config{
+		PodStore:           podStore,
+		ServiceStore:       serviceStore,
+		DNSStore:           dnsStore,
+		ReplicaSetStore:    replicaSetStore,
+		HPAStore:           hpaStore,
+		JobStore:           jobStore,
+		MetricsStore:       metricsStore,
+		NodeStore:          nodeStore,
+		K8sCompatStore:     k8sCompatStore,
+		FunctionStore:      functionStore,
+		EventTriggerStore:  eventTriggerStore,
+		WorkflowStore:      workflowStore,
+		WorkflowRunStore:   workflowRunStore,
+		BootstrapTokenPath: cli.DefaultBootstrapTokenPath(),
 	}
-	if os.Getenv("MINIK8S_SERVICE_PROXY_DISABLED") != "1" {
-		config.ServiceProxy = kubeproxy.NewIPTablesProxy(nil)
-	}
-	return config
 }

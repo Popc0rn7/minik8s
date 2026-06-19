@@ -1,0 +1,103 @@
+name: Docker Image
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/popc0rn7/minik8s
+  MOORING_CNI_IMAGE_NAME: ghcr.io/popc0rn7/mooring-cni
+  GPU_SUBMITTER_IMAGE_NAME: ghcr.io/popc0rn7/gpu-submitter
+
+jobs:
+  publish:
+    name: Build and Push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,format=short
+
+      - name: Extract Mooring CNI Docker metadata
+        id: mooring-cni-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.MOORING_CNI_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,format=short
+
+      - name: Extract GPU submitter Docker metadata
+        id: gpu-submitter-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.GPU_SUBMITTER_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,format=short
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push mooring CNI image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.mooring-cni
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.mooring-cni-meta.outputs.tags }}
+          labels: ${{ steps.mooring-cni-meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push GPU submitter image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.gpu-submitter
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.gpu-submitter-meta.outputs.tags }}
+          labels: ${{ steps.gpu-submitter-meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

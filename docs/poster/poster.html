@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Minik8s Poster</title>
+    <link rel="stylesheet" href="./poster.css">
+  </head>
+  <body>
+    <aside class="prep no-print" aria-label="展示前准备">
+      <strong>展示前准备</strong>
+      <span>准备 60cm x 90cm 竖版导出</span>
+      <span>补仓库二维码、运行截图、录屏二维码</span>
+      <span>准备 Serverless 自选功能展示</span>
+      <span>准备 CNI/双机/Logbook 兜底截图</span>
+    </aside>
+
+    <main class="poster">
+      <header class="poster-header">
+        <div class="identity">
+          <div class="mark">
+            <img src="../assets/logo.png?v=20260615" alt="Minik8s logo">
+          </div>
+          <div>
+            <p class="course">Cloud OS Lab 2026</p>
+            <h1>Minik8s: A More Modular, More Unified Fleet</h1>
+            <p class="subtitle">
+              一个轻量容器编排系统，参考 Kubernetes 设计，重新设计组件边界和交互，
+              核心编排闭环。
+            </p>
+          </div>
+        </div>
+        <div class="meta">
+          <img class="qr" src="../assets/QR.png?v=20260615" alt="GitHub / README / Testcases QR code">
+        </div>
+      </header>
+
+      <div class="grid">
+        <section class="panel span-2 feature-intro">
+          <h2>Minik8s 简介</h2>
+          <div class="feature-layout">
+            <div class="feature-image">
+              <img src="../assets/example-2.png?v=20260616" alt="Minik8s resource workflow example">
+            </div>
+            <div class="feature-core">
+              <h3>核心闭环</h3>
+              <p><strong>Kubernetes-like workflow</strong><span>用户只面对 apply、get、describe、delete 的资源工作流。</span></p>
+              <p><strong>Bridge control plane</strong><span>统一 API、状态存储、调度和 controllers，持续收敛期望状态。</span></p>
+              <p><strong>Sailer worker plane</strong><span>在节点上创建 Docker 容器，执行 CNI，并同步本地 data plane。</span></p>
+              <p><strong>Kubectl + Harbor API</strong><span>CLI 通过 Harbor 读写资源，展示对象状态、日志和 Metrics。</span></p>
+            </div>
+            <div class="feature-list">
+              <h3>Feature</h3>
+              <ul>
+                <li>CLI workflow</li>
+                <li>Pod lifecycle</li>
+                <li>Mooring CNI</li>
+                <li>ClusterIP</li>
+                <li>NodePort</li>
+                <li>ReplicaSet</li>
+                <li>HPA Metrics</li>
+                <li>Node join</li>
+                <li>Heartbeat</li>
+                <li>DNS gateway</li>
+                <li>Serverless</li>
+                <li>GPU job</li>
+                <li>Logbook file</li>
+                <li>Etcd backend</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel span-2">
+          <h2>系统架构</h2>
+          <div class="architecture-layout">
+            <div class="architecture-image">
+              <img src="../assets/architecture.png?v=20260615" alt="Minik8s architecture diagram">
+            </div>
+            <div class="architecture-copy">
+              <p>
+                Minik8s 把控制面和节点面拆成一条清晰的对象流。用户只操作 Kubectl，服务提供者
+                只考虑在机器上启动Node，达成用户无感，健壮性强，拓展性强。
+              </p>
+              <p>
+                Bridge 作为控制面核心，由4大组件构成，协同工作。
+                Sailer 作为节点面核心，负责实际任务和容器的运行。
+
+
+                
+              </p>
+              <ul class="component-list">
+                <li><strong>Harbor</strong> 暴露 Kubernetes-like API，处理 YAML 对象 CRUD、Node Join Token、Heartbeat、Pod Status 和 Metrics 上报。</li>
+                <li><strong>Logbook</strong> 作为统一状态存储，默认写本地 JSON；设置 Etcd endpoint 后把 Pod、Service、ReplicaSet、Node 等对象持久化到 Etcd。</li>
+                <li><strong>Navigator</strong> 监听 Pending Pod，为其选择 Ready Node 并写入 spec.nodeName，Unknown Node 会被调度避开。</li>
+                <li><strong>Captain</strong> 运行 controller loop，收敛 Service endpoints、ReplicaSet replicas、HPA replicas 和 Node lifecycle。</li>
+                <li><strong>Sailer</strong> 运行在 Worker 上，拉取 Assigned Pods，创建 Sandbox/Container，调用 CNI，回写状态，并同步 Kube-proxy 规则。</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel cni-panel">
+          <h2>Self-built CNI: Mooring</h2>
+          <p>
+            Mooring 在兼容第三方 CNI 调用方式的基础上，实现 Minik8s 自研数据面：
+            节点内用 bridge/veth 连接 Pod，节点间由 Sailer 同步 VXLAN/FDB/route。
+          </p>
+          <div class="network-image">
+            <img src="../assets/network.png?v=20260615" alt="Minik8s network topology">
+          </div>
+          <ul>
+            <li>兼容 CNI ADD/DEL/CHECK。</li>
+            <li>创建 bridge/veth、分配 Pod IP、写入默认路由。</li>
+            <li>Sailer: 跨节点 VXLAN、FDB、route 同步。</li>
+            <li>Kube-proxy: ClusterIP / NodePort iptables 转发。</li>
+          </ul>
+        </section>
+
+        <section class="panel reconcile-panel">
+          <h2>Reconciliation & Heartbeat</h2>
+          <p>
+            用户提交的是期望状态，控制面周期性比较 desired/current，
+            并把差异收敛到实际集群。
+          </p>
+          <ul>
+            <li>Service controller 维护 selector endpoints，Pod 增删、NodeLost 后自动刷新。</li>
+            <li>ReplicaSet controller 维持 desired replicas，owned Pod 丢失后补齐副本。</li>
+            <li>HPA controller 读取 Docker CPU/Memory Metrics，按简化策略调整 Replicas。</li>
+            <li>Heartbeat 超时后 Node 标为 Unknown，并触发 endpoints 与副本重新收敛。</li>
+          </ul>
+        </section>
+
+        <section class="panel addon-panel">
+          <h2>Deps Pod & Addon Pod</h2>
+          <div class="addon-layout">
+            <div class="addon-image">
+              <img src="../assets/deps-pod.png?v=20260615" alt="Minik8s deps and addon pod flow">
+            </div>
+            <p>
+              Init 时自动生成 Deps Pod manifests;
+              Bridge 启动时运行内部 Private Sailer
+              Private Sailer 负责启动 Deps Pod 如storage-etcd,
+              并按 --addons 的需求可选地拉起 DNS、Metrics、Serverless 依赖Pod，
+              协同Captain和Harbor来进行能力拓展。
+            </p>
+          </div>
+        </section>
+
+        <section class="panel accent serverless">
+          <h2>Serverless</h2>
+          <p>
+            基于 Minik8s 控制面实现教学版 Serverless 闭环。Function、EventTrigger 和
+            Workflow 作为一等资源接入 YAML loaders、Harbor APIs、file/Etcd stores；
+            调用统一进入 NATS request/reply，再由 invocation worker 和 Activator
+            完成冷启动、扩缩容和 Pod /invoke 转发。
+          </p>
+          <div class="serverless-body">
+            <div class="serverless-capabilities">
+              <div>
+                <strong>Resource model</strong>
+                <span>Function 支持内联 Python 与自定义容器镜像；controller 映射为 fn-* ReplicaSet + Service，并维护 revision/update/delete。</span>
+              </div>
+              <div>
+                <strong>NATS</strong>
+                <span>Serverless addon 启动 NATS；CLI invoke、EventTrigger 和 Workflow step 都通过 request/reply 进入统一调用入口。</span>
+              </div>
+              <div>
+                <strong>Invocation Worker</strong>
+                <span>订阅 <code>minik8s.serverless.invoke</code> queue group，解析 namespace/function/data，并把请求交给 Activator。</span>
+              </div>
+              <div>
+                <strong>Activator</strong>
+                <span>冷启动时把 ReplicaSet 从 0 拉到 1，等待 Running、PodIP 和 TCP 可达后转发 HTTP <code>/invoke</code>。</span>
+              </div>
+              <div>
+                <strong>EventTrigger</strong>
+                <span>订阅用户配置的 NATS subject，收到事件后复用同一条调用链触发 Function。</span>
+              </div>
+              <div>
+                <strong>Workflow</strong>
+                <span>支持同步函数链、前后 step 数据传递，以及基于 contains/regex 输出匹配的分支。</span>
+              </div>
+            </div>
+            <div class="serverless-demo">
+              <figure class="serverless-step dogs-step">
+                <img src="../assets/10dogs.jpg?v=20260615" alt="Ten dog image batch">
+                <figcaption>Input batch</figcaption>
+              </figure>
+              <div class="serverless-arrow"><span>SAM mask</span></div>
+              <figure class="serverless-step mask-step">
+                <img src="../assets/masked.png?v=20260616" alt="Masked dog selected by SAM">
+                <figcaption>Masked target</figcaption>
+              </figure>
+              <div class="serverless-arrow"><span>Evaluate</span></div>
+              <figure class="serverless-step rank-step">
+                <img src="../assets/rank.png?v=20260616" alt="Dog ranking evaluation result">
+                <figcaption>Rank result</figcaption>
+              </figure>
+            </div>
+          </div>
+          <p class="limit">
+            边界：EventTrigger 暂无可靠 ack/retry/dead-letter；Workflow 不是持久化 DAG 引擎。
+          </p>
+        </section>
+
+        <section class="panel gpu-job">
+          <h2>GPU Job 扩展</h2>
+          <div class="gpu-layout">
+            <p>
+              Minik8s 提供最小 Job + Slurm Submitter 后端。GPU Jobs 通过
+              accelerator=gpu 声明任务，提交 CUDA source 和 commands，
+              并回收 Slurm .out/.err 日志。
+            </p>
+            <div class="flow">
+              <span>Job YAML<br>CUDA + command</span>
+              <span>Harbor API<br>store Job</span>
+              <span>Submitter Pod<br>SSH / SCP</span>
+              <span>SJTU Slurm<br>sbatch</span>
+              <span>Status / Logs<br>.out .err</span>
+            </div>
+            <p class="caption">
+              Job YAML 随 Kubectl apply 上传 CUDA source 和 commands；
+              Job Controller 创建 Submitter Pod/Service；Submitter 通过 SSH/SCP 执行
+              sbatch；完成后回收 Job ID、状态和 .out/.err，
+              写回 Minik8s Job status。Slurm 节点不纳入 Minik8s 集群。
+            </p>
+          </div>
+        </section>
+      </div>
+
+      <footer class="poster-footer">
+        <p>
+          Testcases: docs/testcase/ · API: docs/harbor-api.md ·
+          Deployment: docs/deploy.md
+        </p>
+        <p>2026 Cloud OS Lab @ SJTU</p>
+      </footer>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "source": "demo",
+  "title": "Docker build stuck at apt-get update",
+  "log": "apt-get update hangs during docker build, proxy is configured on host but not inside docker build context",
+  "labels": {
+    "cluster": "minik8s-demo"
+  }
+}

@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	store "minik8s/internal/kubebridge/etcd"
-	"minik8s/internal/kubebridge/kubecaptain"
+	store "minik8s/internal/bridge/logbook"
 	"minik8s/internal/pod"
+	"minik8s/internal/sailer"
 	"minik8s/pkg/yaml"
 	"minik8s/test/mock"
 )
@@ -39,7 +39,7 @@ func TestLoadPodFromYAML(t *testing.T) {
 		t.Skip("Project root not found")
 	}
 
-	yamlPath := filepath.Join(projectRoot, "manifest", "testdata", "pod_nginx.yaml")
+	yamlPath := filepath.Join(projectRoot, "manifest", "pod", "pod_nginx.yaml")
 	if _, err := os.Stat(yamlPath); os.IsNotExist(err) {
 		t.Skip("pod_nginx.yaml not found at", yamlPath)
 	}
@@ -55,7 +55,7 @@ func TestLoadPodFromYAML(t *testing.T) {
 	require.Len(t, p.Spec.Containers, 1)
 	assert.Equal(t, "nginx", p.Spec.Containers[0].Name)
 	assert.Equal(t, "nginx", p.Spec.Containers[0].Image)
-	assert.Equal(t, "alpine", p.Spec.Containers[0].ImageTag)
+	assert.Equal(t, "1.27-alpine", p.Spec.Containers[0].ImageTag)
 	assert.Equal(t, []string{"nginx"}, p.Spec.Containers[0].Command)
 	assert.Equal(t, []string{"-g", "daemon off;"}, p.Spec.Containers[0].Args)
 
@@ -72,7 +72,7 @@ func TestPodLifecycleWithYAML(t *testing.T) {
 		t.Skip("Project root not found")
 	}
 
-	yamlPath := filepath.Join(projectRoot, "manifest", "testdata", "pod_nginx.yaml")
+	yamlPath := filepath.Join(projectRoot, "manifest", "pod", "pod_nginx.yaml")
 	if _, err := os.Stat(yamlPath); os.IsNotExist(err) {
 		t.Skip("pod_nginx.yaml not found at", yamlPath)
 	}
@@ -85,8 +85,8 @@ func TestPodLifecycleWithYAML(t *testing.T) {
 	mockRuntime := mock.NewMockRuntime()
 	podStore := store.NewInMemoryPodStore()
 
-	// Create kubecaptain
-	ctrl := kubecaptain.NewPodKubecaptain(mockRuntime, podStore)
+	// Create captain
+	ctrl := sailer.NewPodController(mockRuntime, podStore)
 
 	// Add Pod to store
 	err = podStore.Create(p)
@@ -117,7 +117,7 @@ func TestPodRestartPolicyEnforcement(t *testing.T) {
 		t.Skip("Project root not found")
 	}
 
-	yamlPath := filepath.Join(projectRoot, "manifest", "testdata", "pod_nginx.yaml")
+	yamlPath := filepath.Join(projectRoot, "manifest", "pod", "pod_nginx.yaml")
 	if _, err := os.Stat(yamlPath); os.IsNotExist(err) {
 		t.Skip("pod_nginx.yaml not found at", yamlPath)
 	}
@@ -130,7 +130,7 @@ func TestPodRestartPolicyEnforcement(t *testing.T) {
 
 	mockRuntime := mock.NewMockRuntime()
 	podStore := store.NewInMemoryPodStore()
-	ctrl := kubecaptain.NewPodKubecaptain(mockRuntime, podStore)
+	ctrl := sailer.NewPodController(mockRuntime, podStore)
 
 	// Create and start the pod first
 	p.Status.Phase = pod.PodRunning
@@ -166,7 +166,7 @@ func TestPodTerminationWithYAML(t *testing.T) {
 		t.Skip("Project root not found")
 	}
 
-	yamlPath := filepath.Join(projectRoot, "manifest", "testdata", "pod_nginx.yaml")
+	yamlPath := filepath.Join(projectRoot, "manifest", "pod", "pod_nginx.yaml")
 	if _, err := os.Stat(yamlPath); os.IsNotExist(err) {
 		t.Skip("pod_nginx.yaml not found at", yamlPath)
 	}
@@ -191,7 +191,7 @@ func TestPodTerminationWithYAML(t *testing.T) {
 
 	mockRuntime := mock.NewMockRuntime()
 	podStore := store.NewInMemoryPodStore()
-	ctrl := kubecaptain.NewPodKubecaptain(mockRuntime, podStore)
+	ctrl := sailer.NewPodController(mockRuntime, podStore)
 
 	err = podStore.Create(p)
 	require.NoError(t, err)
@@ -202,8 +202,7 @@ func TestPodTerminationWithYAML(t *testing.T) {
 	ctrl.Sync(ctx)
 
 	// Verify containers were cleaned up
-	assert.NotEmpty(t, mockRuntime.StopContainerCalls)
-	assert.NotEmpty(t, mockRuntime.RemoveContainerCalls)
+	assert.Contains(t, mockRuntime.CleanupPodCalls, "default/nginx-pod")
 }
 
 func TestPodFailureRecovery(t *testing.T) {
@@ -212,7 +211,7 @@ func TestPodFailureRecovery(t *testing.T) {
 		t.Skip("Project root not found")
 	}
 
-	yamlPath := filepath.Join(projectRoot, "manifest", "testdata", "pod_nginx.yaml")
+	yamlPath := filepath.Join(projectRoot, "manifest", "pod", "pod_nginx.yaml")
 	if _, err := os.Stat(yamlPath); os.IsNotExist(err) {
 		t.Skip("pod_nginx.yaml not found at", yamlPath)
 	}
@@ -225,7 +224,7 @@ func TestPodFailureRecovery(t *testing.T) {
 	mockRuntime.ShouldFailCreateContainer = true
 
 	podStore := store.NewInMemoryPodStore()
-	ctrl := kubecaptain.NewPodKubecaptain(mockRuntime, podStore)
+	ctrl := sailer.NewPodController(mockRuntime, podStore)
 
 	err = podStore.Create(p)
 	require.NoError(t, err)

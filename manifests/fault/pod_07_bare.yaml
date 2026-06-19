@@ -1,0 +1,33 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  name: pod-07-bare
+  namespace: default
+  labels:
+    app: pod-07-bare
+    case: minik8s-acceptance-07
+    tier: bare
+spec:
+  nodeSelector:
+    node: node-a
+  containers:
+  - name: web
+    image: busybox
+    imageTag: 1.36
+    command: ["sh", "-c"]
+    args:
+    - |
+      mkdir -p /www
+      printf 'case=07\nkind=bare\npod=%s\nip=%s\n' "$HOSTNAME" "$(hostname -i)" > /www/index.html
+      httpd -f -p 8080 -h /www
+    ports:
+    - containerPort: 8080
+      protocol: TCP
+    resources:
+      requests:
+        cpu: "20m"
+        memory: "16Mi"
+      limits:
+        cpu: "100m"
+        memory: "64Mi"
+  restartPolicy: Always

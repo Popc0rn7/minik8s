@@ -1,0 +1,8 @@
+{
+  "source": "demo",
+  "title": "Frontend receives 502 Bad Gateway",
+  "log": "nginx returns 502 bad gateway, upstream service connection refused on port 8080",
+  "labels": {
+    "service": "frontend"
+  }
+}

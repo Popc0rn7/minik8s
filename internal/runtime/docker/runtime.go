@@ -14,11 +14,13 @@ import (
 	"strings"
 	"time"
 
+	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/errdefs"
 	"github.com/docker/go-connections/nat"
 
 	"minik8s/internal/minilog"
@@ -107,11 +109,14 @@ func (d *DockerRuntime) CreateSandbox(ctx context.Context, config *runtime.Sandb
 	labels["minik8s.kind"] = "pod-sandbox"
 	labels["minik8s.pod.name"] = config.Name
 	labels["minik8s.pod.namespace"] = config.Namespace
+	if config.NodeName != "" {
+		labels["minik8s.node.name"] = config.NodeName
+	}
 	name := dockerName("minik8s-pod", config.Namespace, config.Name, "sandbox")
-	if err := d.cleanupExistingPodContainers(ctx, config.Namespace, config.Name); err != nil {
+	if err := d.CleanupPod(ctx, config.Namespace, config.Name); err != nil {
 		return "", err
 	}
-	hostConfig := sandboxHostConfig(portBindings, config.NetworkMode)
+	hostConfig := sandboxHostConfig(portBindings, config.NetworkMode, config.DNS, config.DNSSearch)
 
 	resp, err := d.client.ContainerCreate(ctx, &container.Config{
 		Image:        imageName,
@@ -126,10 +131,20 @@ func (d *DockerRuntime) CreateSandbox(ctx context.Context, config *runtime.Sandb
 	return resp.ID, nil
 }
 
-func sandboxHostConfig(portBindings nat.PortMap, networkMode string) *container.HostConfig {
+func sandboxHostConfig(portBindings nat.PortMap, networkMode string, dnsServers ...[]string) *container.HostConfig {
+	var dns []string
+	if len(dnsServers) > 0 {
+		dns = dnsServers[0]
+	}
+	var dnsSearch []string
+	if len(dnsServers) > 1 {
+		dnsSearch = dnsServers[1]
+	}
 	hostConfig := &container.HostConfig{
 		PortBindings: portBindings,
 		NetworkMode:  container.NetworkMode("none"),
+		DNS:          dns,
+		DNSSearch:    dnsSearch,
 	}
 	if networkMode != "" {
 		hostConfig.NetworkMode = container.NetworkMode(networkMode)
@@ -158,12 +173,18 @@ func (d *DockerRuntime) StartSandbox(ctx context.Context, sandboxID string) erro
 // StopSandbox stops the sandbox container.
 func (d *DockerRuntime) StopSandbox(ctx context.Context, sandboxID string, timeout time.Duration) error {
 	seconds := int(timeout.Seconds())
-	return d.client.ContainerStop(ctx, sandboxID, container.StopOptions{Timeout: &seconds})
+	if err := d.client.ContainerStop(ctx, sandboxID, container.StopOptions{Timeout: &seconds}); err != nil && !errdefs.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // RemoveSandbox removes the sandbox container.
 func (d *DockerRuntime) RemoveSandbox(ctx context.Context, sandboxID string) error {
-	return d.client.ContainerRemove(ctx, sandboxID, container.RemoveOptions{Force: true})
+	if err := d.client.ContainerRemove(ctx, sandboxID, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // GetSandboxStatus returns the status of the sandbox container.
@@ -213,23 +234,35 @@ func (d *DockerRuntime) CreateContainer(ctx context.Context, sandboxID string, c
 	}
 	applyResources(hostConfig, config.Resources)
 
-	// Create the container
-	resp, err := d.client.ContainerCreate(ctx, &container.Config{
-		Image:        imageName,
-		Entrypoint:   config.Command,
-		Cmd:          config.Args,
+	containerConfig := dockerContainerConfig(config)
+	containerConfig.Image = imageName
+	resp, err := d.client.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, config.Name)
+	if err != nil {
+		return "", fmt.Errorf("failed to create container: %w", err)
+	}
+	minilog.Success("container-create", "created container=%s id=%s", config.Name, resp.ID)
+	return resp.ID, nil
+}
+
+func dockerContainerConfig(config *runtime.ContainerConfig) *container.Config {
+	return &container.Config{
+		Image:        config.Image,
+		Entrypoint:   nonEmptySlice(config.Command),
+		Cmd:          nonEmptySlice(config.Args),
 		Env:          config.Env,
 		WorkingDir:   config.WorkingDir,
 		Labels:       config.Labels,
 		Tty:          false,
 		AttachStdout: false,
 		AttachStderr: false,
-	}, hostConfig, nil, nil, config.Name)
-	if err != nil {
-		return "", fmt.Errorf("failed to create container: %w", err)
 	}
-	minilog.Success("container-create", "created container=%s id=%s", config.Name, resp.ID)
-	return resp.ID, nil
+}
+
+func nonEmptySlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	return values
 }
 
 // StartContainer starts a Docker container
@@ -241,30 +274,80 @@ func (d *DockerRuntime) StartContainer(ctx context.Context, containerID string) 
 // StopContainer stops a Docker container
 func (d *DockerRuntime) StopContainer(ctx context.Context, containerID string, timeout time.Duration) error {
 	seconds := int(timeout.Seconds())
-	return d.client.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &seconds})
+	if err := d.client.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &seconds}); err != nil && !errdefs.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // RemoveContainer removes a Docker container
 func (d *DockerRuntime) RemoveContainer(ctx context.Context, containerID string) error {
-	return d.client.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+	if err := d.client.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
-func (d *DockerRuntime) cleanupExistingPodContainers(ctx context.Context, namespace, name string) error {
+func (d *DockerRuntime) CleanupPod(ctx context.Context, namespace, name string) error {
 	args := filters.NewArgs(
+		filters.Arg("label", "minik8s.kind"),
 		filters.Arg("label", "minik8s.pod.name="+name),
 		filters.Arg("label", "minik8s.pod.namespace="+namespace),
 	)
 	containers, err := d.client.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
 	if err != nil {
-		return fmt.Errorf("listing existing pod containers: %w", err)
+		return fmt.Errorf("listing pod containers: %w", err)
 	}
 	for _, existing := range containers {
-		minilog.Warn("pod-cleanup", "remove stale container=%s pod=%s/%s", existing.ID, namespace, name)
-		if err := d.client.ContainerRemove(ctx, existing.ID, container.RemoveOptions{Force: true}); err != nil {
-			return fmt.Errorf("removing stale pod container %s: %w", existing.ID, err)
+		minilog.Warn("pod-cleanup", "remove container=%s pod=%s/%s", existing.ID, namespace, name)
+		if err := d.client.ContainerRemove(ctx, existing.ID, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+			return fmt.Errorf("removing pod container %s: %w", existing.ID, err)
 		}
 	}
 	return nil
+}
+
+func (d *DockerRuntime) CleanupNodePods(ctx context.Context, nodeName string) error {
+	args := filters.NewArgs(
+		filters.Arg("label", "minik8s.kind"),
+		filters.Arg("label", "minik8s.node.name="+nodeName),
+	)
+	containers, err := d.client.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+	if err != nil {
+		return fmt.Errorf("listing node pod containers: %w", err)
+	}
+	for _, existing := range containers {
+		minilog.Warn("node-cleanup", "remove container=%s node=%s", existing.ID, nodeName)
+		if err := d.client.ContainerRemove(ctx, existing.ID, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+			return fmt.Errorf("removing node pod container %s: %w", existing.ID, err)
+		}
+	}
+	return nil
+}
+
+func (d *DockerRuntime) ListNodePods(ctx context.Context, nodeName string) ([]runtime.PodRef, error) {
+	args := filters.NewArgs(
+		filters.Arg("label", "minik8s.kind"),
+		filters.Arg("label", "minik8s.node.name="+nodeName),
+	)
+	containers, err := d.client.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+	if err != nil {
+		return nil, fmt.Errorf("listing node pod containers: %w", err)
+	}
+	seen := make(map[string]runtime.PodRef)
+	for _, existing := range containers {
+		namespace := existing.Labels["minik8s.pod.namespace"]
+		name := existing.Labels["minik8s.pod.name"]
+		if namespace == "" || name == "" {
+			continue
+		}
+		seen[namespace+"/"+name] = runtime.PodRef{Namespace: namespace, Name: name}
+	}
+	out := make([]runtime.PodRef, 0, len(seen))
+	for _, ref := range seen {
+		out = append(out, ref)
+	}
+	return out, nil
 }
 
 // InspectContainer returns container information
@@ -328,6 +411,51 @@ func (d *DockerRuntime) ListContainers(ctx context.Context, sandboxID string) ([
 	return result, nil
 }
 
+func (d *DockerRuntime) ExecContainer(ctx context.Context, containerID string, command []string, timeout time.Duration) (*runtime.ExecResult, error) {
+	if len(command) == 0 {
+		return nil, fmt.Errorf("exec command is required")
+	}
+	execCtx := ctx
+	cancel := func() {}
+	if timeout > 0 {
+		execCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+	resp, err := d.client.ContainerExecCreate(execCtx, containerID, container.ExecOptions{
+		Cmd:          command,
+		AttachStdout: false,
+		AttachStderr: false,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating exec: %w", err)
+	}
+	if err := d.client.ContainerExecStart(execCtx, resp.ID, container.ExecStartOptions{}); err != nil {
+		return nil, fmt.Errorf("starting exec: %w", err)
+	}
+	inspect, err := d.client.ContainerExecInspect(execCtx, resp.ID)
+	if err != nil {
+		return nil, fmt.Errorf("inspecting exec: %w", err)
+	}
+	return &runtime.ExecResult{ExitCode: inspect.ExitCode}, nil
+}
+
+func (d *DockerRuntime) ContainerStats(ctx context.Context, containerID string) (*runtime.ContainerStats, error) {
+	resp, err := d.client.ContainerStatsOneShot(ctx, containerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var stats dockertypes.StatsJSON //nolint:staticcheck // Docker v27 still exposes this stats shape in the current client path.
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return nil, fmt.Errorf("decoding container stats: %w", err)
+	}
+	return &runtime.ContainerStats{
+		CPUUsageTotalNano: stats.CPUStats.CPUUsage.TotalUsage,
+		MemoryUsageBytes:  stats.MemoryStats.Usage,
+		Timestamp:         stats.Read,
+	}, nil
+}
+
 // PullImage pulls an image from registry
 func (d *DockerRuntime) PullImage(ctx context.Context, imageName string) error {
 	if !strings.Contains(imageName, ":") {
@@ -375,7 +503,7 @@ func parsePortBindings(ports []runtime.ContainerPort) (nat.PortMap, nat.PortSet,
 
 		if port.HostPort != 0 {
 			portBindings[containerPort] = []nat.PortBinding{
-				{HostPort: fmt.Sprintf("%d", port.HostPort)},
+				{HostIP: port.HostIP, HostPort: fmt.Sprintf("%d", port.HostPort)},
 			}
 		}
 	}

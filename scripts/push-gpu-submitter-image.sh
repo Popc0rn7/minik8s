@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+GPU_SUBMITTER_IMAGE="${GPU_SUBMITTER_IMAGE:-ghcr.io/popc0rn7/gpu-submitter}"
+IMAGE_TAG="${IMAGE_TAG:-v0.1.0}"
+
+docker push "${GPU_SUBMITTER_IMAGE}:${IMAGE_TAG}"

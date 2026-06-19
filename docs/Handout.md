@@ -159,10 +159,10 @@ Minik8s 需要在多机上实现容器编排的功能，即支持至少三台机
 
 - 支持 Node 抽象。每台机器都是在 Minik8s 中均视作一个 Node，功能要求包括：
   - 控制面作为一个单独的 Node 优先启动
-  - 数据面 Node 注册：新的 Node 可以通过 YAML 向现有集群的控制面（如 Kubernetes 中的 Kubeharbor）注册加入集群，配置文件字段自行设计
+  - 数据面 Node 注册：新的 Node 可以通过 YAML 向现有集群的控制面（如 Kubernetes 中的 Harbor）注册加入集群，配置文件字段自行设计
   - 可视化：Minik8s 可以通过指令检视 Node 的基本信息，包括 Node 名字、Node 角色、Node 状态等
 
-- 支持 Kubenavigator 调度 Pod。Pod 在启动的时候，Minik8s 应当首先询问 Kubenavigator 的调度策略，将 Pod 分配到适合的 Node 上。调度策略的实现可以是和 Pod 配置无关的简单策略，如 Round Robin 或随机，也可以是和 Pod 的配置相关的（例如 Pod A 在配置中指定不和 Pod B 运行在同一台机器上，再比如 Pod A 对某种资源有特别要求），实现最简单的调度策略即可拿到该功能 >80% 的分数
+- 支持 Navigator 调度 Pod。Pod 在启动的时候，Minik8s 应当首先询问 Navigator 的调度策略，将 Pod 分配到适合的 Node 上。调度策略的实现可以是和 Pod 配置无关的简单策略，如 Round Robin 或随机，也可以是和 Pod 的配置相关的（例如 Pod A 在配置中指定不和 Pod B 运行在同一台机器上，再比如 Pod A 对某种资源有特别要求），实现最简单的调度策略即可拿到该功能 >80% 的分数
 
 - Service 的抽象应该隐藏 Pod 的具体运行位置，即 Pod 无论运行在何处，都可以通过 Service 和 DNS 访问到
 

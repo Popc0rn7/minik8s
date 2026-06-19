@@ -1,97 +1,250 @@
-# v0.1.0 Testcase 总入口
+# Testcase README
 
-本目录记录 Minik8s v0.1.0 的验收 case。v0.1.0 的稳定边界是：Pod 生命周期、双 worker 心跳与调度、单/双节点 CNI、Service endpoints、iptables ClusterIP/NodePort、etcd Pod/Service 持久化。不覆盖 ReplicaSet、HPA、DNS、Serverless、SecurityContext、GPU。
+本文是 `docs/testcase/` 的人工验收总入口。测试规格以
+[`docs/Handout.md`](../Handout.md) 为准；本文和各 feature testcase 只描述当前代码
+真实可运行的验收路径。不要把未落地能力写成已通过能力。
 
-## 默认双机拓扑
+## 默认拓扑
 
-| 角色 | 节点名 | 运行组件 | PodCIDR | 说明 |
+除单个 testcase 明确说明外，默认使用三台 Linux root 节点、fish shell、启用 mooring
+CNI、启用三个 worker。
+
+| 角色 | 主机 | Node 名 | 默认 IP | 运行组件 |
 | --- | --- | --- | --- | --- |
-| 控制面 + worker | `node-a` | `kubebridge`、`kubesailer` | `10.244.0.0/24` | API server、网络注册表与 etcd 推荐放这里 |
-| worker | `node-b` | `kubesailer` | `10.244.1.0/24` | 只访问 Kubeharbor，不直连 etcd |
+| 控制面 + worker | node-a | `node-a` | `192.168.1.4` | `bridge`、`sailer` |
+| worker | node-b | `node-b` | `192.168.1.10` | `sailer` |
+| worker | node-c | `node-c` | `192.168.1.15` | `sailer` |
 
-默认端口：
+默认网络：
 
-- Kubeharbor: `18080`
-- nginx hostPort case: `8080`
-- Service NodePort: `30080`
+- Harbor API：`http://<NODE_A_IP>:18080`
+- Cluster CIDR：`10.244.0.0/16`
+- node-a PodCIDR：`10.244.0.0/24`
+- node-b PodCIDR：`10.244.1.0/24`
+- node-c PodCIDR：`10.244.2.0/24`
+- Service CIDR 默认从 `10.96.0.0/12` 分配，示例 ClusterIP 通常从 `10.96.0.1` 开始
+- 跨节点 CNI 需要三节点之间双向 UDP `4789`
 
-两台机器都需要 Linux、Docker、`ip`、`iptables`、`nsenter`、`curl` 或 `wget`，并以 root 用户执行测试命令。`10.244.0.0/16` 不应与局域网或宿主机路由冲突。
+三台机器都需要 Docker、`ip`、`bridge`、`iptables`、`nsenter`、`curl` 或 `wget`。
+`sailer join` 默认按访问 Harbor 的 UDP 路由探测 node IP；多网卡环境下如果探测结果
+不符合预期，显式传 `--node-ip <本机内网 IP>`。`spec.podCIDR` 由控制面按
+`CLUSTER_CIDR` 自动分配。
 
-## 全局变量
+如果 root 的 fish 配置设置了代理，确认 `NO_PROXY/no_proxy` 覆盖
+`192.168.0.0/16`、`10.244.0.0/16` 和 `10.96.0.0/12`。访问 Harbor LAN 地址时优先使用
+`curl --noproxy '*'`，避免代理导致 502。
 
-在 node-a：
+## 默认启动流程
 
-```bash
-export NODE_A_IP=192.168.1.8
-export NODE_B_IP=192.168.1.6
-export POD_CIDR_A=10.244.0.0/24
-export POD_CIDR_B=10.244.1.0/24
-export KUBEHARBOR=http://${NODE_A_IP}:18080
-export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
+node-a、node-b 和 node-c 的每个测试终端先设置变量；如果 IP 不同，先改前三个值：
+
+```fish
+set -gx NODE_A_IP 192.168.1.4; set -gx NODE_B_IP 192.168.1.10; set -gx NODE_C_IP 192.168.1.15; set -gx CLUSTER_CIDR 10.244.0.0/16; set -gx HARBOR http://$NODE_A_IP:18080; set -gx MINIK8S_HARBOR $HARBOR; set -gx MINIK8S_STATE_DIR .minik8s/testcase-state; set -gx MINIK8S_TOKEN minik8s
+set -e MINIK8S_CNI_DISABLED
 ```
 
-在 node-b：
+三台机器都在仓库根目录构建和同步产物：
 
-```bash
-export NODE_A_IP=192.168.1.8
-export NODE_B_IP=192.168.1.6
-export POD_CIDR_A=10.244.0.0/24
-export POD_CIDR_B=10.244.1.0/24
-export KUBEHARBOR=http://${NODE_A_IP}:18080
-export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
+```fish
+make prod-deploy
 ```
 
-## 必测矩阵
+node-a 终端 1 启动控制面：
 
-| Case | 文档 | 目标 | 必跑 |
-| --- | --- | --- | --- |
-| CASE-00 | `two-node.md` | 双机环境预检、构建、启动控制面和 worker | 是 |
-| CASE-01 | `pod.md` | Pod apply/get/delete、restartPolicy、双 worker 心跳调度 | 是 |
-| CASE-02 | `cni.md` | 单节点 PodIP、跨节点 PodIP 通信、IPAM 清理 | 是 |
-| CASE-03 | `service.md` | endpoints、ClusterIP、NodePort、多 endpoint、iptables 清理 | 是 |
-| CASE-04 | `etcd.md` | Pod/Service 写入 etcd，kubebridge 重启后恢复 | 是 |
-
-建议执行顺序：
-
-```bash
-# 1. 两台机器按 two-node.md 完成启动。
-# 2. 在 node-a 执行 pod.md。
-# 3. 在 node-a 和 node-b 按 cni.md 验证跨节点。
-# 4. 在 node-a 执行 service.md，必要时在 node-b 辅助 curl NodePort。
-# 5. 需要持久化验收时执行 etcd.md。
+```fish
+./bin/minik8s bridge \
+  --listen :18080 \
+  --cluster-cidr $CLUSTER_CIDR \
+  --node-cidr-mask-size 24
 ```
 
-## 清理顺序
+node-a 测试终端启用 mooring CNI 并设置 bootstrap token：
 
-在 node-a 统一清理 API 对象：
-
-```bash
-./minik8s delete service nginx-service || true
-./minik8s delete service nginx-nodeport || true
-./minik8s delete pod nginx-node-a || true
-./minik8s delete pod nginx-node-b || true
-./minik8s delete pod busybox-node-b || true
-./minik8s delete pod busybox-client || true
-./minik8s delete pod nginx-pod-2 || true
-./minik8s delete pod nginx-pod || true
-./minik8s delete pod volume-resource-pod -n demo || true
+```fish
+./bin/kubectl apply -f manifests/cni/mooring.yaml
+./bin/minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
 ```
 
-等待两个 kubesailer 各同步一次后，在两台机器检查：
+node-a worker 终端：
 
-```bash
-docker ps -a --filter label=minik8s.pod.namespace=default
-cat .minik8s/state/cni-ipam.json 2>/dev/null || true
-iptables-save -t nat | grep MK8S-SVC || true
+```fish
+./bin/minik8s sailer join \
+  --apiserver http://$NODE_A_IP:18080 \
+  --token $MINIK8S_TOKEN \
+  --node-name node-a
+
+./bin/minik8s sailer run
 ```
 
-如需完全重置测试状态，停止 `kubebridge`、`kubesailer` 后再删除 `.minik8s/testcase-state`、`.minik8s/state/cni-ipam.json`，并清理残留 Docker 容器。
+node-b worker 终端：
 
-## 常见故障定位
+```fish
+./bin/minik8s sailer join \
+  --apiserver http://$NODE_A_IP:18080 \
+  --token $MINIK8S_TOKEN \
+  --node-name node-b
 
-- `get nodes` 只有一个节点：检查 node-b 的 `KUBEHARBOR` 是否指向 node-a 局域网 IP，而不是 `127.0.0.1`。
-- Pod 一直 `Pending`：检查对应 `nodeName` 的 kubesailer 是否在运行，或执行 `./minik8s get nodes` 看节点心跳。
-- Pod 没有 IP：检查 `MINIK8S_CNI_DISABLED` 是否被设置为 `1`，以及 `doctor network` 的 CNI conf/bin 路径。
-- 跨节点 PodIP 不通：检查 `kubesailer` 是否带了 `--node-ip` 和 `--pod-cidr`，`ip route` 是否有对端 PodCIDR，宿主机防火墙是否拦截转发。
-- Service ClusterIP 不通：检查 `kubebridge` 是否启用了默认 ServiceProxy，`iptables-save -t nat | grep MK8S-SVC` 是否有规则。
-- NodePort 不通：确认访问的是运行了 proxy 规则的节点 IP，且宿主机防火墙允许 `30080`。
+./bin/minik8s sailer run
+```
+
+node-c worker 终端：
+
+```fish
+./bin/minik8s sailer join \
+  --apiserver http://$NODE_A_IP:18080 \
+  --token $MINIK8S_TOKEN \
+  --node-name node-c
+
+./bin/minik8s sailer run
+```
+
+node-a 测试终端检查默认环境：
+
+```fish
+./bin/kubectl version
+./bin/kubectl get nodes
+curl --noproxy '*' -fsS $HARBOR/nodes
+ip route | grep 10.244
+ip link show mk8s-vxlan
+bridge fdb show dev mk8s-vxlan
+```
+
+期望 `node-a`、`node-b` 和 `node-c` 均为 `Ready`，并分别显示 `10.244.0.0/24`、
+`10.244.1.0/24` 和 `10.244.2.0/24`。
+
+## Handout 覆盖矩阵
+
+| Handout 能力 | 当前 testcase | 状态 |
+| --- | --- | --- |
+| Pod lifecycle、YAML、namespace、labels、volume、resource、restart | `pod.md` | 必测 |
+| CNI Pod IP、同节点和跨节点 PodIP 通信 | `cni.md` | 必测，依赖 Linux 网络权限 |
+| Service ClusterIP、NodePort、endpoints、动态更新、清理 | `service.md` | 必测，node-a proxy 为主入口 |
+| ReplicaSet desired/current、补齐、缩容、级联删除 | `replicaset.md` | 必测 |
+| Node、Navigator、多机、NodeLost 容错 | `two-node.md`、`pod.md` | 必测 |
+| 控制面状态持久化和恢复 | `logbook.md`、`startup.md` | 必测 |
+| HPA 和 metrics | `hpa.md`、`metrics-server.md` | 当前已有能力，按 addon 测 |
+| DNS host/path gateway | `dns.md` | 当前已有能力，按 addon 测 |
+| Serverless Function/EventTrigger/Workflow/NATS | `serverless.md`、`serverless-nats.md`、`serverless-sam.md`、`serverless-image-workflow.md` | 当前教学闭环；复杂 SAM/image workflow demo 依赖预构建镜像和本地数据 |
+| Job GPU/Slurm 提交、状态、日志、隔离 | `job-gpu.md` | 当前最小闭环；真机验证依赖 SSH 凭据、submitter 镜像和 Harbor endpoint 配置 |
+| PV/PVC、Security Context、MicroService mesh | 无可通过 testcase | 未实现或未纳入当前验收 |
+
+## Testcase 入口
+
+| 文件 | 默认环境 | 说明 |
+| --- | --- | --- |
+| `two-node.md` | 可单独从 0 开始 | 三节点预检、启动、Ready、CNI 基线。 |
+| `pod.md` | 大部分使用默认环境 | Pod 生命周期、调度、NodeLost 和删除 Node；偏离默认环境的步骤见文档内 case 前置。 |
+| `cni.md` | 使用默认环境 | mooring CNI 主路径、manifest 激活、route fallback。 |
+| `service.md` | 使用默认环境 | Service endpoints、ClusterIP、NodePort、负载均衡、iptables 清理。 |
+| `replicaset.md` | 使用默认环境 | ReplicaSet 对 Pod 的创建、收敛和级联删除。 |
+| `logbook.md` | 可单独从 0 开始 | file/etcd Logbook、控制面重启恢复。 |
+| `startup.md` | 可单独从 0 开始 | `init`、static deps pod、bridge dependency startup。 |
+| `addons.md` | 可单独从 0 开始 | addon manifest 与 `--addons` readiness。 |
+| `metrics-server.md` | 需要 metrics addon | metrics API 和 `kubectl top`。 |
+| `hpa.md` | 需要 metrics 样本 | HPA 根据 Docker metrics 调整 ReplicaSet。 |
+| `dns.md` | 需要 dns addon | DNS 对象和 gateway host/path routing。 |
+| `serverless-nats.md` | 需要 serverless addon | Function/EventTrigger/Workflow + NATS publish。 |
+| `serverless.md` | 需要 serverless addon | Function/EventTrigger/Workflow、冷启动、scale-to-0、并发扩容 + NATS publish。 |
+| `serverless-sam.md` | 需要 serverless addon 和预构建镜像 | SAM CPU 图像分割容器 Function demo。 |
+| `serverless-image-workflow.md` | 需要 serverless addon、预构建镜像和本地数据 | 多 Function 图像处理 Workflow demo。 |
+| `job-gpu.md` | 需要交我算账号和 submitter 镜像 | Job + Slurm GPU 后端，CUDA vector add、日志和隔离演示。 |
+| `testing-agent-prompt.md` | 辅助文档 | 给测试代理的执行、证据和恢复要求。 |
+
+## TODO 验证进度
+
+按推荐执行顺序跟踪人工 testcase 验证状态。只有完成对应文档中的主路径验证、记录证据并
+恢复环境后，才把条目标为已完成。
+
+- [x] `startup.md`：`init`、static deps pod、bridge dependency startup。
+- [x] `two-node.md`：三节点预检、启动、Ready、CNI 基线。
+- [ ] `pod.md`：Pod lifecycle、调度、NodeLost 和删除 Node；新增多容器 localhost 与共享 volume 后需补测。
+- [x] `cni.md`：mooring CNI、Pod IP、同节点和跨节点通信。
+- [ ] `service.md`：Service endpoints、ClusterIP、NodePort、负载均衡、iptables 清理；新增集群外 NodePort 证据后需补测。
+- [ ] `replicaset.md`：ReplicaSet 创建、补齐、缩容和级联删除；新增跨节点分布与 NodeLost 补副本后需补测。
+- [x] `logbook.md`：file/etcd Logbook、对象持久化和 bridge 重启恢复；LOGBOOK-06 为可选工程增强项，尚未记录通过。
+- [x] `addons.md`：addon manifest、`--addons` readiness 和 doctor 状态。
+- [ ] `metrics-server.md`：metrics API 和 `kubectl top`。
+- [ ] `hpa.md`：HPA metrics、扩容和缩容。
+- [ ] `dns.md`：DNS 对象和 gateway host/path routing。
+- [ ] `serverless-nats.md`：Function/EventTrigger/Workflow + NATS publish。
+- [ ] `serverless.md`：Function/EventTrigger/Workflow、冷启动、scale-to-0、并发扩容 + NATS publish。
+- [ ] `serverless-sam.md`：SAM CPU 图像分割容器 Function demo。
+- [ ] `serverless-image-workflow.md`：多 Function 图像处理 Workflow demo。
+- [ ] `job-gpu.md`：Job + Slurm GPU 后端、CUDA vector add、日志和隔离演示。
+
+最近人工验证记录：
+
+- 2026-06-15 `service.md`：SVC-01 到 SVC-06 通过。此前 SVC-03 的 NodePort 失败根因是
+  宿主机残留同 PodCIDR 的旧 `cni0` route，导致 `10.244.0.0/24` 流量没有走 `mk8s0`；
+  当前 mooring/netagent 会刷新本地 PodCIDR route 到 `mk8s0`。此前 SVC-06 的
+  `MK8S-SVC-*` 残留通过 kube-proxy 删除入口规则时循环删除重复规则修复。
+- 2026-06-14 `logbook.md`：LOGBOOK-01 到 LOGBOOK-05 通过。当前 bridge 重启语义是
+  私有 dependency sailer/etcd 会随 bridge 重启，etcd 数据依赖
+  `.minik8s/state/bridge-deps/etcd` 持久化目录恢复；公开 `sailer run` 在 Harbor 短暂
+  不可用期间应保持运行，通过 `sailer-sync`、`netagent-sync` warning 重试，并在 bridge
+  恢复后自动恢复 Node Ready、Pod、ReplicaSet 和 Service endpoints。
+
+## 通用清理
+
+清理分两层：API 对象由控制面删除；本机 CNI/iptables/IPAM 残留由每个 worker 的
+`doctor clean` 删除。开始前先看状态，避免把 testcase 失败和环境残留混在一起。
+
+node-a 测试终端：
+
+```fish
+./bin/kubectl get nodes; or true
+./bin/kubectl get pods; or true
+./bin/kubectl get services; or true
+./bin/kubectl get rs; or true
+./bin/kubectl get hpa; or true
+./bin/kubectl get dns; or true
+./bin/kubectl get functions; or true
+./bin/kubectl get eventtriggers; or true
+./bin/kubectl get workflows; or true
+./bin/kubectl get jobs; or true
+```
+
+清理常见 API 对象：
+
+```fish
+for item in \
+  "service nginx-service" \
+  "service nginx-nodeport" \
+  "hpa nginx-hpa" \
+  "rs nginx-rs" \
+  "dns example-routes" \
+  "function echo" \
+  "function slow-echo" \
+  "function sam-segment" \
+  "eventtrigger echo-events" \
+  "workflow echo-chain" \
+  "job cuda-add" \
+  "job cuda-add-2" \
+  "pod nginx-pod" \
+  "pod nginx-pod-2" \
+  "pod nginx-node-a" \
+  "pod nginx-node-b" \
+  "pod busybox-node-a" \
+  "pod busybox-node-b" \
+  "pod busybox-client" \
+  "pod volume-resource-pod -n demo"
+    ./bin/kubectl delete (string split ' ' -- $item); or true
+end
+
+sleep 8
+./bin/kubectl get nodes
+./bin/kubectl get pods
+```
+
+如果要结束本轮测试或重置网络，在 node-a、node-b 和 node-c 先停止对应 `sailer run`，再分别检查
+并清理本机网络状态：
+
+```fish
+./bin/minik8s doctor network; or true
+./bin/minik8s doctor clean; or true
+./bin/minik8s doctor network; or true
+```
+
+`doctor clean` 是本机操作。三台节点都跑一遍，才能同时清掉 mooring bridge、
+VXLAN、iptables 规则、CNI 配置和 IPAM 文件。清理后如果要继续跑默认环境 testcase，
+需要重新启动对应 worker，让 `sailer` 重新写入 CNI 配置并注册网络。

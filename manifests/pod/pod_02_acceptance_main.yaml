@@ -1,0 +1,50 @@
+kind: Pod
+apiVersion: v1
+metadata:
+  name: pod-02-main
+  namespace: default
+  labels:
+    app: pod-02
+    case: minik8s-acceptance-02
+spec:
+  nodeSelector:
+    node: node-a
+  containers:
+  - name: web
+    image: nginx
+    imageTag: 1.27-alpine
+    command: ["nginx"]
+    args: ["-g", "daemon off;"]
+    ports:
+    - containerPort: 80
+    resources:
+      requests:
+        cpu: "0.1"
+        memory: "64Mi"
+      limits:
+        cpu: "0.5"
+        memory: "128Mi"
+    volumeMounts:
+    - name: shared
+      mountPath: /usr/share/nginx/html/shared
+  - name: sidecar
+    image: busybox
+    imageTag: 1.36
+    command: ["sh", "-c"]
+    args: ["echo sidecar-started > /shared/sidecar.txt; sleep 3600"]
+    resources:
+      requests:
+        cpu: "0.1"
+        memory: "32Mi"
+      limits:
+        cpu: "0.2"
+        memory: "64Mi"
+    volumeMounts:
+    - name: shared
+      mountPath: /shared
+  volumes:
+  - name: shared
+    hostPath:
+      path: /tmp/minik8s-acceptance-02-shared
+      type: DirectoryOrCreate
+  restartPolicy: Always

@@ -64,6 +64,7 @@ type VolumeMount struct {
 type ContainerPort struct {
 	Name          string `json:"name,omitempty" yaml:"name"`
 	ContainerPort int32  `json:"containerPort" yaml:"containerPort"`
+	HostIP        string `json:"hostIP,omitempty" yaml:"hostIP,omitempty"`
 	HostPort      int32  `json:"hostPort,omitempty" yaml:"hostPort"`
 	Protocol      string `json:"protocol,omitempty" yaml:"protocol"`
 }

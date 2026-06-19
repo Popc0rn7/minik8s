@@ -1,6 +1,8 @@
 package cniplugin
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -113,4 +115,84 @@ func TestConfigureForwardingAllowsBridgeTraffic(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -i mk8s0 -j ACCEPT")
 	assert.Contains(t, commands, "iptables -t filter -I FORWARD 1 -o mk8s0 -j ACCEPT")
+}
+
+func TestEnsureBridgeInstallsLocalPodCIDRRoute(t *testing.T) {
+	var commands []string
+	runner := func(name string, args ...string) error {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		if name == "iptables" && len(args) > 3 && args[2] == "-C" {
+			return errors.New("missing rule")
+		}
+		return nil
+	}
+
+	err := ensureBridgeWithRunner(BridgeConfig{
+		Bridge:  "mk8s0",
+		PodCIDR: "10.244.0.0/24",
+		Gateway: "10.244.0.1",
+	}, 24, runner)
+
+	require.NoError(t, err)
+	assert.Contains(t, commands, "ip route replace 10.244.0.0/24 dev mk8s0")
+}
+
+func TestRunBridgePluginVersionReturnsSupportedVersions(t *testing.T) {
+	var out bytes.Buffer
+
+	err := RunBridgePlugin(strings.NewReader(`{"cniVersion":"1.0.0"}`), &out, []string{"CNI_COMMAND=VERSION"})
+
+	require.NoError(t, err)
+	var version struct {
+		CNIVersion        string   `json:"cniVersion"`
+		SupportedVersions []string `json:"supportedVersions"`
+	}
+	require.NoError(t, json.Unmarshal(out.Bytes(), &version))
+	assert.Equal(t, "1.0.0", version.CNIVersion)
+	assert.Contains(t, version.SupportedVersions, "1.0.0")
+}
+
+func TestRunBridgePluginRejectsWrongPluginType(t *testing.T) {
+	var out bytes.Buffer
+
+	err := RunBridgePlugin(strings.NewReader(`{"cniVersion":"1.0.0","name":"bad","type":"other"}`), &out, []string{
+		"CNI_COMMAND=ADD",
+		"CNI_CONTAINERID=sandbox-1",
+		"CNI_NETNS=/proc/123/ns/net",
+		"CNI_IFNAME=eth0",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "type must be mooring")
+}
+
+func TestRunBridgePluginRequiresAllocatedPodCIDRAndGateway(t *testing.T) {
+	var out bytes.Buffer
+
+	err := RunBridgePlugin(strings.NewReader(`{"cniVersion":"1.0.0","name":"minik8s","type":"mooring"}`), &out, []string{
+		"CNI_COMMAND=ADD",
+		"CNI_CONTAINERID=sandbox-1",
+		"CNI_NETNS=/proc/123/ns/net",
+		"CNI_IFNAME=eth0",
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "podCIDR is required")
+}
+
+func TestCNIErrorJSON(t *testing.T) {
+	data, err := cniErrorJSON("1.0.0", 100, "InvalidConfig", "bad config")
+
+	require.NoError(t, err)
+	var payload struct {
+		CNIVersion string `json:"cniVersion"`
+		Code       int    `json:"code"`
+		Msg        string `json:"msg"`
+		Details    string `json:"details"`
+	}
+	require.NoError(t, json.Unmarshal(data, &payload))
+	assert.Equal(t, "1.0.0", payload.CNIVersion)
+	assert.Equal(t, 100, payload.Code)
+	assert.Equal(t, "InvalidConfig", payload.Msg)
+	assert.Equal(t, "bad config", payload.Details)
 }

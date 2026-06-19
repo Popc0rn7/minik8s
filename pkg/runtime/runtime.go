@@ -24,15 +24,19 @@ type SandboxConfig struct {
 	ID          string
 	Name        string
 	Namespace   string
+	NodeName    string
 	Labels      map[string]string
 	Ports       []ContainerPort
 	NetworkMode string
+	DNS         []string
+	DNSSearch   []string
 }
 
 // ContainerPort describes a port exposed by a container.
 type ContainerPort struct {
 	Name          string
 	ContainerPort int32
+	HostIP        string
 	HostPort      int32
 	Protocol      string
 }
@@ -67,6 +71,17 @@ type ContainerInfo struct {
 	Labels  map[string]string
 }
 
+type ContainerStats struct {
+	CPUUsageTotalNano uint64
+	MemoryUsageBytes  uint64
+	Timestamp         time.Time
+}
+
+type ExecResult struct {
+	ExitCode int
+	Output   string
+}
+
 // ContainerStateInfo contains container state information
 type ContainerStateInfo struct {
 	Status       string
@@ -85,6 +100,12 @@ type SandboxInfo struct {
 	Labels    map[string]string
 	CreatedAt time.Time
 	State     SandboxState
+}
+
+// PodRef identifies a Pod in the local runtime.
+type PodRef struct {
+	Namespace string
+	Name      string
 }
 
 // SandboxState represents the state of a sandbox
@@ -112,6 +133,10 @@ type ContainerRuntime interface {
 	RemoveContainer(ctx context.Context, containerID string) error
 	InspectContainer(ctx context.Context, containerID string) (*ContainerInfo, error)
 	ListContainers(ctx context.Context, sandboxID string) ([]*ContainerInfo, error)
+	ExecContainer(ctx context.Context, containerID string, command []string, timeout time.Duration) (*ExecResult, error)
+	ContainerStats(ctx context.Context, containerID string) (*ContainerStats, error)
+	CleanupPod(ctx context.Context, namespace, name string) error
+	CleanupNodePods(ctx context.Context, nodeName string) error
 
 	// Image operations
 	PullImage(ctx context.Context, imageName string) error

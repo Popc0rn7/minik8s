@@ -32,6 +32,24 @@ spec:
 	assert.Equal(t, "alpine", p.Spec.Containers[0].ImageTag)
 }
 
+func TestLoadPodFromYAMLClearsUserProvidedNodeName(t *testing.T) {
+	data := []byte(`
+kind: Pod
+metadata:
+  name: scheduler-owned
+spec:
+  nodeName: node-a
+  containers:
+  - name: web
+    image: nginx
+`)
+
+	p, err := LoadPodFromYAML(data)
+
+	require.NoError(t, err)
+	assert.Empty(t, p.Spec.NodeName)
+}
+
 func TestLoadPodFromYAMLRejectsInvalidPod(t *testing.T) {
 	data := []byte(`
 kind: Service
@@ -69,11 +87,26 @@ spec:
 	assert.True(t, strings.Contains(err.Error(), "unknown volume") || strings.Contains(err.Error(), "missing"))
 }
 
-func TestPodVolumeResourceManifestIsAssignedToNodeA(t *testing.T) {
-	path := filepath.Join("..", "..", "manifest", "testdata", "pod_volume_resource.yaml")
+func TestPodVolumeResourceManifestLeavesSchedulingToNavigator(t *testing.T) {
+	path := filepath.Join("..", "..", "manifests", "pod", "pod_volume_resource.yaml")
 
 	p, err := LoadPodFromFile(path)
 
 	require.NoError(t, err)
-	assert.Equal(t, "node-a", p.Spec.NodeName)
+	assert.Empty(t, p.Spec.NodeName)
+}
+
+func TestMostDogCollagePodManifest(t *testing.T) {
+	path := filepath.Join("..", "..", "manifests", "pod", "pod_most_dog_collage.yaml")
+
+	p, err := LoadPodFromFile(path)
+
+	require.NoError(t, err)
+	assert.Equal(t, "most-dog-collage", p.Name)
+	assert.Equal(t, pod.RestartPolicyNever, p.Spec.RestartPolicy)
+	require.Len(t, p.Spec.Volumes, 1)
+	require.NotNil(t, p.Spec.Volumes[0].HostPath)
+	assert.Equal(t, "/tmp/most-dog", p.Spec.Volumes[0].HostPath.Path)
+	assert.Equal(t, map[string]string{"node": "node-a"}, p.Spec.NodeSelector)
+	assert.Empty(t, p.Spec.NodeName)
 }

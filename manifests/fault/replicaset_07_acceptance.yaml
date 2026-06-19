@@ -1,0 +1,45 @@
+kind: ReplicaSet
+apiVersion: v1
+metadata:
+  name: rs-07-web
+  namespace: default
+  labels:
+    app: rs-07-web
+    case: minik8s-acceptance-07
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: rs-07-web
+      case: minik8s-acceptance-07
+  template:
+    metadata:
+      labels:
+        app: rs-07-web
+        case: minik8s-acceptance-07
+        tier: frontend
+    spec:
+      restartPolicy: Always
+      containers:
+      - name: web
+        image: busybox
+        imageTag: 1.36
+        command: ["sh", "-c"]
+        args:
+        - |
+          mkdir -p /www
+          while true; do
+            printf 'case=07\nkind=replicaset\npod=%s\nip=%s\n' "$HOSTNAME" "$(hostname -i)" > /www/index.html
+            httpd -f -p 8080 -h /www
+            sleep 1
+          done
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "32Mi"
+          limits:
+            cpu: "200m"
+            memory: "64Mi"

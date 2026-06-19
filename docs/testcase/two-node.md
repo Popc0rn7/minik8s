@@ -1,15 +1,27 @@
-# 双机公共启动流程
+# 三节点公共启动测试
 
-本文档是所有 v0.1.0 双机 case 的公共前置步骤。先完成这里，再执行 `pod.md`、`cni.md`、`service.md`、`etcd.md`。
+本文是默认三节点环境的可执行基线。除 addon 或单节点特例外，其他 testcase 应先通过
+本文，再继续执行 feature case。
 
-## CASE-00：环境预检
+## 覆盖矩阵
 
-目标：确认两台局域网机器可以互通，并具备运行 CNI/kube-proxy 的基础能力。
+| Case | 目标 | 机器 | 恢复要求 |
+| --- | --- | --- | --- |
+| NODE-00 | 宿主机、工具和网络预检 | node-a + node-b + node-c | 不改变集群 |
+| NODE-01 | bridge、CNI manifest、token 启动 | node-a | 保持 bridge 运行 |
+| NODE-02 | 三个 worker join/run | node-a + node-b + node-c | 三节点 Ready |
+| NODE-03 | PodCIDR、VXLAN、route 基线 | node-a + node-b + node-c | 保持默认网络 |
+| NODE-04 | 旧 sailer 入口兼容性说明 | 任意 | 不作为默认验收 |
 
-在 node-a：
+## NODE-00：环境预检
 
-```bash
-ping -c 3 ${NODE_B_IP}
+目标：确认三台机器可以互通，并具备运行 CNI/kube-proxy 的基础能力。
+
+node-a：
+
+```fish
+ping -c 3 $NODE_B_IP
+ping -c 3 $NODE_C_IP
 docker version
 which ip
 which bridge
@@ -18,10 +30,11 @@ which nsenter
 iptables-save -t nat >/tmp/minik8s-iptables-a.txt
 ```
 
-在 node-b：
+node-b：
 
-```bash
-ping -c 3 ${NODE_A_IP}
+```fish
+ping -c 3 $NODE_A_IP
+ping -c 3 $NODE_C_IP
 docker version
 which ip
 which bridge
@@ -30,9 +43,22 @@ which nsenter
 iptables-save -t nat >/tmp/minik8s-iptables-b.txt
 ```
 
+node-c：
+
+```fish
+ping -c 3 $NODE_A_IP
+ping -c 3 $NODE_B_IP
+docker version
+which ip
+which bridge
+which iptables
+which nsenter
+iptables-save -t nat >/tmp/minik8s-iptables-c.txt
+```
+
 期望：
 
-- 两台机器互 ping 成功。
+- 三台机器互 ping 成功。
 - Docker client/server 正常。
 - `ip`、`bridge`、`iptables`、`nsenter` 均存在。
 - `iptables-save` 可用，说明网络规则检查能力正常。
@@ -42,136 +68,180 @@ iptables-save -t nat >/tmp/minik8s-iptables-b.txt
 - ping 失败时先修复局域网、防火墙或 VM 网络模式。
 - Docker 失败时确认 Docker daemon 正常运行，且当前 root 环境可访问。
 
-## 构建二进制
+## NODE-01：启动控制面和 CNI manifest
 
-在两台机器的仓库根目录执行：
+目标：启动 Harbor API，启用 mooring CNI 兼容对象，并设置 worker bootstrap token。
 
-```bash
-make build
-./minik8s version --server ${KUBEHARBOR} || true
+三台机器都构建：
+
+```fish
+make prod-deploy
 ```
 
-`version` 在控制面未启动前可以失败；这里只确认二进制已构建。
+node-a 终端 1：
 
-## 初始化 CNI
-
-在 node-a：
-
-```bash
-unset MINIK8S_CNI_DISABLED
-./minik8s cni init \
-  --pod-cidr ${POD_CIDR_A} \
-  --gateway 10.244.0.1
-./minik8s doctor network
+```fish
+./bin/minik8s bridge \
+  --listen :18080 \
+  --cluster-cidr $CLUSTER_CIDR \
+  --node-cidr-mask-size 24
 ```
 
-在 node-b：
+node-a 测试终端：
 
-```bash
-unset MINIK8S_CNI_DISABLED
-./minik8s cni init \
-  --pod-cidr ${POD_CIDR_B} \
-  --gateway 10.244.1.1
-./minik8s doctor network
+```fish
+./bin/kubectl version
+./bin/kubectl apply -f manifests/cni/mooring.yaml
+./bin/minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
+curl --noproxy '*' -fsS $HARBOR/version
 ```
 
 期望：
 
-- `doctor network` 显示 `config: present`。
-- `bridge: mk8s0`。
-- node-a 的 `podCIDR` 为 `10.244.0.0/24`，node-b 为 `10.244.1.0/24`。
+- bridge 输出 `bridge listening on :18080`。
+- `kubectl version` 能访问 Harbor API。
+- CNI manifest 创建或更新 `kube-mooring/mooring-cni-cfg` 和 `mooring-cni-ds`。
+- token set 输出 bootstrap token 已写入。
 
-## 启动控制面
+失败排查：
 
-在 node-a 终端 1：
+- node-b/node-c 无法访问 Harbor：确认 `--listen :18080` 绑定外部可达端口，防火墙放通 TCP
+  `18080`，并使用 `curl --noproxy '*'` 规避代理。
+- CNI manifest apply 失败：确认当前 `kubectl` 连接的是 node-a 的 Harbor。
 
-```bash
-export MINIK8S_STATE_DIR=.minik8s/testcase-state
-export MINIK8S_KUBEHARBOR=${KUBEHARBOR}
-./minik8s kubebridge --listen :18080
+## NODE-02：三个 worker join/run
+
+目标：用当前主路径注册 node-a/node-b/node-c，并启动节点本地 kubelet/CNI/proxy 循环。
+
+node-a worker 终端：
+
+```fish
+./bin/minik8s sailer join \
+  --apiserver http://$NODE_A_IP:18080 \
+  --token $MINIK8S_TOKEN \
+  --node-name node-a
+
+./bin/minik8s sailer run
+```
+
+node-b worker 终端：
+
+```fish
+./bin/minik8s sailer join \
+  --apiserver http://$NODE_A_IP:18080 \
+  --token $MINIK8S_TOKEN \
+  --node-name node-b
+
+./bin/minik8s sailer run
+```
+
+node-c worker 终端：
+
+```fish
+./bin/minik8s sailer join \
+  --apiserver http://$NODE_A_IP:18080 \
+  --token $MINIK8S_TOKEN \
+  --node-name node-c
+
+./bin/minik8s sailer run
+```
+
+node-a 测试终端：
+
+```fish
+./bin/kubectl get nodes
+./bin/kubectl get node node-a -o yaml
+./bin/kubectl get node node-b -o yaml
+./bin/kubectl get node node-c -o yaml
 ```
 
 期望：
 
-- kubebridge 输出 `kubebridge listening on :18080`。
-- node-b 可访问 `curl -fsS ${KUBEHARBOR}/version`。
-- node-b 可访问 `curl -fsS ${KUBEHARBOR}/nodes`，返回网络节点注册列表。
+- `sailer join` 显示对应 node joined，并写入本机 `.minik8s/state/sailer.json`。
+- `sailer run` 显示对应 node started。
+- 只执行 `sailer join` 后，`get nodes` 可看到对应 Node 和 PodCIDR，但状态通常是
+  `Unknown`；执行并保持 `sailer run` 心跳后，状态应变为 `Ready`。
+- `get nodes` 包含 `node-a`、`node-b` 和 `node-c`。
+- `node-a` 的 PodCIDR 为 `10.244.0.0/24`，`node-b` 为 `10.244.1.0/24`，`node-c` 为 `10.244.2.0/24`。
 
-## 启动两个 kubesailer
+失败排查：
 
-在 node-a 终端 3：
+- join 被拒绝：确认 token 未过期；如多网卡机器自动探测 node IP 不符合预期，显式传
+  `--node-ip <本机内网 IP>`。
+- run 提示未 join：确认在同一个仓库和同一个 `MINIK8S_STATE_DIR` 下执行。
+- 只看到一个节点：检查另一个 worker 的 Harbor 地址、token 和 sailer 日志。
+- join 成功但节点是 `Unknown`：确认对应节点的 `sailer run` 仍在运行；join 只注册节点和
+  写本地配置，不代表 kubelet 心跳已经开始。
 
-```bash
-./minik8s kubesailer \
-  --node-name node-a \
-  --kubeharbor ${KUBEHARBOR} \
-  --node-ip ${NODE_A_IP} \
-  --pod-cidr ${POD_CIDR_A}
-```
+## NODE-03：网络基线
 
-在 node-b 终端 1：
+目标：确认三个 worker 已写入 CNI 配置，并同步 VXLAN/FDB/route。
 
-```bash
-./minik8s kubesailer \
-  --node-name node-b \
-  --kubeharbor ${KUBEHARBOR} \
-  --node-ip ${NODE_B_IP} \
-  --pod-cidr ${POD_CIDR_B}
-```
+node-a：
 
-期望：
-
-- `kubesailer` 同时注册节点心跳、同步 assigned Pods，并通过 Kubeharbor `/nodes` 同步 VXLAN overlay。
-- 两边 `ip route` 能看到对端 PodCIDR，并且 `mk8s-vxlan` FDB 指向对端 NodeIP：
-
-```bash
+```fish
+cat /etc/cni/net.d/10-mooring.conf
+./bin/minik8s doctor network
 ip route | grep 10.244
 ip link show mk8s-vxlan
 bridge fdb show dev mk8s-vxlan
 ```
 
-失败排查：
+node-b：
 
-- 如果没有对端 route 或 `mk8s-vxlan`，先确认 `KUBEHARBOR` 指向 node-a 局域网 IP，且 node-b 可以访问 `${KUBEHARBOR}/nodes`。
-- 云主机或安全组环境下，确认 node-a/node-b 双向放通 UDP `4789`。
-- 可先执行一次 `kubesailer --once`，便于快速暴露错误。
+```fish
+cat /etc/cni/net.d/10-mooring.conf
+./bin/minik8s doctor network
+ip route | grep 10.244
+ip link show mk8s-vxlan
+bridge fdb show dev mk8s-vxlan
+```
 
-在 node-a 的 CLI 终端验证：
+node-c：
 
-```bash
-./minik8s get nodes
+```fish
+cat /etc/cni/net.d/10-mooring.conf
+./bin/minik8s doctor network
+ip route | grep 10.244
+ip link show mk8s-vxlan
+bridge fdb show dev mk8s-vxlan
 ```
 
 期望：
 
-- 输出包含 `node-a` 和 `node-b`。
-- 两个节点状态均为 `Ready`。
+- 三台机器的 CNI 配置 `type` 为 `mooring`。
+- node-a 配置 `podCIDR: 10.244.0.0/24`，node-b 配置 `podCIDR: 10.244.1.0/24`，node-c 配置 `podCIDR: 10.244.2.0/24`。
+- 三台机器均存在 `mk8s-vxlan`。
+- node-a 有到 `10.244.1.0/24` 和 `10.244.2.0/24` 的 route，node-b/node-c 有到其他节点 PodCIDR 的 route。
+- FDB 指向其他 Node IP。
 
 失败排查：
 
-- 只看到 node-a：检查 node-b 的 `KUBEHARBOR` 是否能 curl 到 node-a。
-- 节点短暂消失：默认 Node TTL 是 30s，确认 kubesailer 没退出。
+- 无 VXLAN 或 route：检查三台节点的 `InternalIP`、`curl --noproxy '*' -fsS $HARBOR/nodes`、
+  UDP `4789`、宿主机防火墙和 `ip_forward`。
+- PodCIDR 为空：确认 `bridge` 启动时包含 `--cluster-cidr` 和
+  `--node-cidr-mask-size 24`，然后重新 `sailer join`。
 
-## 可选：静态 route 模式
+## NODE-04：启动入口
 
-如果启动 `kubesailer` 时不带 `--node-ip` 和 `--pod-cidr`，也可以在 CNI 初始化时写静态 route。
+旧的 Node YAML 启动材料已从最终验收 manifests 中移除。人工验收统一使用：
 
-node-a：
-
-```bash
-./minik8s cni init \
-  --pod-cidr ${POD_CIDR_A} \
-  --gateway 10.244.0.1 \
-  --route ${POD_CIDR_B}=${NODE_B_IP}
+```fish
+./bin/minik8s sailer join --apiserver http://$NODE_A_IP:18080 --token $MINIK8S_TOKEN --node-name node-a
+./bin/minik8s sailer run
 ```
 
-node-b：
+不要把旧 YAML 入口混入默认启动流程。
 
-```bash
-./minik8s cni init \
-  --pod-cidr ${POD_CIDR_B} \
-  --gateway 10.244.1.1 \
-  --route ${POD_CIDR_A}=${NODE_A_IP}
+## 恢复
+
+如果只结束 testcase，先删除业务对象，再停止三个 `sailer run`。如果要清理本机网络状态，
+在 node-a、node-b 和 node-c 分别执行：
+
+```fish
+./bin/minik8s doctor network; or true
+./bin/minik8s doctor clean; or true
+./bin/minik8s doctor network; or true
 ```
 
-v0.1.0 推荐使用带 `--node-ip` 和 `--pod-cidr` 的 `kubesailer`，因为 VXLAN、FDB 和 route 会周期性恢复。
+如需继续运行 testcase，重新执行 NODE-02，让 worker 重新写入 CNI 配置和心跳状态。

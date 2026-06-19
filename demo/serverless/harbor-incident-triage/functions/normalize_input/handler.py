@@ -1,0 +1,52 @@
+import json
+import re
+import sys
+import uuid
+
+
+def compact(data):
+    return json.dumps(data, separators=(",", ":"), sort_keys=True)
+
+
+def append_trace(event, step):
+    trace = list(event.get("trace", []))
+    trace.append(step)
+    event["trace"] = trace
+    return event
+
+
+def normalize_spaces(text):
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def main(event):
+    if not isinstance(event, dict):
+        event = {"log": str(event)}
+    title = str(event.get("title", ""))
+    log = str(event.get("log", ""))
+    source = str(event.get("source", "demo"))
+    labels = event.get("labels") if isinstance(event.get("labels"), dict) else {}
+    normalized = normalize_spaces((title + " " + log).lower())
+    out = dict(event)
+    out.update(
+        {
+            "ok": True,
+            "step": "normalize_input",
+            "requestId": out.get("requestId") or "req-" + uuid.uuid4().hex[:8],
+            "source": source,
+            "title": title,
+            "log": log,
+            "labels": labels,
+            "normalizedText": normalized,
+        }
+    )
+    return append_trace(out, "normalize_input")
+
+
+def handler(event):
+    payload = json.loads(event or "{}")
+    return compact(main(payload))
+
+
+if __name__ == "__main__":
+    print(json.dumps(main(json.load(sys.stdin)), indent=2, sort_keys=True))

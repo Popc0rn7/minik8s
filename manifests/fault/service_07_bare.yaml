@@ -1,0 +1,19 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: pod-07-bare
+  namespace: default
+  labels:
+    app: pod-07-bare
+    case: minik8s-acceptance-07
+spec:
+  type: ClusterIP
+  selector:
+    matchLabels:
+      app: pod-07-bare
+      case: minik8s-acceptance-07
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 8080

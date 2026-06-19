@@ -2,6 +2,7 @@ package netagent
 
 import (
 	"context"
+	"crypto/sha1"
 	"errors"
 	"fmt"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"minik8s/internal/minilog"
 	"minik8s/internal/netregistry"
 )
 
@@ -101,8 +103,8 @@ func (a *Agent) Sync(ctx context.Context) error {
 	if err := a.registry.Register(ctx, a.local); err != nil {
 		return err
 	}
-	if !a.bridgeExists() {
-		return nil
+	if err := a.ensureBridgeDevice(); err != nil {
+		return err
 	}
 	if err := a.ensureVXLANDevice(); err != nil {
 		return err
@@ -127,19 +129,19 @@ func (a *Agent) Run(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
-	if err := a.Sync(ctx); err != nil {
-		return err
-	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
+		if err := a.Sync(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			minilog.Warn("netagent-sync", "node=%s error=%v", a.local.Name, err)
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := a.Sync(ctx); err != nil {
-				return err
-			}
 		}
 	}
 }
@@ -151,8 +153,61 @@ func (a *Agent) isRemoteNode(node netregistry.Node) bool {
 	return netregistry.ValidateNode(node) == nil
 }
 
-func (a *Agent) bridgeExists() bool {
-	return a.runner("ip", "link", "show", a.bridgeName) == nil
+func (a *Agent) ensureBridgeDevice() error {
+	if err := a.runner("ip", "link", "show", a.bridgeName); err != nil {
+		if err := a.runner("ip", "link", "add", a.bridgeName, "type", "bridge"); err != nil {
+			return err
+		}
+	}
+	gateway, prefix, err := bridgeGateway(a.local.PodCIDR)
+	if err != nil {
+		return err
+	}
+	if err := a.runner("ip", "addr", "replace", fmt.Sprintf("%s/%d", gateway, prefix), "dev", a.bridgeName); err != nil {
+		return err
+	}
+	if err := a.runner("ip", "link", "set", "dev", a.bridgeName, "address", stableLinkMAC("bridge", a.local.Name, a.local.NodeIP, a.local.PodCIDR)); err != nil {
+		return err
+	}
+	if err := a.runner("ip", "link", "set", a.bridgeName, "up"); err != nil {
+		return err
+	}
+	if err := a.runner("ip", "route", "replace", a.local.PodCIDR, "dev", a.bridgeName); err != nil {
+		return err
+	}
+	if err := a.runner("modprobe", "br_netfilter"); err != nil {
+		return err
+	}
+	if err := a.runner("sysctl", "-w", "net.bridge.bridge-nf-call-iptables=1"); err != nil {
+		return err
+	}
+	if err := a.runner("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
+		return err
+	}
+	if err := a.ensureIptablesRule("filter", "FORWARD", "-I", []string{"1"}, "-i", a.bridgeName, "-j", "ACCEPT"); err != nil {
+		return err
+	}
+	if err := a.ensureIptablesRule("filter", "FORWARD", "-I", []string{"1"}, "-o", a.bridgeName, "-j", "ACCEPT"); err != nil {
+		return err
+	}
+	return a.ensureIptablesRule("nat", "POSTROUTING", "-A", nil, "-s", a.local.PodCIDR, "!", "-o", a.bridgeName, "-j", "MASQUERADE")
+}
+
+func bridgeGateway(podCIDR string) (string, int, error) {
+	ip, network, err := net.ParseCIDR(podCIDR)
+	if err != nil {
+		return "", 0, err
+	}
+	if ip.To4() == nil {
+		return "", 0, fmt.Errorf("pod CIDR must be IPv4: %s", podCIDR)
+	}
+	ones, bits := network.Mask.Size()
+	if bits != 32 {
+		return "", 0, fmt.Errorf("pod CIDR must be IPv4: %s", podCIDR)
+	}
+	gateway := append(net.IP(nil), network.IP.To4()...)
+	gateway[3]++
+	return gateway.String(), ones, nil
 }
 
 func (a *Agent) syncNode(node netregistry.Node) error {
@@ -182,6 +237,9 @@ func (a *Agent) ensureVXLANDevice() error {
 		if err := a.runner("ip", "link", "add", a.vxlanName, "type", "vxlan", "id", fmt.Sprintf("%d", a.vxlanID), "local", a.local.NodeIP, "dstport", fmt.Sprintf("%d", a.vxlanPort)); err != nil {
 			return err
 		}
+	}
+	if err := a.runner("ip", "link", "set", "dev", a.vxlanName, "address", stableLinkMAC("vxlan", a.local.Name, a.local.NodeIP, a.local.PodCIDR)); err != nil {
+		return err
 	}
 	if err := a.runner("ip", "link", "set", a.vxlanName, "master", a.bridgeName); err != nil {
 		return err
@@ -225,7 +283,16 @@ func isFDBMissing(err error) bool {
 
 var errNoFDBEntry = errors.New("fdb entry missing")
 
+func stableLinkMAC(parts ...string) string {
+	sum := sha1.Sum([]byte(strings.Join(parts, "|")))
+	sum[0] = (sum[0] & 0xfe) | 0x02
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3], sum[4], sum[5])
+}
+
 func run(name string, args ...string) error {
+	if name == "iptables" {
+		args = append([]string{"-w", "5"}, args...)
+	}
 	cmd := exec.Command(name, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

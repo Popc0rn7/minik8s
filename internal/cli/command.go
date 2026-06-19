@@ -7,24 +7,87 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"minik8s/internal/cliui"
+	"minik8s/internal/dns"
+	"minik8s/internal/eventtrigger"
+	"minik8s/internal/function"
+	"minik8s/internal/hpa"
+	"minik8s/internal/job"
+	"minik8s/internal/metrics"
 	"minik8s/internal/node"
 	"minik8s/internal/pod"
+	"minik8s/internal/replicaset"
 	"minik8s/internal/service"
+	"minik8s/internal/workflow"
+	"minik8s/internal/workflowrun"
 )
 
-// NewRootCommand builds the Cobra command tree for minik8s.
+// NewRootCommand builds the Cobra command tree for the minik8s runtime/admin binary.
 func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 	if out == nil {
 		out = io.Discard
 	}
-	var server string
 	var namespace string
 
+	root := &cobra.Command{
+		Use:           "minik8s",
+		Short:         "Run and diagnose Minik8s components",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Usage()
+		},
+	}
+	root.SetOut(out)
+	root.SetErr(out)
+	root.PersistentFlags().StringVarP(&namespace, "namespace", "n", "default", "Namespace for namespaced resources")
+
+	bind := func() {
+		app.namespace = namespace
+	}
+
+	addRuntimeCommands(root, app, out, bind)
+	return root
+}
+
+// NewKubectlCommand builds the Kubernetes-style user command tree.
+func NewKubectlCommand(app *App, out io.Writer) *cobra.Command {
+	if out == nil {
+		out = io.Discard
+	}
+	var namespace string
+
+	root := &cobra.Command{
+		Use:           "kubectl",
+		Short:         "Control Minik8s resources through the Harbor API",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Usage()
+		},
+	}
+	root.SetOut(out)
+	root.SetErr(out)
+	root.PersistentFlags().StringVarP(&namespace, "namespace", "n", "default", "Namespace for namespaced resources")
+
+	bind := func() {
+		app.namespace = namespace
+	}
+
+	addKubectlCommands(root, app, out, bind)
+	return root
+}
+
+func newCompatCommand(app *App, out io.Writer) *cobra.Command {
+	if out == nil {
+		out = io.Discard
+	}
+	var namespace string
 	root := &cobra.Command{
 		Use:           "minik8s",
 		Short:         "A small Kubernetes-like lab control plane",
@@ -36,27 +99,141 @@ func NewRootCommand(app *App, out io.Writer) *cobra.Command {
 	}
 	root.SetOut(out)
 	root.SetErr(out)
-	root.PersistentFlags().StringVar(&server, "server", "", "Kubeharbor API server URL")
 	root.PersistentFlags().StringVarP(&namespace, "namespace", "n", "default", "Namespace for namespaced resources")
-
 	bind := func() {
-		app.server = server
 		app.namespace = namespace
 	}
+	addKubectlCommands(root, app, out, bind)
+	addRuntimeCommands(root, app, out, bind)
+	return root
+}
 
+func addKubectlCommands(root *cobra.Command, app *App, out io.Writer, bind func()) {
 	root.AddCommand(newApplyCommand(app, out, bind))
 	root.AddCommand(newGetCommand(app, out, bind))
+	root.AddCommand(newTopCommand(app, out, bind))
 	root.AddCommand(newDeleteCommand(app, out, bind))
 	root.AddCommand(newDescribeCommand(app, out, bind))
+	root.AddCommand(newLogsCommand(app, out, bind))
 	root.AddCommand(newAPIResourcesCommand(app, out, bind))
 	root.AddCommand(newVersionCommand(app, out, bind))
+}
+
+func newLogsCommand(app *App, out io.Writer, bind func()) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "logs job <name>",
+		Short: "Print fetched Slurm stdout for a Job",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			bind()
+			ref, err := parseResourceRef(args, false)
+			if err != nil {
+				return err
+			}
+			if ref.resource != resourceJobs {
+				return fmt.Errorf("logs supports job")
+			}
+			client, err := app.controlPlaneClient()
+			if err != nil {
+				return err
+			}
+			logs, err := client.GetJobLogs(cmd.Context(), ref.name, app.namespace)
+			if err != nil {
+				return err
+			}
+			return writes(out, logs)
+		},
+	}
+	return cmd
+}
+
+func addRuntimeCommands(root *cobra.Command, app *App, out io.Writer, bind func()) {
+	root.AddCommand(newInvokeCommand(app, out, bind))
+	root.AddCommand(newPublishCommand(app, out))
+	root.AddCommand(newRequestCommand(app, out))
+	root.AddCommand(newInitCommand(app, out))
 	root.AddCommand(newDoctorCommand(app, out))
 	root.AddCommand(newCNICommand(app, out))
 	root.AddCommand(newNetRegistryCommand(app, out))
 	root.AddCommand(newNetDCommand(app, out))
-	root.AddCommand(newKubebridgeCommand(app, out))
-	root.AddCommand(newKubesailerCommand(app, out))
-	return root
+	root.AddCommand(newRouteProxyCommand(app, out))
+	root.AddCommand(newBridgeCommand(app, out))
+	root.AddCommand(newSailerCommand(app, out))
+}
+
+func newInitCommand(app *App, out io.Writer) *cobra.Command {
+	var force bool
+	var ingressListen string
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Initialize local Minik8s startup files",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			legacy := []string{}
+			if force {
+				legacy = append(legacy, "--force")
+			}
+			if ingressListen != "" {
+				legacy = append(legacy, "--ingress-listen", ingressListen)
+			}
+			return app.initialize(cmd.Context(), legacy, out)
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite generated startup files")
+	cmd.Flags().StringVar(&ingressListen, "ingress-listen", "", "HTTP ingress host listen port/address")
+	return cmd
+}
+
+func newPublishCommand(app *App, out io.Writer) *cobra.Command {
+	var data string
+	cmd := &cobra.Command{
+		Use:   "publish <subject>",
+		Short: "Publish a message to the configured NATS subject",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.publishNATS(cmd.Context(), args[0], data, out)
+		},
+	}
+	cmd.Flags().StringVar(&data, "data", "", "Message payload")
+	return cmd
+}
+
+func newRequestCommand(app *App, out io.Writer) *cobra.Command {
+	var data string
+	var timeout time.Duration
+	cmd := &cobra.Command{
+		Use:   "request <subject>",
+		Short: "Send a NATS request and wait for one reply",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.requestNATS(cmd.Context(), args[0], data, timeout, out)
+		},
+	}
+	cmd.Flags().StringVar(&data, "data", "", "Request payload")
+	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Second, "Reply wait timeout")
+	return cmd
+}
+
+func newInvokeCommand(app *App, out io.Writer, bind func()) *cobra.Command {
+	var data string
+	cmd := &cobra.Command{
+		Use:   "invoke function|workflow <name>",
+		Short: "Invoke a serverless function or workflow",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			bind()
+			switch args[0] {
+			case "function", "fn":
+				return app.invokeFunction(cmd.Context(), args[1], data, out)
+			case "workflow", "wf":
+				return app.invokeWorkflow(cmd.Context(), args[1], data, out)
+			default:
+				return fmt.Errorf("invoke supports function or workflow")
+			}
+		},
+	}
+	cmd.Flags().StringVar(&data, "data", "", "Invocation payload")
+	return cmd
 }
 
 func newApplyCommand(app *App, out io.Writer, bind func()) *cobra.Command {
@@ -79,7 +256,7 @@ func newApplyCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
-		Use:     "get pods|services|nodes [name]",
+		Use:     "get pods|services|dns|replicasets|hpa|nodes [name]",
 		Aliases: []string{"list"},
 		Short:   "Get resources",
 		Args:    cobra.RangeArgs(1, 2),
@@ -98,8 +275,8 @@ func newGetCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete pod|service <name>",
-		Short: "Delete a Pod or Service",
+		Use:   "delete pod|service|dns|replicaset|hpa|job|node|configmap|daemonset <name>",
+		Short: "Delete a Pod, Service, DNS, ReplicaSet, HPA, Job, Node, ConfigMap, or DaemonSet",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bind()
@@ -116,8 +293,67 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 				if err := app.delete(cmd.Context(), []string{"service", ref.name, "-n", app.namespace}, out); err != nil {
 					return err
 				}
+			case resourceDNS:
+				if err := app.delete(cmd.Context(), []string{"dns", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
+			case resourceReplicaSets:
+				if err := app.delete(cmd.Context(), []string{"replicaset", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
+			case resourceHPAs:
+				if err := app.delete(cmd.Context(), []string{"hpa", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
+			case resourceJobs:
+				if err := app.delete(cmd.Context(), []string{"job", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
+			case resourceNodes:
+				if err := app.delete(cmd.Context(), []string{"node", ref.name}, out); err != nil {
+					return err
+				}
+			case resourceFunctions:
+				if err := app.delete(cmd.Context(), []string{"function", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
+			case resourceEventTriggers:
+				if err := app.delete(cmd.Context(), []string{"eventtrigger", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
+			case resourceWorkflows:
+				if err := app.delete(cmd.Context(), []string{"workflow", ref.name, "-n", app.namespace}, out); err != nil {
+					return err
+				}
+			case resourceWorkflowRuns:
+				client, err := app.controlPlaneClient()
+				if err != nil {
+					return err
+				}
+				if err := client.DeleteWorkflowRun(cmd.Context(), ref.name, app.namespace); err != nil {
+					return err
+				}
+				return writes(out, cliui.SuccessLine("workflowrun/%s deleted", ref.name))
+			case resourceConfigMaps:
+				client, err := app.controlPlaneClient()
+				if err != nil {
+					return err
+				}
+				if err := client.DeleteConfigMap(cmd.Context(), ref.name, app.namespace); err != nil {
+					return err
+				}
+				return writes(out, cliui.SuccessLine("configmap/%s deleted", ref.name))
+			case resourceDaemonSets:
+				client, err := app.controlPlaneClient()
+				if err != nil {
+					return err
+				}
+				if err := client.DeleteDaemonSet(cmd.Context(), ref.name, app.namespace); err != nil {
+					return err
+				}
+				return writes(out, cliui.SuccessLine("daemonset/%s deleted", ref.name))
 			default:
-				return fmt.Errorf("delete supports pods and services")
+				return fmt.Errorf("delete supports pods, services, dns, replicasets, hpas, jobs, nodes, functions, eventtriggers, workflows, workflowruns, configmaps, and daemonsets")
 			}
 			return nil
 		},
@@ -127,7 +363,7 @@ func newDeleteCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDescribeCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "describe pod|service|node <name>",
+		Use:   "describe pod|service|dns|replicaset|hpa|node <name>",
 		Short: "Show resource details",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -176,10 +412,30 @@ func newAPIResourcesCommand(app *App, out io.Writer, bind func()) *cobra.Command
 	}
 }
 
+func newTopCommand(app *App, out io.Writer, bind func()) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "top nodes|pods",
+		Short: "Display resource usage",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			bind()
+			switch strings.ToLower(args[0]) {
+			case "pods", "pod", "po":
+				return app.topPods(cmd.Context(), out)
+			case "nodes", "node", "no":
+				return app.topNodes(cmd.Context(), out)
+			default:
+				return fmt.Errorf("top supports pods or nodes")
+			}
+		},
+	}
+	return cmd
+}
+
 func newVersionCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print Kubeharbor version",
+		Short: "Print Harbor version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bind()
@@ -198,7 +454,7 @@ func newVersionCommand(app *App, out io.Writer, bind func()) *cobra.Command {
 
 func newDoctorCommand(app *App, out io.Writer) *cobra.Command {
 	return &cobra.Command{
-		Use:   "doctor docker|network|etcd",
+		Use:   "doctor docker|network|clean|logbook|serverless|addons|addon <name>",
 		Short: "Run diagnostics",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -302,33 +558,128 @@ func newNetDCommand(app *App, out io.Writer) *cobra.Command {
 	return cmd
 }
 
-func newKubebridgeCommand(app *App, out io.Writer) *cobra.Command {
+func newRouteProxyCommand(app *App, out io.Writer) *cobra.Command {
 	var listen string
+	var routes string
 	cmd := &cobra.Command{
-		Use:   "kubebridge",
+		Use:   "route-proxy",
+		Short: "Run the Minik8s DNS HTTP route proxy",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.routeProxy(cmd.Context(), listen, routes, out)
+		},
+	}
+	cmd.Flags().StringVar(&listen, "listen", "127.0.0.1:18081", "Route proxy listen address")
+	cmd.Flags().StringVar(&routes, "routes", DefaultDNSRoutesPath(), "DNS route snapshot path")
+	return cmd
+}
+
+func newBridgeCommand(app *App, out io.Writer) *cobra.Command {
+	var listen, addons, serviceSyncInterval, dnsSyncInterval, replicaSetSyncInterval, hpaSyncInterval, clusterCIDR, serviceCIDR, nodePortRange, gatewayIP, ingressListen string
+	var nodeCIDRMaskSize int
+	cmd := &cobra.Command{
+		Use:   "bridge",
 		Short: "Run the control plane",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			legacy := []string{}
 			if listen != "" {
 				legacy = append(legacy, "--listen", listen)
 			}
-			return app.kubebridge(cmd.Context(), legacy, out)
+			if addons != "" {
+				legacy = append(legacy, "--addons", addons)
+			}
+			if serviceSyncInterval != "" {
+				legacy = append(legacy, "--service-sync-interval", serviceSyncInterval)
+			}
+			if dnsSyncInterval != "" {
+				legacy = append(legacy, "--dns-sync-interval", dnsSyncInterval)
+			}
+			if gatewayIP != "" {
+				legacy = append(legacy, "--gateway-ip", gatewayIP)
+			}
+			if ingressListen != "" {
+				legacy = append(legacy, "--ingress-listen", ingressListen)
+			}
+			if replicaSetSyncInterval != "" {
+				legacy = append(legacy, "--replicaset-sync-interval", replicaSetSyncInterval)
+			}
+			if hpaSyncInterval != "" {
+				legacy = append(legacy, "--hpa-sync-interval", hpaSyncInterval)
+			}
+			if clusterCIDR != "" {
+				legacy = append(legacy, "--cluster-cidr", clusterCIDR)
+			}
+			if serviceCIDR != "" {
+				legacy = append(legacy, "--service-cidr", serviceCIDR)
+			}
+			if nodePortRange != "" {
+				legacy = append(legacy, "--node-port-range", nodePortRange)
+			}
+			if nodeCIDRMaskSize != 0 {
+				legacy = append(legacy, "--node-cidr-mask-size", fmt.Sprintf("%d", nodeCIDRMaskSize))
+			}
+			return app.bridge(cmd.Context(), legacy, out)
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", "", "Listen address")
+	cmd.Flags().StringVar(&addons, "addons", "", "Comma-separated addons to run: dns, metrics, serverless, or none")
+	cmd.Flags().StringVar(&serviceSyncInterval, "service-sync-interval", "", "Service sync interval")
+	cmd.Flags().StringVar(&dnsSyncInterval, "dns-sync-interval", "", "DNS sync interval")
+	cmd.Flags().StringVar(&gatewayIP, "gateway-ip", "", "DNS answer gateway IP")
+	cmd.Flags().StringVar(&ingressListen, "ingress-listen", "", "HTTP ingress host listen port/address")
+	cmd.Flags().StringVar(&replicaSetSyncInterval, "replicaset-sync-interval", "", "ReplicaSet sync interval")
+	cmd.Flags().StringVar(&hpaSyncInterval, "hpa-sync-interval", "", "HPA sync interval")
+	cmd.Flags().StringVar(&clusterCIDR, "cluster-cidr", "", "Cluster CIDR for Node PodCIDR allocation")
+	cmd.Flags().StringVar(&serviceCIDR, "service-cidr", "", "Service ClusterIP CIDR")
+	cmd.Flags().StringVar(&nodePortRange, "node-port-range", "", "NodePort allocation range, min-max")
+	cmd.Flags().IntVar(&nodeCIDRMaskSize, "node-cidr-mask-size", 0, "Per-node PodCIDR mask size")
+	cmd.AddCommand(newBridgeTokenCommand(app, out))
 	return cmd
 }
 
-func newKubesailerCommand(app *App, out io.Writer) *cobra.Command {
-	var nodeName, kubeharbor, nodeIP, podCIDR, interval string
+func newBridgeTokenCommand(app *App, out io.Writer) *cobra.Command {
+	cmd := &cobra.Command{Use: "token", Short: "Manage the local bridge bootstrap token"}
+	var ttl time.Duration
+	setCmd := &cobra.Command{
+		Use:   "set <token>",
+		Short: "Set the local bridge bootstrap token",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.bridgeTokenSet(args[0], ttl, out)
+		},
+	}
+	setCmd.Flags().DurationVar(&ttl, "ttl", time.Hour, "Bootstrap token lifetime")
+	cmd.AddCommand(setCmd)
+	cmd.AddCommand(&cobra.Command{
+		Use:   "clear",
+		Short: "Clear the local bridge bootstrap token",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.bridgeTokenClear(out)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "status",
+		Short: "Show local bridge bootstrap token status",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.bridgeTokenStatus(out)
+		},
+	})
+	return cmd
+}
+
+func newSailerCommand(app *App, out io.Writer) *cobra.Command {
+	var harbor, interval, clusterDNS string
 	var vxlanID, vxlanPort int
 	var vxlanName string
-	var once bool
+	var once, proxyDisabled bool
 	cmd := &cobra.Command{
-		Use:   "kubesailer",
+		Use:   "sailer <node.yaml>",
 		Short: "Run the worker node agent",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			legacy := []string{}
+			legacy := []string{args[0]}
 			appendFlag := func(name, value string) {
 				if value != "" {
 					legacy = append(legacy, name, value)
@@ -339,38 +690,101 @@ func newKubesailerCommand(app *App, out io.Writer) *cobra.Command {
 					legacy = append(legacy, name, fmt.Sprintf("%d", value))
 				}
 			}
-			appendFlag("--node-name", nodeName)
-			appendFlag("--kubeharbor", kubeharbor)
-			appendFlag("--node-ip", nodeIP)
-			appendFlag("--pod-cidr", podCIDR)
+			appendFlag("--harbor", harbor)
 			appendFlag("--interval", interval)
+			appendFlag("--cluster-dns", clusterDNS)
 			appendIntFlag("--vxlan-id", vxlanID)
 			appendIntFlag("--vxlan-port", vxlanPort)
 			appendFlag("--vxlan-name", vxlanName)
 			if once {
 				legacy = append(legacy, "--once")
 			}
-			return app.kubesailer(cmd.Context(), legacy, out)
+			if proxyDisabled {
+				legacy = append(legacy, "--proxy-disabled")
+			}
+			return app.sailer(cmd.Context(), legacy, out)
 		},
 	}
-	cmd.Flags().StringVar(&nodeName, "node-name", "", "Node name")
-	cmd.Flags().StringVar(&kubeharbor, "kubeharbor", "", "Kubeharbor URL")
-	cmd.Flags().StringVar(&nodeIP, "node-ip", "", "Node host IP")
-	cmd.Flags().StringVar(&podCIDR, "pod-cidr", "", "Pod CIDR")
+	cmd.Flags().StringVar(&harbor, "harbor", "", "Harbor URL")
 	cmd.Flags().StringVar(&interval, "interval", "", "Sync interval")
+	cmd.Flags().StringVar(&clusterDNS, "cluster-dns", "", "Cluster DNS nameserver IP")
 	cmd.Flags().IntVar(&vxlanID, "vxlan-id", 0, "VXLAN network identifier")
 	cmd.Flags().IntVar(&vxlanPort, "vxlan-port", 0, "VXLAN UDP port")
 	cmd.Flags().StringVar(&vxlanName, "vxlan-name", "", "VXLAN device name")
 	cmd.Flags().BoolVar(&once, "once", false, "Run one sync and exit")
+	cmd.Flags().BoolVar(&proxyDisabled, "proxy-disabled", false, "Disable node-local Service proxy sync")
+	var joinAPIServer, joinToken, joinNodeName, joinNodeIP string
+	joinCmd := &cobra.Command{
+		Use:   "join --apiserver <url> --token <token> [--node-name <name>] [--node-ip <ip>]",
+		Short: "Join this worker to a bridge using a bootstrap token",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return app.sailerJoin(cmd.Context(), joinAPIServer, joinToken, joinNodeName, joinNodeIP, out)
+		},
+	}
+	joinCmd.Flags().StringVar(&joinAPIServer, "apiserver", "", "Bridge Harbor API URL")
+	joinCmd.Flags().StringVar(&joinToken, "token", "", "Bootstrap token")
+	joinCmd.Flags().StringVar(&joinNodeName, "node-name", "", "Node name; defaults to node-xxxxx")
+	joinCmd.Flags().StringVar(&joinNodeIP, "node-ip", "", "Node host IP; defaults to the local source IP used to reach apiserver")
+	cmd.AddCommand(joinCmd)
+
+	runCmd := &cobra.Command{
+		Use:   "run",
+		Short: "Run the worker node agent from local join config",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			legacy := []string{"run"}
+			appendFlag := func(name, value string) {
+				if value != "" {
+					legacy = append(legacy, name, value)
+				}
+			}
+			appendIntFlag := func(name string, value int) {
+				if value != 0 {
+					legacy = append(legacy, name, fmt.Sprintf("%d", value))
+				}
+			}
+			appendFlag("--interval", interval)
+			appendFlag("--cluster-dns", clusterDNS)
+			appendIntFlag("--vxlan-id", vxlanID)
+			appendIntFlag("--vxlan-port", vxlanPort)
+			appendFlag("--vxlan-name", vxlanName)
+			if once {
+				legacy = append(legacy, "--once")
+			}
+			if proxyDisabled {
+				legacy = append(legacy, "--proxy-disabled")
+			}
+			return app.sailerRun(cmd.Context(), legacy, out)
+		},
+	}
+	runCmd.Flags().StringVar(&interval, "interval", "", "Sync interval")
+	runCmd.Flags().StringVar(&clusterDNS, "cluster-dns", "", "Cluster DNS nameserver IP")
+	runCmd.Flags().IntVar(&vxlanID, "vxlan-id", 0, "VXLAN network identifier")
+	runCmd.Flags().IntVar(&vxlanPort, "vxlan-port", 0, "VXLAN UDP port")
+	runCmd.Flags().StringVar(&vxlanName, "vxlan-name", "", "VXLAN device name")
+	runCmd.Flags().BoolVar(&once, "once", false, "Run one sync and exit")
+	runCmd.Flags().BoolVar(&proxyDisabled, "proxy-disabled", false, "Disable node-local Service proxy sync")
+	cmd.AddCommand(runCmd)
 	return cmd
 }
 
 type resourceName string
 
 const (
-	resourcePods     resourceName = "pods"
-	resourceServices resourceName = "services"
-	resourceNodes    resourceName = "nodes"
+	resourcePods          resourceName = "pods"
+	resourceServices      resourceName = "services"
+	resourceDNS           resourceName = "dns"
+	resourceReplicaSets   resourceName = "replicasets"
+	resourceHPAs          resourceName = "horizontalpodautoscalers"
+	resourceJobs          resourceName = "jobs"
+	resourceNodes         resourceName = "nodes"
+	resourceFunctions     resourceName = "functions"
+	resourceEventTriggers resourceName = "eventtriggers"
+	resourceWorkflows     resourceName = "workflows"
+	resourceWorkflowRuns  resourceName = "workflowruns"
+	resourceConfigMaps    resourceName = "configmaps"
+	resourceDaemonSets    resourceName = "daemonsets"
 )
 
 type resourceRef struct {
@@ -407,8 +821,28 @@ func normalizeResource(resource string) (resourceName, error) {
 		return resourcePods, nil
 	case "service", "services", "svc":
 		return resourceServices, nil
+	case "dns":
+		return resourceDNS, nil
+	case "replicaset", "replicasets", "rs":
+		return resourceReplicaSets, nil
+	case "hpa", "hpas", "horizontalpodautoscaler", "horizontalpodautoscalers":
+		return resourceHPAs, nil
+	case "job", "jobs":
+		return resourceJobs, nil
 	case "node", "nodes", "no":
 		return resourceNodes, nil
+	case "function", "functions", "fn":
+		return resourceFunctions, nil
+	case "eventtrigger", "eventtriggers", "trigger", "triggers":
+		return resourceEventTriggers, nil
+	case "workflow", "workflows", "wf":
+		return resourceWorkflows, nil
+	case "workflowrun", "workflowruns", "wfr":
+		return resourceWorkflowRuns, nil
+	case "configmap", "configmaps", "cm":
+		return resourceConfigMaps, nil
+	case "daemonset", "daemonsets", "ds":
+		return resourceDaemonSets, nil
 	default:
 		return "", fmt.Errorf("unsupported resource %q", resource)
 	}
@@ -460,6 +894,86 @@ func (a *App) getResource(ctx context.Context, ref resourceRef, output string, o
 			return writeObject(out, output, map[string]any{"kind": "ServiceList", "apiVersion": "v1", "items": services})
 		}
 		return writeServiceTable(out, services)
+	case resourceDNS:
+		if ref.name != "" {
+			d, err := client.GetDNS(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, d)
+			}
+			return writeDNSTable(out, []*dns.DNS{d})
+		}
+		items, err := client.ListDNS(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortDNSList(items)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "DNSList", "apiVersion": "v1", "items": items})
+		}
+		return writeDNSTable(out, items)
+	case resourceReplicaSets:
+		if ref.name != "" {
+			rs, err := client.GetReplicaSet(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, rs)
+			}
+			return writeReplicaSetTable(out, []*replicaset.ReplicaSet{rs})
+		}
+		replicaSets, err := client.ListReplicaSets(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortReplicaSetList(replicaSets)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "ReplicaSetList", "apiVersion": "v1", "items": replicaSets})
+		}
+		return writeReplicaSetTable(out, replicaSets)
+	case resourceHPAs:
+		if ref.name != "" {
+			autoscaler, err := client.GetHPA(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, autoscaler)
+			}
+			return writeHPATable(out, []*hpa.HorizontalPodAutoscaler{autoscaler})
+		}
+		hpas, err := client.ListHPAs(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortHPAList(hpas)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "HorizontalPodAutoscalerList", "apiVersion": "v1", "items": hpas})
+		}
+		return writeHPATable(out, hpas)
+	case resourceJobs:
+		if ref.name != "" {
+			j, err := client.GetJob(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, j)
+			}
+			return writeJobTable(out, []*job.Job{j})
+		}
+		jobs, err := client.ListJobs(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortJobList(jobs)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "JobList", "apiVersion": job.APIVersion, "items": jobs})
+		}
+		return writeJobTable(out, jobs)
 	case resourceNodes:
 		if ref.name != "" {
 			n, err := client.GetNode(ctx, ref.name)
@@ -480,9 +994,155 @@ func (a *App) getResource(ctx context.Context, ref resourceRef, output string, o
 			return writeObject(out, output, map[string]any{"kind": "NodeList", "apiVersion": "v1", "items": nodes})
 		}
 		return writeNodeTable(out, nodes)
+	case resourceFunctions:
+		if ref.name != "" {
+			fn, err := client.GetFunction(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, fn)
+			}
+			return writeFunctionTable(out, []*function.Function{fn})
+		}
+		functions, err := client.ListFunctions(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortFunctionList(functions)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "FunctionList", "apiVersion": "v1", "items": functions})
+		}
+		return writeFunctionTable(out, functions)
+	case resourceEventTriggers:
+		if ref.name != "" {
+			trigger, err := client.GetEventTrigger(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, trigger)
+			}
+			return writeEventTriggerTable(out, []*eventtrigger.EventTrigger{trigger})
+		}
+		triggers, err := client.ListEventTriggers(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortEventTriggerList(triggers)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "EventTriggerList", "apiVersion": "v1", "items": triggers})
+		}
+		return writeEventTriggerTable(out, triggers)
+	case resourceWorkflows:
+		if ref.name != "" {
+			wf, err := client.GetWorkflow(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, wf)
+			}
+			return writeWorkflowTable(out, []*workflow.Workflow{wf})
+		}
+		workflows, err := client.ListWorkflows(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortWorkflowList(workflows)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "WorkflowList", "apiVersion": "v1", "items": workflows})
+		}
+		return writeWorkflowTable(out, workflows)
+	case resourceWorkflowRuns:
+		if ref.name != "" {
+			run, err := client.GetWorkflowRun(ctx, ref.name, a.namespace)
+			if err != nil {
+				return err
+			}
+			if output != "table" {
+				return writeObject(out, output, run)
+			}
+			return writeWorkflowRunTable(out, []*workflowrun.WorkflowRun{run})
+		}
+		runs, err := client.ListWorkflowRuns(ctx, a.namespace)
+		if err != nil {
+			return err
+		}
+		sortWorkflowRunList(runs)
+		if output != "table" {
+			return writeObject(out, output, map[string]any{"kind": "WorkflowRunList", "apiVersion": "v1", "items": runs})
+		}
+		return writeWorkflowRunTable(out, runs)
 	default:
 		return fmt.Errorf("unsupported resource %q", ref.resource)
 	}
+}
+
+func (a *App) topPods(ctx context.Context, out io.Writer) error {
+	client, err := a.controlPlaneClient()
+	if err != nil {
+		return err
+	}
+	list, err := client.ListPodMetrics(ctx)
+	if err != nil {
+		return err
+	}
+	if err := writef(out, "%s %s %s\n", cliui.PadRight("NAME", 28), cliui.PadRight("CPU", 10), "MEMORY"); err != nil {
+		return err
+	}
+	for _, item := range list.Items {
+		if item.Metadata.Namespace != "" && item.Metadata.Namespace != a.namespace {
+			continue
+		}
+		usage := metrics.SumPodUsage(item)
+		if err := writef(out, "%s %s %s\n",
+			cliui.PadRight(item.Metadata.Name, 28),
+			cliui.PadRight(metricOrDash(usage[metrics.ResourceCPU]), 10),
+			metricOrDash(usage[metrics.ResourceMemory]),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *App) topNodes(ctx context.Context, out io.Writer) error {
+	client, err := a.controlPlaneClient()
+	if err != nil {
+		return err
+	}
+	list, err := client.ListNodeMetrics(ctx)
+	if err != nil {
+		return err
+	}
+	if err := writef(out, "%s %s %s\n", cliui.PadRight("NAME", 28), cliui.PadRight("CPU", 10), "MEMORY"); err != nil {
+		return err
+	}
+	for _, item := range list.Items {
+		if err := writef(out, "%s %s %s\n",
+			cliui.PadRight(item.Metadata.Name, 28),
+			cliui.PadRight(metricOrDash(item.Usage[metrics.ResourceCPU]), 10),
+			metricOrDash(item.Usage[metrics.ResourceMemory]),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func metricOrDash(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+func valueOrDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }
 
 func (a *App) describeResource(ctx context.Context, ref resourceRef, out io.Writer) error {
@@ -503,12 +1163,60 @@ func (a *App) describeResource(ctx context.Context, ref resourceRef, out io.Writ
 			return err
 		}
 		return describeService(out, svc)
+	case resourceDNS:
+		d, err := client.GetDNS(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeDNS(out, d)
+	case resourceReplicaSets:
+		rs, err := client.GetReplicaSet(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeReplicaSet(out, rs)
+	case resourceHPAs:
+		autoscaler, err := client.GetHPA(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeHPA(out, autoscaler)
+	case resourceJobs:
+		j, err := client.GetJob(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeJob(out, j)
 	case resourceNodes:
 		n, err := client.GetNode(ctx, ref.name)
 		if err != nil {
 			return err
 		}
 		return describeNode(out, n)
+	case resourceFunctions:
+		fn, err := client.GetFunction(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeFunction(out, fn)
+	case resourceEventTriggers:
+		trigger, err := client.GetEventTrigger(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeEventTrigger(out, trigger)
+	case resourceWorkflows:
+		wf, err := client.GetWorkflow(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeWorkflow(out, wf)
+	case resourceWorkflowRuns:
+		run, err := client.GetWorkflowRun(ctx, ref.name, a.namespace)
+		if err != nil {
+			return err
+		}
+		return describeWorkflowRun(out, run)
 	default:
 		return fmt.Errorf("unsupported resource %q", ref.resource)
 	}
@@ -555,16 +1263,90 @@ func sortServiceList(services []*service.Service) {
 	})
 }
 
+func sortDNSList(items []*dns.DNS) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Namespace == items[j].Namespace {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].Namespace < items[j].Namespace
+	})
+}
+
+func sortReplicaSetList(replicaSets []*replicaset.ReplicaSet) {
+	sort.Slice(replicaSets, func(i, j int) bool {
+		if replicaSets[i].Namespace == replicaSets[j].Namespace {
+			return replicaSets[i].Name < replicaSets[j].Name
+		}
+		return replicaSets[i].Namespace < replicaSets[j].Namespace
+	})
+}
+
+func sortHPAList(hpas []*hpa.HorizontalPodAutoscaler) {
+	sort.Slice(hpas, func(i, j int) bool {
+		if hpas[i].Namespace == hpas[j].Namespace {
+			return hpas[i].Name < hpas[j].Name
+		}
+		return hpas[i].Namespace < hpas[j].Namespace
+	})
+}
+
+func sortJobList(jobs []*job.Job) {
+	sort.Slice(jobs, func(i, k int) bool {
+		if jobs[i].Namespace == jobs[k].Namespace {
+			return jobs[i].Name < jobs[k].Name
+		}
+		return jobs[i].Namespace < jobs[k].Namespace
+	})
+}
+
 func sortNodeList(nodes []node.Node) {
 	sort.Slice(nodes, func(i, j int) bool {
-		return nodes[i].Name < nodes[j].Name
+		return nodes[i].Name() < nodes[j].Name()
+	})
+}
+
+func sortFunctionList(functions []*function.Function) {
+	sort.Slice(functions, func(i, j int) bool {
+		if functions[i].Namespace == functions[j].Namespace {
+			return functions[i].Name < functions[j].Name
+		}
+		return functions[i].Namespace < functions[j].Namespace
+	})
+}
+
+func sortEventTriggerList(triggers []*eventtrigger.EventTrigger) {
+	sort.Slice(triggers, func(i, j int) bool {
+		if triggers[i].Namespace == triggers[j].Namespace {
+			return triggers[i].Name < triggers[j].Name
+		}
+		return triggers[i].Namespace < triggers[j].Namespace
+	})
+}
+
+func sortWorkflowList(workflows []*workflow.Workflow) {
+	sort.Slice(workflows, func(i, j int) bool {
+		if workflows[i].Namespace == workflows[j].Namespace {
+			return workflows[i].Name < workflows[j].Name
+		}
+		return workflows[i].Namespace < workflows[j].Namespace
+	})
+}
+
+func sortWorkflowRunList(runs []*workflowrun.WorkflowRun) {
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].Namespace == runs[j].Namespace {
+			return runs[i].Name < runs[j].Name
+		}
+		return runs[i].Namespace < runs[j].Namespace
 	})
 }
 
 func writePodTable(out io.Writer, pods []*pod.Pod) error {
-	if err := writef(out, "%s %s %s %s %s %s\n",
+	if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 		cliui.PadRight("POD", 31),
 		cliui.PadRight("STATUS", 18),
+		cliui.PadRight("READY", 8),
+		cliui.PadRight("RESTARTS", 10),
 		cliui.PadRight("IP", 15),
 		cliui.PadRight("UPTIME", 10),
 		cliui.PadRight("NAMESPACE", 14),
@@ -575,9 +1357,11 @@ func writePodTable(out io.Writer, pods []*pod.Pod) error {
 	for _, p := range pods {
 		podName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconPod, "[pod]"), p.Name)
 		status := fmt.Sprintf("%s %s", cliui.StatusIcon(p.Status.Phase), p.Status.Phase)
-		if err := writef(out, "%s %s %s %s %s %s\n",
+		if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 			cliui.PadRight(podName, 31),
 			cliui.PadRight(status, 18),
+			cliui.PadRight(formatPodReady(p.Status.Containers), 8),
+			cliui.PadRight(fmt.Sprintf("%d", totalRestarts(p.Status.Containers)), 10),
 			formatPodIP(p.Status.PodIP),
 			cliui.PadRight(formatUptime(p.Status), 10),
 			cliui.PadRight(p.Namespace, 14),
@@ -620,22 +1404,245 @@ func writeServiceTable(out io.Writer, services []*service.Service) error {
 	return nil
 }
 
+func writeDNSTable(out io.Writer, items []*dns.DNS) error {
+	if err := writef(out, "%s %s %s %s %s\n",
+		cliui.PadRight("DNS", 31),
+		cliui.PadRight("HOST", 26),
+		cliui.PadRight("PATHS", 38),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
+		return err
+	}
+	for _, d := range items {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[dns]"), d.Name)
+		if err := writef(out, "%s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(d.Spec.Host, 26),
+			cliui.PadRight(formatDNSPaths(d.Spec.Paths), 38),
+			cliui.PadRight(d.Namespace, 14),
+			formatLabels(d.Labels),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeReplicaSetTable(out io.Writer, replicaSets []*replicaset.ReplicaSet) error {
+	if err := writef(out, "%s %s %s %s %s\n",
+		cliui.PadRight("REPLICASET", 31),
+		cliui.PadRight("DESIRED", 10),
+		cliui.PadRight("CURRENT", 10),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
+		return err
+	}
+	for _, rs := range replicaSets {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[rs]"), rs.Name)
+		if err := writef(out, "%s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(fmt.Sprintf("%d", rs.Spec.Replicas), 10),
+			cliui.PadRight(fmt.Sprintf("%d", rs.Status.Replicas), 10),
+			cliui.PadRight(rs.Namespace, 14),
+			formatLabels(rs.Labels),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeHPATable(out io.Writer, hpas []*hpa.HorizontalPodAutoscaler) error {
+	if err := writef(out, "%s %s %s %s %s %s %s\n",
+		cliui.PadRight("HPA", 31),
+		cliui.PadRight("TARGET", 18),
+		cliui.PadRight("MIN", 6),
+		cliui.PadRight("MAX", 6),
+		cliui.PadRight("REPLICAS", 12),
+		cliui.PadRight("METRICS", 22),
+		"NAMESPACE",
+	); err != nil {
+		return err
+	}
+	for _, autoscaler := range hpas {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[hpa]"), autoscaler.Name)
+		replicas := fmt.Sprintf("%d/%d", autoscaler.Status.CurrentReplicas, autoscaler.Status.DesiredReplicas)
+		if err := writef(out, "%s %s %s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(formatHPATarget(autoscaler), 18),
+			cliui.PadRight(fmt.Sprintf("%d", autoscaler.Spec.MinReplicas), 6),
+			cliui.PadRight(fmt.Sprintf("%d", autoscaler.Spec.MaxReplicas), 6),
+			cliui.PadRight(replicas, 12),
+			cliui.PadRight(formatHPAMetrics(autoscaler.Status.CurrentMetrics), 22),
+			autoscaler.Namespace,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeJobTable(out io.Writer, jobs []*job.Job) error {
+	if err := writef(out, "%s %s %s %s %s\n",
+		cliui.PadRight("JOB", 31),
+		cliui.PadRight("PHASE", 14),
+		cliui.PadRight("ACCELERATOR", 14),
+		cliui.PadRight("PARTITION", 14),
+		"SLURM-JOB-ID",
+	); err != nil {
+		return err
+	}
+	for _, j := range jobs {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[job]"), j.Name)
+		accelerator := j.Spec.Selector.MatchLabels["accelerator"]
+		if err := writef(out, "%s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(string(j.Status.Phase), 14),
+			cliui.PadRight(accelerator, 14),
+			cliui.PadRight(j.Spec.Slurm.Partition, 14),
+			j.Status.SlurmJobID,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func writeNodeTable(out io.Writer, nodes []node.Node) error {
-	if err := writef(out, "%s %s %s %s\n",
+	if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 		cliui.PadRight("NODE", 31),
 		cliui.PadRight("ROLE", 14),
 		cliui.PadRight("STATUS", 14),
-		"AGE",
+		cliui.PadRight("IP", 15),
+		cliui.PadRight("PODCIDR", 18),
+		cliui.PadRight("CPU", 8),
+		cliui.PadRight("MEMORY", 10),
+		"STARTED",
 	); err != nil {
 		return err
 	}
 	for _, n := range nodes {
-		nodeName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[node]"), n.Name)
-		if err := writef(out, "%s %s %s %s\n",
+		nodeName := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[node]"), n.Name())
+		if err := writef(out, "%s %s %s %s %s %s %s %s\n",
 			cliui.PadRight(nodeName, 31),
-			cliui.PadRight(string(n.Role), 14),
-			cliui.PadRight(formatNodeStatus(n.Status), 14),
+			cliui.PadRight(string(n.Spec.Role), 14),
+			cliui.PadRight(formatNodeStatus(n.Status.Phase), 14),
+			cliui.PadRight(emptyDash(n.InternalIP()), 15),
+			cliui.PadRight(emptyDash(n.Spec.PodCIDR), 18),
+			cliui.PadRight(emptyDash(n.Status.Allocatable.CPU), 8),
+			cliui.PadRight(emptyDash(n.Status.Allocatable.Memory), 10),
 			formatNodeAge(n),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeFunctionTable(out io.Writer, functions []*function.Function) error {
+	if err := writef(out, "%s %s %s %s %s %s %s\n",
+		cliui.PadRight("FUNCTION", 31),
+		cliui.PadRight("RUNTIME", 12),
+		cliui.PadRight("STATUS", 12),
+		cliui.PadRight("REPLICAS", 10),
+		cliui.PadRight("REVISION", 14),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
+		return err
+	}
+	for _, fn := range functions {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[fn]"), fn.Name)
+		if err := writef(out, "%s %s %s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(fn.Spec.Runtime, 12),
+			cliui.PadRight(emptyDash(fn.Status.Phase), 12),
+			cliui.PadRight(fmt.Sprintf("%d/%d", fn.Status.ReadyReplicas, fn.Status.Replicas), 10),
+			cliui.PadRight(emptyDash(fn.Status.Revision), 14),
+			cliui.PadRight(fn.Namespace, 14),
+			formatLabels(fn.Labels),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeEventTriggerTable(out io.Writer, triggers []*eventtrigger.EventTrigger) error {
+	if err := writef(out, "%s %s %s %s %s\n",
+		cliui.PadRight("EVENTTRIGGER", 31),
+		cliui.PadRight("SUBJECT", 24),
+		cliui.PadRight("TARGET", 18),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
+		return err
+	}
+	for _, trigger := range triggers {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[trigger]"), trigger.Name)
+		if err := writef(out, "%s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(trigger.Spec.Subject, 24),
+			cliui.PadRight(formatEventTriggerTarget(trigger), 18),
+			cliui.PadRight(trigger.Namespace, 14),
+			formatLabels(trigger.Labels),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func formatEventTriggerTarget(trigger *eventtrigger.EventTrigger) string {
+	if trigger.Spec.WorkflowRef.Name != "" {
+		return "workflow/" + trigger.Spec.WorkflowRef.Name
+	}
+	return "function/" + trigger.Spec.FunctionRef.Name
+}
+
+func writeWorkflowTable(out io.Writer, workflows []*workflow.Workflow) error {
+	if err := writef(out, "%s %s %s %s\n",
+		cliui.PadRight("WORKFLOW", 31),
+		cliui.PadRight("STEPS", 8),
+		cliui.PadRight("NAMESPACE", 14),
+		"LABELS",
+	); err != nil {
+		return err
+	}
+	for _, wf := range workflows {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[wf]"), wf.Name)
+		if err := writef(out, "%s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(fmt.Sprintf("%d", len(wf.Spec.Steps)), 8),
+			cliui.PadRight(wf.Namespace, 14),
+			formatLabels(wf.Labels),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeWorkflowRunTable(out io.Writer, runs []*workflowrun.WorkflowRun) error {
+	if err := writef(out, "%s %s %s %s %s\n",
+		cliui.PadRight("WORKFLOWRUN", 31),
+		cliui.PadRight("WORKFLOW", 24),
+		cliui.PadRight("PHASE", 12),
+		cliui.PadRight("NAMESPACE", 14),
+		"AGE",
+	); err != nil {
+		return err
+	}
+	for _, run := range runs {
+		name := fmt.Sprintf("%s  %s", cliui.Icon(cliui.IconInfo, "[wfr]"), run.Name)
+		if err := writef(out, "%s %s %s %s %s\n",
+			cliui.PadRight(name, 31),
+			cliui.PadRight(run.Spec.WorkflowRef.Name, 24),
+			cliui.PadRight(emptyDash(run.Status.Phase), 12),
+			cliui.PadRight(run.Namespace, 14),
+			formatTime(run.Status.StartedAt),
 		); err != nil {
 			return err
 		}
@@ -651,6 +1658,21 @@ func describePod(out io.Writer, p *pod.Pod) error {
 		fmt.Sprintf("IP: %s", formatPodIP(p.Status.PodIP)),
 		fmt.Sprintf("Node: %s", emptyDash(p.Spec.NodeName)),
 		fmt.Sprintf("Labels: %s", formatLabels(p.Labels)),
+	}
+	if p.Status.Reason != "" {
+		lines = append(lines, fmt.Sprintf("Reason: %s", p.Status.Reason))
+	}
+	if p.Status.Message != "" {
+		lines = append(lines, fmt.Sprintf("Message: %s", p.Status.Message))
+	}
+	if len(p.Status.Conditions) > 0 {
+		lines = append(lines, fmt.Sprintf("Conditions: %s", formatPodConditions(p.Status.Conditions)))
+	}
+	if len(p.Status.Containers) > 0 {
+		lines = append(lines, "Containers:")
+		for _, c := range p.Status.Containers {
+			lines = append(lines, fmt.Sprintf("  %s ready=%t restarts=%d state=%s", c.Name, c.Ready, c.RestartCount, formatContainerState(c.State)))
+		}
 	}
 	for _, line := range lines {
 		if err := writef(out, "%s\n", line); err != nil {
@@ -678,9 +1700,115 @@ func describeService(out io.Writer, svc *service.Service) error {
 	return nil
 }
 
+func describeDNS(out io.Writer, d *dns.DNS) error {
+	lines := []string{
+		fmt.Sprintf("Name: %s", d.Name),
+		fmt.Sprintf("Namespace: %s", d.Namespace),
+		fmt.Sprintf("Host: %s", d.Spec.Host),
+		fmt.Sprintf("Paths: %s", formatDNSPaths(d.Spec.Paths)),
+		fmt.Sprintf("Labels: %s", formatLabels(d.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func formatDNSPaths(paths []dns.DNSPath) string {
+	if len(paths) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(paths))
+	for _, p := range paths {
+		parts = append(parts, fmt.Sprintf("%s(%s)->%s:%d", p.Path, p.PathType, p.ServiceName, p.ServicePort))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func describeReplicaSet(out io.Writer, rs *replicaset.ReplicaSet) error {
+	lines := []string{
+		fmt.Sprintf("Name: %s", rs.Name),
+		fmt.Sprintf("Namespace: %s", rs.Namespace),
+		fmt.Sprintf("Desired: %d", rs.Spec.Replicas),
+		fmt.Sprintf("Current: %d", rs.Status.Replicas),
+		fmt.Sprintf("Selector: %s", formatServiceSelector(rs.Spec.Selector)),
+		fmt.Sprintf("Labels: %s", formatLabels(rs.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func describeHPA(out io.Writer, autoscaler *hpa.HorizontalPodAutoscaler) error {
+	behavior := autoscaler.Spec.EffectiveBehavior()
+	lines := []string{
+		fmt.Sprintf("Name: %s", autoscaler.Name),
+		fmt.Sprintf("Namespace: %s", autoscaler.Namespace),
+		fmt.Sprintf("Target: %s", formatHPATarget(autoscaler)),
+		fmt.Sprintf("MinReplicas: %d", autoscaler.Spec.MinReplicas),
+		fmt.Sprintf("MaxReplicas: %d", autoscaler.Spec.MaxReplicas),
+		fmt.Sprintf("SyncIntervalSeconds: %d", behavior.SyncIntervalSeconds),
+		fmt.Sprintf("ScaleUpMaxReplicaDeltaPerSync: %d", behavior.ScaleUp.MaxReplicaDeltaPerSync),
+		fmt.Sprintf("ScaleDownMaxReplicaDeltaPerSync: %d", behavior.ScaleDown.MaxReplicaDeltaPerSync),
+		fmt.Sprintf("ScaleDownCooldownSeconds: %d", behavior.ScaleDown.CooldownSeconds),
+		fmt.Sprintf("CurrentReplicas: %d", autoscaler.Status.CurrentReplicas),
+		fmt.Sprintf("DesiredReplicas: %d", autoscaler.Status.DesiredReplicas),
+		fmt.Sprintf("Metrics: %s", formatHPAMetrics(autoscaler.Status.CurrentMetrics)),
+		fmt.Sprintf("Conditions: %s", formatHPAConditions(autoscaler.Status.Conditions)),
+		fmt.Sprintf("Labels: %s", formatLabels(autoscaler.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func describeJob(out io.Writer, j *job.Job) error {
+	if err := writef(out, "Name: %s\n", j.Name); err != nil {
+		return err
+	}
+	if err := writef(out, "Namespace: %s\n", j.Namespace); err != nil {
+		return err
+	}
+	if err := writef(out, "Phase: %s\n", j.Status.Phase); err != nil {
+		return err
+	}
+	if err := writef(out, "Accelerator: %s\n", j.Spec.Selector.MatchLabels["accelerator"]); err != nil {
+		return err
+	}
+	if err := writef(out, "Partition: %s\n", j.Spec.Slurm.Partition); err != nil {
+		return err
+	}
+	if err := writef(out, "Remote Host: %s\n", j.Spec.Remote.Host); err != nil {
+		return err
+	}
+	if err := writef(out, "Remote Dir: %s\n", valueOrDash(j.Status.RemoteDir)); err != nil {
+		return err
+	}
+	if err := writef(out, "Slurm Job ID: %s\n", valueOrDash(j.Status.SlurmJobID)); err != nil {
+		return err
+	}
+	if err := writef(out, "Submitter Pod: %s\n", valueOrDash(j.Status.SubmitterPod)); err != nil {
+		return err
+	}
+	if err := writef(out, "Submitter Service: %s\n", valueOrDash(j.Status.SubmitterService)); err != nil {
+		return err
+	}
+	return writef(out, "Message: %s\n", valueOrDash(j.Status.Message))
+}
+
 func describeNode(out io.Writer, n *node.Node) error {
-	labels := make([]string, 0, len(n.Labels))
-	for key, value := range n.Labels {
+	labelMap := n.LabelMap()
+	labels := make([]string, 0, len(labelMap))
+	for key, value := range labelMap {
 		labels = append(labels, fmt.Sprintf("%s=%s", key, value))
 	}
 	sort.Strings(labels)
@@ -688,9 +1816,15 @@ func describeNode(out io.Writer, n *node.Node) error {
 		labels = append(labels, "-")
 	}
 	lines := []string{
-		fmt.Sprintf("Name: %s", n.Name),
-		fmt.Sprintf("Role: %s", n.Role),
-		fmt.Sprintf("Status: %s", n.Status),
+		fmt.Sprintf("Name: %s", n.Name()),
+		fmt.Sprintf("Role: %s", n.Spec.Role),
+		fmt.Sprintf("Status: %s", n.Status.Phase),
+		fmt.Sprintf("InternalIP: %s", emptyDash(n.InternalIP())),
+		fmt.Sprintf("PodCIDR: %s", emptyDash(n.Spec.PodCIDR)),
+		fmt.Sprintf("Capacity: cpu=%s memory=%s", emptyDash(n.Spec.Capacity.CPU), emptyDash(n.Spec.Capacity.Memory)),
+		fmt.Sprintf("Allocatable: cpu=%s memory=%s", emptyDash(n.Status.Allocatable.CPU), emptyDash(n.Status.Allocatable.Memory)),
+		fmt.Sprintf("Conditions: %s", formatNodeConditions(n.Status.Conditions)),
+		fmt.Sprintf("LastHeartbeat: %s", formatNodeLastHeartbeat(n.Status.LastHeartbeat)),
 		fmt.Sprintf("Age: %s", formatNodeAge(*n)),
 		fmt.Sprintf("Labels: %s", strings.Join(labels, ",")),
 	}
@@ -700,6 +1834,191 @@ func describeNode(out io.Writer, n *node.Node) error {
 		}
 	}
 	return nil
+}
+
+func describeFunction(out io.Writer, fn *function.Function) error {
+	lines := []string{
+		fmt.Sprintf("Name: %s", fn.Name),
+		fmt.Sprintf("Namespace: %s", fn.Namespace),
+		fmt.Sprintf("Runtime: %s", fn.Spec.Runtime),
+		fmt.Sprintf("Handler: %s", fn.Spec.Handler),
+		fmt.Sprintf("Image: %s", emptyDash(functionImage(fn))),
+		fmt.Sprintf("Port: %d", fn.Spec.Port),
+		fmt.Sprintf("Scale: min=%d max=%d targetConcurrency=%d idleTimeoutSeconds=%d", fn.Spec.MinReplicas, fn.Spec.MaxReplicas, fn.Spec.TargetConcurrency, fn.Spec.IdleTimeoutSeconds),
+		fmt.Sprintf("Revision: %s", emptyDash(fn.Status.Revision)),
+		fmt.Sprintf("Endpoint: %s", emptyDash(fn.Status.Endpoint)),
+		fmt.Sprintf("Replicas: %d/%d", fn.Status.ReadyReplicas, fn.Status.Replicas),
+		fmt.Sprintf("Status: %s", emptyDash(fn.Status.Phase)),
+		fmt.Sprintf("LastInvocation: %s", formatTime(fn.Status.LastInvocation)),
+		fmt.Sprintf("LastOutput: %s", emptyDash(fn.Status.LastOutput)),
+		fmt.Sprintf("LastError: %s", emptyDash(fn.Status.LastError)),
+		fmt.Sprintf("Labels: %s", formatLabels(fn.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func functionImage(fn *function.Function) string {
+	if fn.Spec.Image == "" {
+		return ""
+	}
+	if fn.Spec.ImageTag == "" {
+		return fn.Spec.Image
+	}
+	return fn.Spec.Image + ":" + fn.Spec.ImageTag
+}
+
+func describeEventTrigger(out io.Writer, trigger *eventtrigger.EventTrigger) error {
+	lines := []string{
+		fmt.Sprintf("Name: %s", trigger.Name),
+		fmt.Sprintf("Namespace: %s", trigger.Namespace),
+		fmt.Sprintf("Subject: %s", trigger.Spec.Subject),
+		fmt.Sprintf("Target: %s", formatEventTriggerTarget(trigger)),
+		fmt.Sprintf("ReplySubject: %s", emptyDash(trigger.Spec.ReplySubject)),
+		fmt.Sprintf("Active: %t", trigger.Status.Active),
+		fmt.Sprintf("LastEventTime: %s", emptyDash(trigger.Status.LastEventTime)),
+		fmt.Sprintf("LastError: %s", emptyDash(trigger.Status.LastError)),
+		fmt.Sprintf("Labels: %s", formatLabels(trigger.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func describeWorkflow(out io.Writer, wf *workflow.Workflow) error {
+	steps := make([]string, 0, len(wf.Spec.Steps))
+	for _, step := range wf.Spec.Steps {
+		steps = append(steps, fmt.Sprintf("%s=%s branches=%s next=%s end=%t", step.Name, step.FunctionRef.Name, formatWorkflowBranches(step.Branches), emptyDash(step.Next), step.End))
+	}
+	lines := []string{
+		fmt.Sprintf("Name: %s", wf.Name),
+		fmt.Sprintf("Namespace: %s", wf.Namespace),
+		fmt.Sprintf("Steps: %s", strings.Join(steps, ",")),
+		fmt.Sprintf("Status: %s", emptyDash(wf.Status.Phase)),
+		fmt.Sprintf("LastRunTime: %s", formatTime(wf.Status.LastRunTime)),
+		fmt.Sprintf("LastOutput: %s", emptyDash(wf.Status.LastOutput)),
+		fmt.Sprintf("LastError: %s", emptyDash(wf.Status.LastError)),
+		fmt.Sprintf("Labels: %s", formatLabels(wf.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func describeWorkflowRun(out io.Writer, run *workflowrun.WorkflowRun) error {
+	lines := []string{
+		fmt.Sprintf("Name: %s", run.Name),
+		fmt.Sprintf("Namespace: %s", run.Namespace),
+		fmt.Sprintf("Workflow: %s", run.Spec.WorkflowRef.Name),
+		fmt.Sprintf("Status: %s", emptyDash(run.Status.Phase)),
+		fmt.Sprintf("StartedAt: %s", formatTime(run.Status.StartedAt)),
+		fmt.Sprintf("FinishedAt: %s", formatTime(run.Status.FinishedAt)),
+		fmt.Sprintf("Output: %s", emptyDash(run.Status.Output)),
+		fmt.Sprintf("Error: %s", emptyDash(run.Status.Error)),
+		fmt.Sprintf("Steps: %s", formatWorkflowRunSteps(run.Status.Steps)),
+		fmt.Sprintf("Labels: %s", formatLabels(run.Labels)),
+	}
+	for _, line := range lines {
+		if err := writef(out, "%s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func formatWorkflowRunSteps(steps []workflow.WorkflowStepStatus) string {
+	if len(steps) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(steps))
+	for _, step := range steps {
+		parts = append(parts, fmt.Sprintf("%s=%s(%s)", step.Name, step.Function, step.Phase))
+	}
+	return strings.Join(parts, ",")
+}
+
+func formatHPATarget(autoscaler *hpa.HorizontalPodAutoscaler) string {
+	return fmt.Sprintf("%s/%s", autoscaler.Spec.ScaleTargetRef.Kind, autoscaler.Spec.ScaleTargetRef.Name)
+}
+
+func formatHPAMetrics(metrics []hpa.MetricStatus) string {
+	if len(metrics) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(metrics))
+	for _, metric := range metrics {
+		parts = append(parts, fmt.Sprintf("%s=%d%%", metric.Name, metric.CurrentAverageUtilization))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func formatHPAConditions(conditions []hpa.HorizontalPodCondition) string {
+	if len(conditions) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(conditions))
+	for _, condition := range conditions {
+		if condition.Reason != "" {
+			parts = append(parts, fmt.Sprintf("%s=%s(%s)", condition.Type, condition.Status, condition.Reason))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", condition.Type, condition.Status))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func formatNodeConditions(conditions []node.NodeCondition) string {
+	if len(conditions) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(conditions))
+	for _, cond := range conditions {
+		parts = append(parts, fmt.Sprintf("%s=%s", cond.Type, cond.Status))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func formatNodeLastHeartbeat(last time.Time) string {
+	if last.IsZero() {
+		return "-"
+	}
+	return last.Format(time.RFC3339)
+}
+
+func formatTime(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.Format(time.RFC3339)
+}
+
+func formatWorkflowBranches(branches []workflow.WorkflowBranch) string {
+	if len(branches) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(branches))
+	for _, branch := range branches {
+		if branch.Contains != "" {
+			parts = append(parts, fmt.Sprintf("contains:%s->%s", branch.Contains, branch.Next))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("regex:%s->%s", branch.Regex, branch.Next))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
 }
 
 func emptyDash(value string) string {

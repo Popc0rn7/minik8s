@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+test_app.py
+make_request.py
+README.md
+DATASET.md
+dataset.json
+images/
+masks/
+sample_request_*.json

@@ -1,0 +1,127 @@
+package captain
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+
+	store "minik8s/internal/bridge/logbook"
+	"minik8s/internal/minilog"
+	"minik8s/internal/pod"
+	"minik8s/internal/service"
+)
+
+type ServiceController struct {
+	podStore     store.PodStore
+	serviceStore store.ServiceStore
+}
+
+func NewServiceController(podStore store.PodStore, serviceStore store.ServiceStore) *ServiceController {
+	return &ServiceController{
+		podStore:     podStore,
+		serviceStore: serviceStore,
+	}
+}
+
+func (c *ServiceController) Name() string { return ServiceControllerName }
+
+func (c *ServiceController) Sync(ctx context.Context) error {
+	if c.podStore == nil || c.serviceStore == nil {
+		return fmt.Errorf("service controller stores are required")
+	}
+	services, err := c.serviceStore.List("", nil)
+	if err != nil {
+		return fmt.Errorf("listing services: %w", err)
+	}
+	sort.Slice(services, func(i, j int) bool {
+		if services[i].Namespace == services[j].Namespace {
+			return services[i].Name < services[j].Name
+		}
+		return services[i].Namespace < services[j].Namespace
+	})
+	for _, svc := range services {
+		if isInternalService(svc) {
+			minilog.Info("service-sync", "service=%s/%s endpoints=%s internal=true", svc.Namespace, svc.Name, endpointSummary(svc.Status.Endpoints))
+			continue
+		}
+		if err := c.reconcileService(ctx, svc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isInternalService(svc *service.Service) bool {
+	return svc != nil && svc.Annotations["minik8s.internal"] == "true"
+}
+
+func (c *ServiceController) DeleteService(ctx context.Context, name, namespace string) error {
+	svc, err := c.serviceStore.Get(name, namespace)
+	if err != nil {
+		return err
+	}
+	_ = svc
+	return c.serviceStore.Delete(name, namespace)
+}
+
+func (c *ServiceController) reconcileService(ctx context.Context, svc *service.Service) error {
+	pods, err := c.podStore.List(svc.Namespace, &svc.Spec.Selector)
+	if err != nil {
+		return fmt.Errorf("listing selected pods: %w", err)
+	}
+	endpoints := make([]service.Endpoint, 0)
+	for _, p := range pods {
+		if p.Status.Phase != pod.PodRunning || p.Status.PodIP == "" || !podReadyForService(p) {
+			continue
+		}
+		for _, port := range svc.Spec.Ports {
+			endpoints = append(endpoints, service.Endpoint{
+				PodName:    p.Name,
+				IP:         p.Status.PodIP,
+				Port:       port.Port,
+				TargetPort: port.TargetPort,
+				Protocol:   port.Protocol,
+			})
+		}
+	}
+	sort.Slice(endpoints, func(i, j int) bool {
+		if endpoints[i].PodName == endpoints[j].PodName {
+			return endpoints[i].TargetPort < endpoints[j].TargetPort
+		}
+		return endpoints[i].PodName < endpoints[j].PodName
+	})
+	svc.Status.Endpoints = endpoints
+	if err := c.serviceStore.Update(svc); err != nil {
+		return fmt.Errorf("updating service status: %w", err)
+	}
+	_ = ctx
+	minilog.Info("service-sync", "service=%s/%s endpoints=%s", svc.Namespace, svc.Name, endpointSummary(endpoints))
+	return nil
+}
+
+func podReadyForService(p *pod.Pod) bool {
+	if p == nil {
+		return false
+	}
+	if len(p.Status.Containers) == 0 {
+		return true
+	}
+	for _, status := range p.Status.Containers {
+		if !status.Ready {
+			return false
+		}
+	}
+	return true
+}
+
+func endpointSummary(endpoints []service.Endpoint) string {
+	if len(endpoints) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(endpoints))
+	for _, ep := range endpoints {
+		parts = append(parts, fmt.Sprintf("%s:%d", ep.IP, ep.TargetPort))
+	}
+	return strings.Join(parts, ",")
+}

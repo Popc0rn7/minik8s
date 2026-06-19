@@ -1,0 +1,37 @@
+kind: Function
+apiVersion: v1
+metadata:
+  name: revision-probe
+  labels:
+    app: harbor-incident-triage
+    demo: function-lifecycle
+spec:
+  runtime: python
+  handler: handler
+  port: 8080
+  minReplicas: 0
+  maxReplicas: 1
+  targetConcurrency: 1
+  idleTimeoutSeconds: 30
+  code: |
+    import json
+    import sys
+
+
+    def handler(event):
+        payload = json.loads(event or "{}")
+        return json.dumps(
+            {
+                "ok": True,
+                "function": "revision-probe",
+                "revision": "v1",
+                "message": "first uploaded version",
+                "inputTitle": payload.get("title", ""),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+
+    if __name__ == "__main__":
+        print(handler(sys.stdin.read()))

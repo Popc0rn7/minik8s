@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1
+
+ARG GO_VERSION=1.25.9
+ARG GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
+
+FROM golang:${GO_VERSION}-bookworm AS builder
+
+WORKDIR /src
+
+ARG GOPROXY
+ENV GOPROXY=${GOPROXY}
+
+COPY go.mod go.sum ./
+COPY internal/thirdparty/pkgerrors/go.mod internal/thirdparty/pkgerrors/go.mod
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+COPY . .
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+	CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+	go build -trimpath -ldflags="-s -w" -o /mooring ./cmd/mooring
+
+FROM debian:bookworm-slim
+
+LABEL org.opencontainers.image.title="Mooring CNI" \
+	org.opencontainers.image.description="Minik8s mooring CNI plugin installer image" \
+	org.opencontainers.image.source="https://github.com/Popc0rn7/minik8s" \
+	org.opencontainers.image.licenses="Apache-2.0"
+
+COPY --from=builder /mooring /mooring
+
+ENTRYPOINT ["cp"]

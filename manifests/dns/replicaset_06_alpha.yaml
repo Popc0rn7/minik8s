@@ -1,0 +1,45 @@
+kind: ReplicaSet
+apiVersion: v1
+metadata:
+  name: rs-06-alpha
+  namespace: default
+  labels:
+    app: rs-06-alpha
+    case: minik8s-acceptance-06
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rs-06-alpha
+      case: minik8s-acceptance-06
+  template:
+    metadata:
+      labels:
+        app: rs-06-alpha
+        case: minik8s-acceptance-06
+        route: alpha
+    spec:
+      restartPolicy: Always
+      containers:
+      - name: web
+        image: busybox
+        imageTag: 1.36
+        command: ["sh", "-c"]
+        args:
+        - |
+          mkdir -p /www
+          while true; do
+            printf 'case=06\nroute=alpha\npod=%s\nip=%s\n' "$HOSTNAME" "$(hostname -i)" > /www/index.html
+            httpd -f -p 8080 -h /www
+            sleep 1
+          done
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        resources:
+          requests:
+            cpu: "20m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "64Mi"

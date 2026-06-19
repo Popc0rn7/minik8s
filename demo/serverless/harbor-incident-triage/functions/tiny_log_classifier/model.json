@@ -1,0 +1,79 @@
+{
+  "categories": {
+    "network": [
+      "nodeport",
+      "service",
+      "endpoint",
+      "iptables",
+      "ipvs",
+      "dns",
+      "cni",
+      "vxlan",
+      "flannel",
+      "timeout",
+      "connection refused",
+      "security group",
+      "port",
+      "clusterip",
+      "cannot be reached"
+    ],
+    "runtime": [
+      "oomkilled",
+      "crashloop",
+      "restart",
+      "exit code",
+      "container",
+      "killed",
+      "segmentation fault",
+      "permission denied",
+      "volume"
+    ],
+    "build": [
+      "docker pull",
+      "docker build",
+      "apt-get",
+      "registry",
+      "image",
+      "proxy",
+      "build",
+      "glibc",
+      "go build",
+      "npm install"
+    ],
+    "app": [
+      "502",
+      "404",
+      "500",
+      "nginx",
+      "upstream",
+      "http",
+      "api",
+      "websocket",
+      "bad gateway",
+      "not found"
+    ]
+  },
+  "severity": {
+    "critical": [
+      "production down",
+      "unreachable",
+      "cannot be reached",
+      "crashloop",
+      "oomkilled",
+      "all requests failed",
+      "timeout"
+    ],
+    "warning": [
+      "slow",
+      "retry",
+      "failed once",
+      "unstable",
+      "high latency"
+    ],
+    "info": [
+      "notice",
+      "debug",
+      "question"
+    ]
+  }
+}

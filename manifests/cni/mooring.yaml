@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-mooring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mooring-cni-cfg
+  namespace: kube-mooring
+data:
+  cni-conf.json: |
+    {
+      "cniVersion": "1.0.0",
+      "name": "minik8s",
+      "type": "mooring",
+      "bridge": "mk8s0",
+      "ipam": {
+        "statePath": "/opt/minik8s/state/cni-ipam.json"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mooring-cni-ds
+  namespace: kube-mooring
+spec:
+  template:
+    spec:
+      initContainers:
+      - name: install-cni-plugin
+        image: ghcr.io/popc0rn7/mooring-cni:v0.1.0

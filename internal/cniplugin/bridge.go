@@ -15,13 +15,11 @@ import (
 )
 
 const (
-	defaultBridge  = "mk8s0"
-	defaultPodCIDR = "10.244.0.0/24"
-	defaultGateway = "10.244.0.1"
-	defaultIfName  = "eth0"
+	defaultBridge = "mk8s0"
+	defaultIfName = "eth0"
 )
 
-// BridgeConfig is the CNI config consumed by minik8s-bridge.
+// BridgeConfig is the CNI config consumed by mooring.
 type BridgeConfig struct {
 	CNIVersion string `json:"cniVersion"`
 	Name       string `json:"name"`
@@ -58,11 +56,20 @@ func RunBridgePlugin(stdin io.Reader, stdout io.Writer, environ []string) error 
 	if err != nil {
 		return err
 	}
+	if env.Command == "VERSION" {
+		return json.NewEncoder(stdout).Encode(map[string]any{
+			"cniVersion":        "1.0.0",
+			"supportedVersions": []string{"0.3.1", "0.4.0", "1.0.0"},
+		})
+	}
 	var conf BridgeConfig
 	if err := json.Unmarshal(data, &conf); err != nil {
 		return fmt.Errorf("parse cni config: %w", err)
 	}
 	defaultBridgeConfig(&conf)
+	if err := validateConfig(conf); err != nil {
+		return err
+	}
 
 	switch env.Command {
 	case "ADD":
@@ -79,6 +86,31 @@ func RunBridgePlugin(stdin io.Reader, stdout io.Writer, environ []string) error 
 	default:
 		return fmt.Errorf("unsupported CNI_COMMAND %q", env.Command)
 	}
+}
+
+func validateConfig(conf BridgeConfig) error {
+	if conf.Name == "" {
+		return fmt.Errorf("cni config name is required")
+	}
+	if conf.CNIVersion == "" {
+		return fmt.Errorf("cniVersion is required")
+	}
+	if conf.Type != "mooring" {
+		return fmt.Errorf("cni config type must be mooring")
+	}
+	if strings.TrimSpace(conf.PodCIDR) == "" {
+		return fmt.Errorf("podCIDR is required")
+	}
+	if strings.TrimSpace(conf.Gateway) == "" {
+		return fmt.Errorf("gateway is required")
+	}
+	if _, _, err := net.ParseCIDR(conf.PodCIDR); err != nil {
+		return fmt.Errorf("invalid podCIDR %q: %w", conf.PodCIDR, err)
+	}
+	if net.ParseIP(conf.Gateway) == nil {
+		return fmt.Errorf("invalid gateway %q", conf.Gateway)
+	}
+	return nil
 }
 
 func add(conf BridgeConfig, env CNIEnv) (map[string]any, error) {
@@ -174,22 +206,29 @@ func configurePodNetwork(conf BridgeConfig, env CNIEnv, ip net.IP, prefix int) e
 }
 
 func ensureBridge(conf BridgeConfig, prefix int) error {
-	if err := run("ip", "link", "show", conf.Bridge); err != nil {
-		if err := run("ip", "link", "add", conf.Bridge, "type", "bridge"); err != nil {
+	return ensureBridgeWithRunner(conf, prefix, run)
+}
+
+func ensureBridgeWithRunner(conf BridgeConfig, prefix int, runner commandRunner) error {
+	if err := runner("ip", "link", "show", conf.Bridge); err != nil {
+		if err := runner("ip", "link", "add", conf.Bridge, "type", "bridge"); err != nil {
 			return err
 		}
 	}
-	if err := run("ip", "addr", "replace", fmt.Sprintf("%s/%d", conf.Gateway, prefix), "dev", conf.Bridge); err != nil {
+	if err := runner("ip", "addr", "replace", fmt.Sprintf("%s/%d", conf.Gateway, prefix), "dev", conf.Bridge); err != nil {
 		return err
 	}
-	if err := run("ip", "link", "set", conf.Bridge, "up"); err != nil {
+	if err := runner("ip", "link", "set", conf.Bridge, "up"); err != nil {
 		return err
 	}
-	_ = run("sysctl", "-w", "net.ipv4.ip_forward=1")
-	if err := configureForwarding(conf, run); err != nil {
+	if err := runner("ip", "route", "replace", conf.PodCIDR, "dev", conf.Bridge); err != nil {
 		return err
 	}
-	return configureMasquerade(conf, run)
+	_ = runner("sysctl", "-w", "net.ipv4.ip_forward=1")
+	if err := configureForwarding(conf, runner); err != nil {
+		return err
+	}
+	return configureMasquerade(conf, runner)
 }
 
 type commandRunner func(name string, args ...string) error
@@ -289,14 +328,8 @@ func defaultBridgeConfig(conf *BridgeConfig) {
 	if conf.Bridge == "" {
 		conf.Bridge = defaultBridge
 	}
-	if conf.PodCIDR == "" {
-		conf.PodCIDR = defaultPodCIDR
-	}
-	if conf.Gateway == "" {
-		conf.Gateway = defaultGateway
-	}
 	if conf.IPAM.StatePath == "" {
-		conf.IPAM.StatePath = filepath.Join(".minik8s", "state", "cni-ipam.json")
+		conf.IPAM.StatePath = filepath.Join(string(os.PathSeparator), "opt", "minik8s", "state", "cni-ipam.json")
 	}
 }
 
@@ -382,10 +415,27 @@ func run(name string, args ...string) error {
 	return nil
 }
 
+func cniErrorJSON(version string, code int, msg, details string) ([]byte, error) {
+	if version == "" {
+		version = "1.0.0"
+	}
+	return json.Marshal(map[string]any{
+		"cniVersion": version,
+		"code":       code,
+		"msg":        msg,
+		"details":    details,
+	})
+}
+
 // Main runs the bridge plugin with the process stdio and environment.
 func Main() {
 	if err := RunBridgePlugin(os.Stdin, os.Stdout, os.Environ()); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		data, jsonErr := cniErrorJSON("1.0.0", 100, "Minik8sBridgeError", err.Error())
+		if jsonErr != nil {
+			fmt.Fprintln(os.Stderr, err)
+		} else {
+			fmt.Fprintln(os.Stderr, string(data))
+		}
 		os.Exit(1)
 	}
 }
