@@ -113,6 +113,45 @@ func TestServiceControllerUpdatesEndpointsWhenPodChanges(t *testing.T) {
 	assert.Equal(t, "nginx-b", updated.Status.Endpoints[1].PodName)
 }
 
+func TestServiceControllerPreservesInternalServiceEndpoints(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	serviceStore := store.NewInMemoryServiceStore()
+	require.NoError(t, serviceStore.Create(&service.Service{
+		ObjectMeta: pod.ObjectMeta{
+			Name:      "minik8s-dns",
+			Namespace: "minik8s-system",
+			Annotations: map[string]string{
+				"minik8s.internal": "true",
+			},
+		},
+		Spec: service.ServiceSpec{
+			Type: service.ServiceTypeClusterIP,
+			Selector: pod.LabelSelector{MatchLabels: map[string]string{
+				"app": "minik8s-dns",
+			}},
+			Ports: []service.ServicePort{{Port: 53, TargetPort: 153, Protocol: "UDP"}},
+		},
+		Status: service.ServiceStatus{
+			ClusterIP: "10.96.0.10",
+			Endpoints: []service.Endpoint{{
+				IP:         "192.168.1.4",
+				Port:       53,
+				TargetPort: 153,
+				Protocol:   "UDP",
+			}},
+		},
+	}))
+
+	ctrl := NewServiceController(podStore, serviceStore)
+	require.NoError(t, ctrl.Sync(context.Background()))
+
+	got, err := serviceStore.Get("minik8s-dns", "minik8s-system")
+	require.NoError(t, err)
+	require.Len(t, got.Status.Endpoints, 1)
+	assert.Equal(t, "192.168.1.4", got.Status.Endpoints[0].IP)
+	assert.Equal(t, int32(153), got.Status.Endpoints[0].TargetPort)
+}
+
 func TestServiceControllerDeleteRemovesStoreObject(t *testing.T) {
 	podStore := store.NewInMemoryPodStore()
 	serviceStore := store.NewInMemoryServiceStore()

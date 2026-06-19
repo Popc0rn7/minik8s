@@ -520,6 +520,36 @@ verify_endpoint_pods_do_not_include() {
   done
 }
 
+delete_one_nonlocal_rs_pod() {
+  local pod_name node
+  for pod_name in $(running_rs_pod_names | sort); do
+    node="$(pod_node "$pod_name")"
+    if [ "$node" != "$LOCAL_NODE_NAME" ]; then
+      "$KUBECTL_BIN" delete pod "$pod_name"
+      printf 'deletedPod=%s deletedPodNode=%s\n' "$pod_name" "$node"
+      return 0
+    fi
+  done
+  printf 'no non-%s ReplicaSet Pod found to delete\n' "$LOCAL_NODE_NAME"
+  return 1
+}
+
+wait_for_rs_back_on_local_node() {
+  local attempt=1
+  while [ "$attempt" -le 6 ]; do
+    if rs_has_local_node; then
+      evidence_run "$RS_NAME has a Running Pod on recovered $LOCAL_NODE_NAME" rs_pod_summary
+      return 0
+    fi
+    evidence_run "$RS_NAME replacement trigger attempt=$attempt after $LOCAL_NODE_NAME recovery" delete_one_nonlocal_rs_pod || true
+    wait_for_rs_running 3 || return 1
+    evidence_run "$RS_NAME scheduling distribution after replacement attempt=$attempt" rs_pod_summary || true
+    attempt=$((attempt + 1))
+  done
+  section_fail "$RS_NAME did not schedule a replacement Pod back to recovered $LOCAL_NODE_NAME"
+  return 1
+}
+
 section_bridge_restart() {
   section_begin "07.1 bridge restart state recovery service access acceptance"
   output "remote_dir=$REMOTE_DIR harbor=$MINIK8S_HARBOR manifests=$MANIFEST_DIR local_node=$LOCAL_NODE_NAME"
@@ -575,7 +605,8 @@ section_replicaset_recovery() {
   if [ "$SECTION_STATUS" = "PASS" ]; then
     local node_port
     node_port="$(node_port_of)"
-    quiet_check "$RS_SERVICE_NAME keeps NodePort $NODEPORT" test "$node_port" = "$NODEPORT"
+    quiet_check "$RS_SERVICE_NAME keeps NodePort $NODEPORT" test "$node_port" = "$NODEPORT" &&
+      wait_for_http "node-a reaches Service after $LOCAL_NODE_NAME loss through remaining endpoints $LOCAL_NODE_IP:$node_port" "http://$LOCAL_NODE_IP:$node_port/"
   fi
   cleanup_all
   section_end "07.2 cleaned ReplicaSet fault resources and restarted sailer"
@@ -613,13 +644,21 @@ section_node_recovery() {
   section_begin "07.4 local sailer restart node ready recovery acceptance"
   preflight &&
     cleanup_all &&
+    apply_rs_with_local_pod &&
+    apply_rs_service &&
+    evidence_run "$RS_NAME Pods before local node recovery fault" rs_pod_summary &&
     stop_sailer &&
     wait_for_node_phase "$LOCAL_NODE_NAME" Unknown &&
     evidence_run "$LOCAL_NODE_NAME is Unknown before restart" node_summary "$LOCAL_NODE_NAME" &&
+    wait_for_rs_running 3 &&
+    evidence_run "$RS_NAME migrated away from $LOCAL_NODE_NAME before recovery" verify_no_running_rs_pods_on_local_node &&
     evidence_run "local minik8s-sailer.service started" systemctl start minik8s-sailer.service &&
     wait_for_node_phase "$LOCAL_NODE_NAME" Ready &&
     evidence_run "node list after local sailer recovery" "$KUBECTL_BIN" get nodes &&
-    evidence_run "$LOCAL_NODE_NAME summary after local sailer recovery" node_summary "$LOCAL_NODE_NAME"
+    evidence_run "$LOCAL_NODE_NAME summary after local sailer recovery" node_summary "$LOCAL_NODE_NAME" &&
+    wait_for_rs_back_on_local_node &&
+    wait_for_service_endpoints "$RS_SERVICE_NAME" 3 &&
+    evidence_run "$RS_SERVICE_NAME endpoints after $LOCAL_NODE_NAME rejoined scheduling pool" service_summary "$RS_SERVICE_NAME"
   cleanup_all
   section_end "07.4 cleaned node recovery resources and kept sailer running"
 }
