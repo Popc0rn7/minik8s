@@ -185,7 +185,7 @@ func functionPodReachable(ip string, port int32) bool {
 		return false
 	}
 	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
-	conn, err := dialer.Dial("tcp", fmt.Sprintf("%s:%d", ip, port))
+	conn, err := dialer.Dial("tcp", net.JoinHostPort(ip, fmt.Sprintf("%d", port)))
 	if err != nil {
 		return false
 	}

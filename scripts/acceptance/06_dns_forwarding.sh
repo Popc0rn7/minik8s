@@ -41,6 +41,8 @@ DNS_DIR="${MINIK8S_DNS_DIR:-$REMOTE_DIR/dns}"
 DNS_QUERY_PORT="${MINIK8S_ACCEPTANCE_06_DNS_QUERY_PORT:-}"
 DNS_HOST="acceptance06.minik8s.local"
 INGRESS_URL="${MINIK8S_ACCEPTANCE_06_INGRESS_URL:-http://127.0.0.1}"
+DNS_SERVICE_NS="minik8s-system"
+DNS_SERVICE_NAME="minik8s-dns"
 
 RS_ALPHA="rs-06-alpha"
 RS_BETA="rs-06-beta"
@@ -159,8 +161,20 @@ service_yaml() {
   "$KUBECTL_BIN" get svc "$1" -o yaml
 }
 
+dns_service_yaml() {
+  "$KUBECTL_BIN" -n "$DNS_SERVICE_NS" get svc "$DNS_SERVICE_NAME" -o yaml
+}
+
+dns_service_cluster_ip() {
+  dns_service_yaml | sed -n 's/^[[:space:]]*clusterIP:[[:space:]]*//p' | head -n 1 | tr -d ' '
+}
+
 endpoint_count() {
   service_yaml "$1" | sed -n 's/^[[:space:]]*ip:[[:space:]]*//p' | sed '/^$/d' | wc -l | tr -d ' '
+}
+
+dns_service_endpoint_count() {
+  dns_service_yaml | sed -n 's/^[[:space:]]*ip:[[:space:]]*//p' | sed '/^$/d' | wc -l | tr -d ' '
 }
 
 wait_for_rs_running() {
@@ -217,6 +231,24 @@ wait_for_service_endpoints() {
   done
   section_check_run "$service_name final describe before endpoint failure" "$KUBECTL_BIN" describe svc "$service_name" || true
   section_fail "$service_name endpoint count did not become $expected"
+  return 1
+}
+
+wait_for_cluster_dns_service() {
+  local attempt=1
+  while [ "$attempt" -le "$WAIT_ATTEMPTS" ]; do
+    local cluster_ip count
+    cluster_ip="$(dns_service_cluster_ip 2>/dev/null || true)"
+    count="$(dns_service_endpoint_count 2>/dev/null || printf '0')"
+    if [ -n "$cluster_ip" ] && [ "$count" -ge 2 ]; then
+      section_check_run "$DNS_SERVICE_NS/$DNS_SERVICE_NAME exposes ClusterIP DNS with endpoints" dns_service_yaml
+      return 0
+    fi
+    wait_note "waiting for cluster DNS Service clusterIP=$cluster_ip endpoints=$count" "$attempt"
+    sleep "$WAIT_SLEEP_SECONDS"
+    attempt=$((attempt + 1))
+  done
+  section_fail "$DNS_SERVICE_NS/$DNS_SERVICE_NAME did not expose ClusterIP DNS endpoints"
   return 1
 }
 
@@ -280,6 +312,23 @@ try_pod_http() {
     grep -Fq "$want" /tmp/minik8s-acceptance-06-client.out
 }
 
+check_client_resolver() {
+  local cluster_ip
+  cluster_ip="$(dns_service_cluster_ip 2>/dev/null || true)"
+  if [ -z "$cluster_ip" ]; then
+    section_fail "cluster DNS Service has no ClusterIP"
+    return 1
+  fi
+  if bash -lc "cid=\$($(container_id_cmd "$CLIENT_POD" client)); test -n \"\$cid\"; docker exec \"\$cid\" cat /etc/resolv.conf" >/tmp/minik8s-acceptance-06-resolv.out 2>/dev/null &&
+    grep -Fq "nameserver $cluster_ip" /tmp/minik8s-acceptance-06-resolv.out; then
+    section_check_run "client Pod resolver uses cluster DNS Service $cluster_ip" bash -c 'cat /tmp/minik8s-acceptance-06-resolv.out'
+    return 0
+  fi
+  section_check_run "client Pod resolver before failure" bash -c 'cat /tmp/minik8s-acceptance-06-resolv.out 2>/dev/null || true'
+  section_fail "client Pod resolver does not use cluster DNS Service $cluster_ip"
+  return 1
+}
+
 wait_for_pod_http() {
   local route="$1"
   local want="$2"
@@ -293,6 +342,7 @@ wait_for_pod_http() {
     sleep "$WAIT_SLEEP_SECONDS"
     attempt=$((attempt + 1))
   done
+  section_fail "client Pod could not resolve and reach $DNS_HOST$route"
   return 1
 }
 
@@ -342,7 +392,7 @@ check_host_dns_query() {
     section_fail "nslookup did not resolve $DNS_HOST to $MINIK8S_NODE_A_IP through tested DNS addon ports"
     return 1
   fi
-  section_limited "neither dig nor nslookup is available on host; DNS query skipped"
+  pass "neither dig nor nslookup is available on host; DNS query skipped because Pod resolver is checked in 06.3"
   return 0
 }
 
@@ -367,7 +417,7 @@ cleanup_runtime() {
     sleep "$WAIT_SLEEP_SECONDS"
     attempt=$((attempt + 1))
   done
-  run rm -f /tmp/minik8s-acceptance-06-http.out /tmp/minik8s-acceptance-06-client.out /tmp/minik8s-acceptance-06-dns.out || true
+  run rm -f /tmp/minik8s-acceptance-06-http.out /tmp/minik8s-acceptance-06-client.out /tmp/minik8s-acceptance-06-dns.out /tmp/minik8s-acceptance-06-resolv.out || true
 }
 
 cleanup_all() {
@@ -393,6 +443,7 @@ preflight() {
   section_check_quiet "kubectl binary exists" test -x "$KUBECTL_BIN" || return 1
   section_check_run "Harbor API is reachable" curl -fsS -o /dev/null -w 'http=%{http_code}\n' "$MINIK8S_HARBOR/api/v1" || return 1
   section_check_run "kubectl can list DNS objects" "$KUBECTL_BIN" get dns || return 1
+  wait_for_cluster_dns_service || return 1
   section_check_quiet "DNS directory exists" test -d "$DNS_DIR" || return 1
   output "dns_query_port=$(detect_dns_query_port) configured_dns_port=$MINIK8S_DNS_PORT"
   section_check_quiet "DNS addon route files are writable by bridge" test -f "$ROUTES_PATH" -o -d "$DNS_DIR" || return 1
@@ -444,13 +495,12 @@ section_pod_dns_delete() {
     cleanup_all &&
     apply_backends_services_dns &&
     section_check_run "$CLIENT_POD manifest applied after DNS addon is active" "$KUBECTL_BIN" apply -f "$CLIENT_MANIFEST" &&
-    wait_for_pod_running "$CLIENT_POD"
+    wait_for_pod_running "$CLIENT_POD" &&
+    check_client_resolver
   if [ "$SECTION_STATUS" = "PASS" ]; then
-    if wait_for_pod_http "/alpha" "route=alpha" && wait_for_pod_http "/beta" "route=beta"; then
-      pass "client Pod resolved $DNS_HOST and reached both paths"
-    else
-      section_limited "client Pod could not resolve $DNS_HOST through its configured nameserver; host DNS and ingress checks remain authoritative"
-    fi
+    wait_for_pod_http "/alpha" "route=alpha" &&
+      wait_for_pod_http "/beta" "route=beta" &&
+      pass "client Pod resolved $DNS_HOST through cluster DNS Service and reached both paths"
     section_check_run "$DNS_NAME deleted" "$KUBECTL_BIN" delete dns "$DNS_NAME" &&
       wait_for_dns_delete_sync
     if curl --connect-timeout "$HTTP_TIMEOUT_SECONDS" --max-time "$HTTP_TIMEOUT_SECONDS" -fsS -H "Host: $DNS_HOST" "$INGRESS_URL/alpha" >/tmp/minik8s-acceptance-06-http.out 2>/dev/null; then

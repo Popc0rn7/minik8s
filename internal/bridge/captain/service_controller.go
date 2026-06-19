@@ -41,11 +41,19 @@ func (c *ServiceController) Sync(ctx context.Context) error {
 		return services[i].Namespace < services[j].Namespace
 	})
 	for _, svc := range services {
+		if isInternalService(svc) {
+			minilog.Info("service-sync", "service=%s/%s endpoints=%s internal=true", svc.Namespace, svc.Name, endpointSummary(svc.Status.Endpoints))
+			continue
+		}
 		if err := c.reconcileService(ctx, svc); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func isInternalService(svc *service.Service) bool {
+	return svc != nil && svc.Annotations["minik8s.internal"] == "true"
 }
 
 func (c *ServiceController) DeleteService(ctx context.Context, name, namespace string) error {

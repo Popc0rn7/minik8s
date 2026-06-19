@@ -122,34 +122,6 @@ Checklist:
 - 最后的无参数验证，展现1, 3功能
 
 Node设计：
-```bash
-kind: Node
-apiVersion: v1
-metadata:
-    name: node-a
-    namespace: ""
-    labels:
-        node: node-a
-    annotations: {}
-    uid: ""
-    resourceVersion: "1434"
-spec:
-    role: Worker
-    podCIDR: 10.244.0.0/24
-status:
-    phase: Ready
-    lastHeartbeat: 2026-06-17T08:27:32.782584471Z
-    addresses:
-        - type: InternalIP
-          address: 192.168.1.4
-    conditions:
-        - type: Ready
-          status: "True"
-          lastHeartbeatTime: 2026-06-17T08:27:32.782584471Z
-          lastTransitionTime: 2026-06-17T08:27:32.782584471Z
-          reason: Heartbeat
-          message: Node is reporting heartbeat
-```
 - Node注册靠机器通过token加入Bridge，这时 Bridge 记录 node 对象，Node 记录 Harbor 地址。
 - 关键字段说明：
   - `spec.role`：Worker/Master
@@ -313,14 +285,14 @@ bash scripts/acceptance/05_hpa.sh cleanup
 
 ## 06 DNS
 
-`scripts/acceptance/06_dns_forwarding.sh` 是 DNS 对象、DNS sync 文件和 host/path 转发验收脚本。运行前需保证 01 多机部署已完成，端口80由DNS Ingress使用，脚本只需要在 node-a 上执行。
+`scripts/acceptance/06_dns_forwarding.sh` 是 DNS 对象、DNS sync 文件、host/path 转发和 Pod 内域名访问验收脚本。运行前需保证 01 多机部署已完成，bridge 已启用 DNS addon，端口 80 由 DNS ingress 使用，脚本只需要在 node-a 上执行。
 
 ```bash
 source scripts/acceptance/env.sh
 bash scripts/acceptance/06_dns_forwarding.sh
 ```
 
-该脚本使用固定 manifest：
+该脚本使用 `manifests/dns/` 下的固定 manifest：
 
 - `manifests/dns/replicaset_06_alpha.yaml`
 - `manifests/dns/replicaset_06_beta.yaml`
@@ -329,11 +301,24 @@ bash scripts/acceptance/06_dns_forwarding.sh
 - `manifests/dns/dns_06_routes.yaml`
 - `manifests/dns/pod_06_client.yaml`
 
-三个小节分别覆盖：
+脚本小节号对应 `docs/FINAL.md` 的 7.6 小节：
 
-- `06.1`：创建两个后端 Service 和 `dns-06-routes`，检查 `kubectl get/describe dns`，并检查 `/opt/minik8s/dns/hosts`、`/opt/minik8s/dns/routes.json` 中出现 `acceptance06.minik8s.local`、`/alpha` 和 `/beta`。
-- `06.2`：从 node-a 宿主机用 `Host: acceptance06.minik8s.local` 访问 `http://127.0.0.1/alpha` 和 `/beta`，验证分别转发到返回 `route=alpha`、`route=beta` 的不同 Service。
-- `06.3`：在 DNS addon 已启用后创建 client Pod，尝试从 Pod 内通过 `http://acceptance06.minik8s.local/alpha` 和 `/beta` 访问；随后删除 DNS 对象，确认 sync 文件删除该 host，host ingress 不再服务该域名。若当前部署只将 DNS addon 绑定在宿主机自定义端口而容器 nameserver 无法指定端口，该子项会输出 `[LIMITED]`。
+**06.1 配置域名和子路径（对应 7.6.1）**
+- 创建两个 1 副本后端 ReplicaSet，分别返回 `route=alpha` 和 `route=beta`。
+- 创建两个 ClusterIP Service：`service-06-alpha` 和 `service-06-beta`，并等待各自 endpoint ready。
+- 创建 DNS 对象 `dns-06-routes`，host 为 `acceptance06.minik8s.local`，`/alpha` 指向 `service-06-alpha:80`，`/beta` 指向 `service-06-beta:80`。
+- 运行 `kubectl get/describe dns dns-06-routes`，并检查 `/opt/minik8s/dns/hosts`、`/opt/minik8s/dns/routes.json` 出现该 host 和两个 Service route target。
+- 检查 DNS addon 自动创建的 `minik8s-system/minik8s-dns` ClusterIP Service，该 Service 对 Pod 暴露 `53/TCP` 和 `53/UDP`，并转发到 node-a 的 DNS addon host port。
+
+**06.2 通过域名和子路径访问 Service（对应 7.6.2 宿主机访问）**
+- 从 node-a 宿主机用 `Host: acceptance06.minik8s.local` 访问 `http://127.0.0.1/alpha` 和 `/beta`。
+- `/alpha` 必须返回 `route=alpha`，`/beta` 必须返回 `route=beta`，证明同一域名下不同路径转发到不同 Service。
+- 输出 `routes.json` 作为 gateway route snapshot 证据。
+
+**06.3 Pod 内访问和删除行为（对应 7.6.2 Pod 内访问，并补充删除状态清理）**
+- 在 DNS addon 已启用后创建 `pod-06-client`，检查 `/etc/resolv.conf` 中的 nameserver 是 `minik8s-dns` Service 的 ClusterIP。
+- 从 Pod 内访问 `http://acceptance06.minik8s.local/alpha` 和 `/beta`，要求分别返回 `route=alpha` 和 `route=beta`。
+- 删除 `dns-06-routes` 后，确认 sync 文件移除该 host，且 host ingress 不再服务该域名。
 
 脚本按 `06.1`、`06.2`、`06.3` 分别清理资源并输出 `[END] status=<PASS|FAIL|LIMITED>`；最后输出总结果，例如 `[END] status=3/3PASS`。单独清理 06 资源：
 
@@ -345,39 +330,28 @@ bash scripts/acceptance/06_dns_forwarding.sh cleanup
 
 ## 07 Fault Tolerance
 
-`scripts/acceptance/07_fault_tolerance.sh` 是 bridge 重启、数据面节点故障、ReplicaSet 恢复、bare Pod NodeLost 和节点恢复验收脚本。运行前需保证 01 多机部署已完成，脚本只需要在 node-a 上执行。
+`scripts/acceptance/07_fault_tolerance.sh` 是 Pod/Service 控制面重启容错、Node 故障检测、ReplicaSet 恢复、Service endpoint 移除和节点恢复验收脚本。运行前需保证 01 多机部署已完成，脚本只需要在 node-a 上执行。
 
 ```bash
 source scripts/acceptance/env.sh
 bash scripts/acceptance/07_fault_tolerance.sh
 ```
 
-该脚本使用 `manifests/fault/`下的四个YAML执行：
+该脚本使用 `manifests/fault/` 下的固定 manifest：
 
-**07.1 bridge 重启后控制面状态和 Service 访问恢复**
-- 创建 3 副本 ReplicaSet `rs-07-web` 和固定 NodePort `30085` Service。
-- 重启 bridge 前通过 `curl http://<node-a-ip>:30085/` 访问 Service，证明数据面已可访问。
-- 执行 `systemctl restart minik8s-bridge.service`，等待 Harbor API 恢复。
-- 重启后展示 `kubectl get nodes`、Pod 摘要、Service 摘要和 NodePort 返回内容，证明控制面状态和数据面访问恢复。
+**07.1 Pod 和 Service 容错**
+- 启动 Pod 和 Service
+- 手动 stop bridge 服务，包括 api-server, controller scheduler, 本设计中 `etcd` 由 bridge 内置的 private-kubelet 管理，暂时会同步清理`etcd`容器，但保证数据持久化且不影响语义。
+- 在重启中检查 Pod 对应的 Docker 对象存活.
+- 在重启中检查 Service 对应的 iptables 规则和 CNI 配置仍然存在。
+- 手动 start bridge 服务，用 `kubectl get` 检查 Pod 和 Service 状态
+- Service 访问验证：脚本在 bridge 重启前后分别访问同一个 NodePort Service，记录返回的后端 `pod=`/`ip=`；重启后仍能访问且 Service endpoints 恢复为 3，证明控制面重启没有破坏已有数据面和恢复后的对象状态。
 
-**07.2 node-a sailer 故障后 ReplicaSet 恢复**
-- 最多重试 3 次，直到至少一个 ReplicaSet-owned Pod 落在 node-a；如果连续 3 次都没有落到 node-a，该小节输出 `[LIMITED]`。
-- 创建 Service 并等待 endpoints=3 后，执行 `systemctl stop minik8s-sailer.service` 模拟 node-a 数据面故障。
-- 等待 node-a 变为 `Unknown`，展示 node 摘要和 `kubectl describe node node-a`。
-- 等待 ReplicaSet 恢复到 3 个 Running Pods，并确认 Running Pods 不再位于 node-a。
-- 等待 Service endpoints 回到 3，并确认 endpoint 不再指向故障节点上的旧 Pod。
-
-**07.3 node-a bare Pod NodeLost 和 endpoint 移除**
-- 创建显式 `nodeSelector: node-a` 的 bare Pod `pod-07-bare` 和 ClusterIP Service。
-- 停止 node-a sailer 后，展示 `kubectl describe pod pod-07-bare` 中的 `Status: Unknown` 和 `Reason: NodeLost`。
-- 等待 bare Service endpoints 从 1 变为 0，证明 endpoint 被移除。
-- 检查 bare Pod 数量仍为 1，证明 bare Pod 不像 ReplicaSet 一样自动补副本。
-
-**07.4 sailer 重启后 node-a 恢复 Ready**
-- 从干净状态停止本机 sailer，等待 node-a 变为 `Unknown`。
-- 执行 `systemctl start minik8s-sailer.service`，等待 node-a 回到 `Ready`。
-- 展示 `kubectl get nodes` 和 node-a 摘要，证明节点恢复。
-- 脚本带 `trap`，失败时也会尝试重新启动 bridge 和 sailer。
+**07.2 Node 容错**
+- 手动 stop node-a 上的 sailer 服务，模拟失活。
+- 用 `kubectl get nodes` 发现 node-a 失活
+- 网络流量验证：脚本先确保同一个 ReplicaSet 至少有一个 Pod 运行在 node-a；停止 node-a 的 `sailer` 后，检查 Node 变为 `Unknown`，ReplicaSet replacement Pods 全部迁出 node-a，Service endpoints 不再包含失效节点旧 Pod，同时 NodePort 仍能访问剩余健康后端。
+- 节点恢复验证：重新启动 node-a 的 `sailer` 后，检查 Node 恢复为 `Ready`；脚本不重新创建 ReplicaSet，而是在同一个 ReplicaSet 上删除一个非 node-a 的 Pod 触发补副本，观察 replacement Pod 可再次调度到 node-a，证明故障节点恢复后重新进入调度池。
 
 只有在意外中断下需要手动清理资源：
 ```bash

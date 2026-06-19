@@ -1780,7 +1780,14 @@ func (a *App) bridge(ctx context.Context, args []string, out io.Writer) error {
 	a.controlBridge.SetHarborURL(harborURL)
 	a.controlBridge.SetNodeCIDRConfig(options.clusterCIDR, options.nodeCIDRMaskSize)
 	a.controlBridge.SetServiceAllocationConfig(options.serviceCIDR, options.nodePortRange)
-	a.controlBridge.SetClusterDNSConfig(options.addons.Enabled(AddonDNS), options.gatewayIP, "cluster.local")
+	clusterDNS := ""
+	if options.addons.Enabled(AddonDNS) {
+		clusterDNS, err = a.controlBridge.EnsureClusterDNSService(options.gatewayIP, options.dnsListenPort)
+		if err != nil {
+			return err
+		}
+	}
+	a.controlBridge.SetClusterDNSConfig(options.addons.Enabled(AddonDNS), clusterDNS, "cluster.local")
 	server := &http.Server{
 		Addr:    options.listen,
 		Handler: a.controlBridge.Handler(),
