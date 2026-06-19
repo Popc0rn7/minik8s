@@ -38,8 +38,8 @@ Fix from the development machine, following docs/deploy.md:
   make deploy-prod
 
 Or copy built binaries manually after make prod:
-  scp dist/prod/minik8s dist/prod/kubectl node-1:$REPO_ROOT/
-  scp dist/prod/minik8s dist/prod/kubectl node-2:$REPO_ROOT/
+  scp bin/minik8s bin/kubectl node-1:$REPO_ROOT/bin/
+  scp bin/minik8s bin/kubectl node-2:$REPO_ROOT/bin/
 
 You can also override the path:
   $env_name=/path/to/$tool_name ./scripts/demo.sh
@@ -47,5 +47,5 @@ EOF
   return 1
 }
 
-CLI="$(resolve_tool CLI "$REPO_ROOT/kubectl" kubectl)"
-MINIK8S="$(resolve_tool MINIK8S "$REPO_ROOT/minik8s" minik8s)"
+CLI="$(resolve_tool CLI "$REPO_ROOT/bin/kubectl" kubectl)"
+MINIK8S="$(resolve_tool MINIK8S "$REPO_ROOT/bin/minik8s" minik8s)"

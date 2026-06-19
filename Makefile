@@ -1,6 +1,7 @@
-MINIK8S ?= ./minik8s
-KUBECTL ?= ./kubectl
-CNI_PLUGIN ?= .minik8s/cni/bin/mooring
+BIN_DIR ?= ./bin
+MINIK8S ?= $(BIN_DIR)/minik8s
+KUBECTL ?= $(BIN_DIR)/kubectl
+CNI_PLUGIN ?= $(BIN_DIR)/mooring
 HARBOR ?= http://127.0.0.1:18080
 CTL ?= $(KUBECTL)
 RUN ?= $(MINIK8S)
@@ -21,6 +22,7 @@ DEMO_DIR ?= demo/serverless/harbor-incident-triage
 .PHONY: build prod prod-build prod-push prod-cni prod-demo prod-verify mooring-cni-image push-mooring-cni-image gpu-submitter-image push-gpu-submitter-image deploy-prod prod-deploy test bridge sailer-join sailer cni-init doctor-network apply-pod-acceptance apply-service-acceptance apply-rs-acceptance get-pods clean-pod-acceptance clean-service-acceptance clean-rs-acceptance clean-cases
 
 build:
+	mkdir -p $(BIN_DIR)
 	$(GO_BUILD) -o $(MINIK8S) ./cmd/minik8s
 	$(GO_BUILD) -o $(KUBECTL) ./cmd/kubectl
 	$(GO_BUILD) -o $(CNI_PLUGIN) ./cmd/mooring

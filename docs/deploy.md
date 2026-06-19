@@ -37,12 +37,12 @@ chown "$USER":"$USER" /opt/minik8s
 make prod
 ```
 
-`make prod` 和 `make prod-build` 都是 `make build` 的本地别名，产物位于仓库根目录：
+`make prod` 和 `make prod-build` 都是 `make build` 的本地别名，产物位于仓库 `bin/`：
 
 ```text
-./minik8s
-./kubectl
-.minik8s/cni/bin/mooring
+bin/minik8s
+bin/kubectl
+bin/mooring
 ```
 
 如果需要从当前机器同步到另一台机器，再确认下面命令可用：
@@ -77,7 +77,8 @@ make prod-cni
 
 默认本机发布：
 
-- 二进制目录：仓库根目录
+- 本地二进制目录：`bin/`
+- 本地二进制：`bin/minik8s`、`bin/kubectl`、`bin/mooring`
 - 远端目录：`/opt/minik8s`
 - CNI 镜像：`ghcr.io/popc0rn7/mooring-cni:v0.1.0`
 
@@ -93,13 +94,13 @@ make deploy-prod DEPLOY_ARGS="--sync-only" \
 
 `scripts/deploy-prod.sh` 只在显式给出 `DEPLOY_NODES` 后执行远端动作：
 
-- 用当前本机产物 `./minik8s`、`./kubectl` 同步到目标机器的 `/opt/minik8s/bin/`。
+- 用当前本机产物 `bin/minik8s`、`bin/kubectl`、`bin/mooring` 同步到目标机器的 `/opt/minik8s/bin/`。
 - 同步 `manifests/`、`scripts/acceptance/`、serverless triage demo，以及本地存在的
   `secrets/` 到目标机器。
 - 带 `--pull-image` 时，在目标机器上 `docker pull ghcr.io/popc0rn7/mooring-cni:v0.1.0`。
 
-默认部署脚本不会把 `.minik8s/cni/bin/mooring` 复制到目标机器；自研 CNI 插件由
-`mooring-cni` 镜像安装到 `/opt/cni/bin/mooring`。
+部署脚本会把 `bin/mooring` 一起同步到 `/opt/minik8s/bin/mooring`，作为交付产物保留；
+真实 CNI 数据面仍由 `mooring-cni` 镜像安装到 `/opt/cni/bin/mooring`。
 
 同步后可以用完整 SSH 命令验证目标目录和二进制：
 
@@ -120,9 +121,9 @@ make prod
 产物位于：
 
 ```text
-./minik8s
-./kubectl
-.minik8s/cni/bin/mooring
+bin/minik8s
+bin/kubectl
+bin/mooring
 ```
 
 构建并推送 mooring CNI 安装镜像：
@@ -159,7 +160,7 @@ make deploy-prod DEPLOY_ARGS="--pull-image" \
 
 ```bash
 cd /opt/minik8s
-./minik8s init --force
+./bin/minik8s init --force
 ```
 
 设置 worker 加入集群用的临时 bootstrap token。该 token 存在 node-a 本机
@@ -168,17 +169,17 @@ cd /opt/minik8s
 ```bash
 cd /opt/minik8s
 export BOOTSTRAP_TOKEN=$(openssl rand -hex 24)
-./minik8s bridge token set "$BOOTSTRAP_TOKEN" --ttl 24h
-./minik8s bridge token status
+./bin/minik8s bridge token set "$BOOTSTRAP_TOKEN" --ttl 24h
+./bin/minik8s bridge token status
 ```
 
 启动控制面。默认只启用核心 Pod `storage-etcd`；如需 DNS、metrics 或 serverless，
 显式传 `--addons`。`bridge` 启动后会根据 `--listen` 写入本机
-`.minik8s/config.json`；因此 node-a 上的 `./kubectl` 后续不需要额外传 Harbor 地址。
+`.minik8s/config.json`；因此 node-a 上的 `./bin/kubectl` 后续不需要额外传 Harbor 地址。
 
 ```bash
 cd /opt/minik8s
-./minik8s bridge \
+./bin/minik8s bridge \
   --listen :18080 \
   --cluster-cidr 10.244.0.0/16 \
   --node-cidr-mask-size 24
@@ -190,12 +191,12 @@ cd /opt/minik8s
 export NODE_A_IP=<node-a 内网 IP>
 export HARBOR=http://${NODE_A_IP}:18080
 cd /opt/minik8s
-./kubectl version
+./bin/kubectl version
 ```
 
 如果 `kubectl` 提示 Harbor 未配置，确认 `bridge` 已在当前目录生成
 `.minik8s/config.json`。临时排查时也可以用
-`MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl version` 覆盖本地配置。
+`MINIK8S_HARBOR=http://127.0.0.1:18080 ./bin/kubectl version` 覆盖本地配置。
 
 ## 7. 启用 mooring CNI
 
@@ -203,7 +204,7 @@ cd /opt/minik8s
 
 ```bash
 cd /opt/minik8s
-./kubectl apply -f manifests/cni/mooring.yaml
+./bin/kubectl apply -f manifests/cni/mooring.yaml
 ```
 
 预期输出包含：
@@ -222,7 +223,7 @@ daemonset/mooring-cni-ds created
 `sailer join` 会向控制面注册 Node、获取 node token 和 PodCIDR，并写入两份本地文件：
 
 - `.minik8s/state/sailer.json`：后续 `sailer run` 使用的 worker 身份和 node token。
-- `.minik8s/config.json`：本机 `./kubectl` 默认使用的 Harbor 地址。
+- `.minik8s/config.json`：本机 `./bin/kubectl` 默认使用的 Harbor 地址。
 
 `--node-name` 可选；不传时会生成 `node-xxxxx`。建议人工双机验收时显式传
 `--node-name node-a` / `--node-name node-b`，便于阅读调度结果。
@@ -238,11 +239,11 @@ daemonset/mooring-cni-ds created
 ```bash
 cd /opt/minik8s
 export BOOTSTRAP_TOKEN=<与 node-a bridge token set 相同的 token>
-./minik8s sailer join \
+./bin/minik8s sailer join \
   --apiserver http://127.0.0.1:18080 \
   --token "$BOOTSTRAP_TOKEN" \
   --node-name node-a
-./minik8s sailer run
+./bin/minik8s sailer run
 ```
 
 在 node-b 加入并启动 worker `sailer`。这里的 `--apiserver` 必须使用 node-b 能访问的
@@ -253,18 +254,18 @@ cd /opt/minik8s
 export NODE_A_IP=<node-a 内网 IP>
 export HARBOR=http://${NODE_A_IP}:18080
 export BOOTSTRAP_TOKEN=<与 node-a bridge token set 相同的 token>
-./minik8s sailer join \
+./bin/minik8s sailer join \
   --apiserver "$HARBOR" \
   --token "$BOOTSTRAP_TOKEN" \
   --node-name node-b
-./minik8s sailer run
+./bin/minik8s sailer run
 ```
 
 `sailer join` 成功后，如果只是在更新二进制或重启 worker，后续直接运行：
 
 ```bash
 cd /opt/minik8s
-./minik8s sailer run
+./bin/minik8s sailer run
 ```
 
 旧的 Node YAML 调试入口已从最终验收 manifests 中移除。远程部署主路径统一使用
@@ -281,7 +282,7 @@ bootstrap 信息。
 6. 启用内置 netagent，同步 VXLAN/FDB/route。
 
 更新二进制后，正在运行的 `bridge` 和 `sailer` 需要手动停止并重新启动，才能使用新版本。
-worker 已经 join 过后，重启 worker 只需要重新执行 `./minik8s sailer run`。
+worker 已经 join 过后，重启 worker 只需要重新执行 `./bin/minik8s sailer run`。
 
 ## 9. 验证部署
 
@@ -289,7 +290,7 @@ worker 已经 join 过后，重启 worker 只需要重新执行 `./minik8s saile
 
 ```bash
 cd /opt/minik8s
-./kubectl get nodes
+./bin/kubectl get nodes
 ```
 
 预期：
@@ -301,8 +302,8 @@ cd /opt/minik8s
 如果需要移除 worker，先停止该 worker 上的 `sailer run`，再在 node-a 删除 Node：
 
 ```bash
-./kubectl delete node node-b
-./kubectl get nodes
+./bin/kubectl delete node node-b
+./bin/kubectl get nodes
 ```
 
 Node 删除会级联删除已经调度到该 Node 的 Pod，并撤销旧 node token。恢复该 worker 时需要重新执行
@@ -329,5 +330,5 @@ bash scripts/acceptance/03_service.sh
 网络实验后需要清理本地 mooring 网络状态时，在每台 worker 上执行：
 
 ```bash
-./minik8s doctor clean
+./bin/minik8s doctor clean
 ```

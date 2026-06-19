@@ -143,9 +143,9 @@ manifests. To revive it, create a Function manifest for the built image first.
 Apply the Function if you have restored that manifest:
 
 ```bash
-./kubectl apply -f <sam-function.yaml>
-./kubectl get functions
-./kubectl describe function sam-segment
+./bin/kubectl apply -f <sam-function.yaml>
+./bin/kubectl get functions
+./bin/kubectl describe function sam-segment
 ```
 
 The Function uses:
@@ -236,7 +236,7 @@ python3 demo/serverless/sam/make_request.py \
 Invoke with base64 request JSON:
 
 ```bash
-./minik8s invoke function sam-segment --data "$(cat /tmp/01.json)"
+./bin/minik8s invoke function sam-segment --data "$(cat /tmp/01.json)"
 ```
 
 For the full ranking demo, save each SAM response under:
@@ -248,8 +248,8 @@ For the full ranking demo, save each SAM response under:
 Then run a one-shot collage Pod if you have restored that manifest:
 
 ```bash
-./kubectl delete pod most-dog-collage -n demo; true
-./kubectl apply -f <most-dog-collage-pod.yaml>
+./bin/kubectl delete pod most-dog-collage -n demo; true
+./bin/kubectl apply -f <most-dog-collage-pod.yaml>
 ```
 
 It writes:
@@ -266,14 +266,14 @@ Function Pod can access the public image URL.
 URL point prompt:
 
 ```bash
-./minik8s invoke function sam-segment \
+./bin/minik8s invoke function sam-segment \
   --data "$(tr -d '\n' < demo/serverless/sam/sample_request_point.json)"
 ```
 
 URL box prompt:
 
 ```bash
-./minik8s invoke function sam-segment \
+./bin/minik8s invoke function sam-segment \
   --data "$(tr -d '\n' < demo/serverless/sam/sample_request_box.json)"
 ```
 

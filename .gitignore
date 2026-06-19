@@ -9,6 +9,7 @@
 *.dylib
 /minik8s
 /kubectl
+/bin/
 /.minik8s/
 /dist/
 

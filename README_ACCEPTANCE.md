@@ -598,7 +598,7 @@ GitHub Actions 配置位于 `.github/workflows/`：
 测试分为三类：
 
 - 单元测试：每个GO源文件都会配备一个对应单元测试，常用命令为 `go test ./pkg/yaml ./internal/bridge/logbook ./internal/bridge/captain ./internal/bridge/harbor ./internal/sailer ./internal/kubeproxy ./test/integration -count=1`。
-- 构建验证：运行 `make build` 或 CI 中的 `go build ./...`、`go build -o dist/minik8s ./cmd/minik8s`、`go build -o dist/kubectl ./cmd/kubectl`。
+- 构建验证：运行 `make build` 生成 `bin/minik8s`、`bin/kubectl`、`bin/mooring`，或运行 CI 中的 `go build ./...`、`go build -o dist/minik8s ./cmd/minik8s`、`go build -o dist/kubectl ./cmd/kubectl`。
 - 端到端/真机验收：主要依赖人工/AI登陆到远程机器集群，以 `scripts/acceptance/00_env_check.sh` 到 `scripts/acceptance/07_fault_tolerance.sh` 覆盖基础功能，以 `scripts/acceptance/20_personal_gpu.sh` 覆盖 GPU 个人作业，以 Serverless demo 命令覆盖自选功能展示。
 
 ## AI Usage

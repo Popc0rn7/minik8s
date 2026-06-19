@@ -18,7 +18,7 @@
 make prod-deploy
 rm -rf .minik8s
 
-./minik8s init
+./bin/minik8s init
 find .minik8s -maxdepth 3 -type f | sort
 sed -n '1,120p' .minik8s/manifests/storage-etcd.yaml
 sed -n '1,160p' .minik8s/manifests/dns-gateway.yaml
@@ -49,15 +49,15 @@ addon；DNS、metrics、serverless addon 的启动和 readiness 分别由 `addon
 终端 A：
 
 ```fish
-./minik8s bridge --listen :18080 --addons none
+./bin/minik8s bridge --listen :18080 --addons none
 ```
 
 终端 B：
 
 ```fish
-./kubectl version
+./bin/kubectl version
 docker ps --filter label=minik8s.pod.namespace=minik8s-system
-./minik8s doctor logbook
+./bin/minik8s doctor logbook
 ```
 
 期望：
@@ -80,5 +80,5 @@ docker ps --filter label=minik8s.pod.namespace=minik8s-system
 
 ```fish
 rm -rf .minik8s
-./minik8s init --force
+./bin/minik8s init --force
 ```

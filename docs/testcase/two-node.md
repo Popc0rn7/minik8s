@@ -81,7 +81,7 @@ make prod-deploy
 node-a 终端 1：
 
 ```fish
-./minik8s bridge \
+./bin/minik8s bridge \
   --listen :18080 \
   --cluster-cidr $CLUSTER_CIDR \
   --node-cidr-mask-size 24
@@ -90,9 +90,9 @@ node-a 终端 1：
 node-a 测试终端：
 
 ```fish
-./kubectl version
-./kubectl apply -f manifests/cni/mooring.yaml
-./minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
+./bin/kubectl version
+./bin/kubectl apply -f manifests/cni/mooring.yaml
+./bin/minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
 curl --noproxy '*' -fsS $HARBOR/version
 ```
 
@@ -116,43 +116,43 @@ curl --noproxy '*' -fsS $HARBOR/version
 node-a worker 终端：
 
 ```fish
-./minik8s sailer join \
+./bin/minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
   --node-name node-a
 
-./minik8s sailer run
+./bin/minik8s sailer run
 ```
 
 node-b worker 终端：
 
 ```fish
-./minik8s sailer join \
+./bin/minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
   --node-name node-b
 
-./minik8s sailer run
+./bin/minik8s sailer run
 ```
 
 node-c worker 终端：
 
 ```fish
-./minik8s sailer join \
+./bin/minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
   --node-name node-c
 
-./minik8s sailer run
+./bin/minik8s sailer run
 ```
 
 node-a 测试终端：
 
 ```fish
-./kubectl get nodes
-./kubectl get node node-a -o yaml
-./kubectl get node node-b -o yaml
-./kubectl get node node-c -o yaml
+./bin/kubectl get nodes
+./bin/kubectl get node node-a -o yaml
+./bin/kubectl get node node-b -o yaml
+./bin/kubectl get node node-c -o yaml
 ```
 
 期望：
@@ -181,7 +181,7 @@ node-a：
 
 ```fish
 cat /etc/cni/net.d/10-mooring.conf
-./minik8s doctor network
+./bin/minik8s doctor network
 ip route | grep 10.244
 ip link show mk8s-vxlan
 bridge fdb show dev mk8s-vxlan
@@ -191,7 +191,7 @@ node-b：
 
 ```fish
 cat /etc/cni/net.d/10-mooring.conf
-./minik8s doctor network
+./bin/minik8s doctor network
 ip route | grep 10.244
 ip link show mk8s-vxlan
 bridge fdb show dev mk8s-vxlan
@@ -201,7 +201,7 @@ node-c：
 
 ```fish
 cat /etc/cni/net.d/10-mooring.conf
-./minik8s doctor network
+./bin/minik8s doctor network
 ip route | grep 10.244
 ip link show mk8s-vxlan
 bridge fdb show dev mk8s-vxlan
@@ -227,8 +227,8 @@ bridge fdb show dev mk8s-vxlan
 旧的 Node YAML 启动材料已从最终验收 manifests 中移除。人工验收统一使用：
 
 ```fish
-./minik8s sailer join --apiserver http://$NODE_A_IP:18080 --token $MINIK8S_TOKEN --node-name node-a
-./minik8s sailer run
+./bin/minik8s sailer join --apiserver http://$NODE_A_IP:18080 --token $MINIK8S_TOKEN --node-name node-a
+./bin/minik8s sailer run
 ```
 
 不要把旧 YAML 入口混入默认启动流程。
@@ -239,9 +239,9 @@ bridge fdb show dev mk8s-vxlan
 在 node-a、node-b 和 node-c 分别执行：
 
 ```fish
-./minik8s doctor network; or true
-./minik8s doctor clean; or true
-./minik8s doctor network; or true
+./bin/minik8s doctor network; or true
+./bin/minik8s doctor clean; or true
+./bin/minik8s doctor network; or true
 ```
 
 如需继续运行 testcase，重新执行 NODE-02，让 worker 重新写入 CNI 配置和心跳状态。

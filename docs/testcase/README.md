@@ -52,7 +52,7 @@ make prod-deploy
 node-a 终端 1 启动控制面：
 
 ```fish
-./minik8s bridge \
+./bin/minik8s bridge \
   --listen :18080 \
   --cluster-cidr $CLUSTER_CIDR \
   --node-cidr-mask-size 24
@@ -61,48 +61,48 @@ node-a 终端 1 启动控制面：
 node-a 测试终端启用 mooring CNI 并设置 bootstrap token：
 
 ```fish
-./kubectl apply -f manifests/cni/mooring.yaml
-./minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
+./bin/kubectl apply -f manifests/cni/mooring.yaml
+./bin/minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
 ```
 
 node-a worker 终端：
 
 ```fish
-./minik8s sailer join \
+./bin/minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
   --node-name node-a
 
-./minik8s sailer run
+./bin/minik8s sailer run
 ```
 
 node-b worker 终端：
 
 ```fish
-./minik8s sailer join \
+./bin/minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
   --node-name node-b
 
-./minik8s sailer run
+./bin/minik8s sailer run
 ```
 
 node-c worker 终端：
 
 ```fish
-./minik8s sailer join \
+./bin/minik8s sailer join \
   --apiserver http://$NODE_A_IP:18080 \
   --token $MINIK8S_TOKEN \
   --node-name node-c
 
-./minik8s sailer run
+./bin/minik8s sailer run
 ```
 
 node-a 测试终端检查默认环境：
 
 ```fish
-./kubectl version
-./kubectl get nodes
+./bin/kubectl version
+./bin/kubectl get nodes
 curl --noproxy '*' -fsS $HARBOR/nodes
 ip route | grep 10.244
 ip link show mk8s-vxlan
@@ -192,16 +192,16 @@ bridge fdb show dev mk8s-vxlan
 node-a 测试终端：
 
 ```fish
-./kubectl get nodes; or true
-./kubectl get pods; or true
-./kubectl get services; or true
-./kubectl get rs; or true
-./kubectl get hpa; or true
-./kubectl get dns; or true
-./kubectl get functions; or true
-./kubectl get eventtriggers; or true
-./kubectl get workflows; or true
-./kubectl get jobs; or true
+./bin/kubectl get nodes; or true
+./bin/kubectl get pods; or true
+./bin/kubectl get services; or true
+./bin/kubectl get rs; or true
+./bin/kubectl get hpa; or true
+./bin/kubectl get dns; or true
+./bin/kubectl get functions; or true
+./bin/kubectl get eventtriggers; or true
+./bin/kubectl get workflows; or true
+./bin/kubectl get jobs; or true
 ```
 
 清理常见 API 对象：
@@ -228,21 +228,21 @@ for item in \
   "pod busybox-node-b" \
   "pod busybox-client" \
   "pod volume-resource-pod -n demo"
-    ./kubectl delete (string split ' ' -- $item); or true
+    ./bin/kubectl delete (string split ' ' -- $item); or true
 end
 
 sleep 8
-./kubectl get nodes
-./kubectl get pods
+./bin/kubectl get nodes
+./bin/kubectl get pods
 ```
 
 如果要结束本轮测试或重置网络，在 node-a、node-b 和 node-c 先停止对应 `sailer run`，再分别检查
 并清理本机网络状态：
 
 ```fish
-./minik8s doctor network; or true
-./minik8s doctor clean; or true
-./minik8s doctor network; or true
+./bin/minik8s doctor network; or true
+./bin/minik8s doctor clean; or true
+./bin/minik8s doctor network; or true
 ```
 
 `doctor clean` 是本机操作。三台节点都跑一遍，才能同时清掉 mooring bridge、

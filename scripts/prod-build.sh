@@ -35,7 +35,7 @@ docker run --rm \
 	-e GOOS="${PROD_GOOS}" \
 	-e GOARCH="${PROD_GOARCH}" \
 	"${PROD_IMAGE}" \
-	sh -c 'mkdir -p "'"${PROD_DIR}"'" && \
-		go build -trimpath -tags "netgo osusergo" -ldflags="-s -w" -o "'"${PROD_DIR}"'/minik8s" ./cmd/minik8s && \
-		go build -trimpath -tags "netgo osusergo" -ldflags="-s -w" -o "'"${PROD_DIR}"'/kubectl" ./cmd/kubectl && \
-		go build -trimpath -tags "netgo osusergo" -ldflags="-s -w" -o "'"${PROD_DIR}"'/mooring" ./cmd/mooring'
+	sh -c 'mkdir -p "'"${PROD_DIR}"'/bin" && \
+		go build -trimpath -tags "netgo osusergo" -ldflags="-s -w" -o "'"${PROD_DIR}"'/bin/minik8s" ./cmd/minik8s && \
+		go build -trimpath -tags "netgo osusergo" -ldflags="-s -w" -o "'"${PROD_DIR}"'/bin/kubectl" ./cmd/kubectl && \
+		go build -trimpath -tags "netgo osusergo" -ldflags="-s -w" -o "'"${PROD_DIR}"'/bin/mooring" ./cmd/mooring'

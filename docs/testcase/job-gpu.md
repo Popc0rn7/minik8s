@@ -33,8 +33,8 @@ node-a 和 node-b 使用 `docs/testcase/README.md` 的默认启动流程。额�
 ```fish
 set -gx HARBOR http://$NODE_A_IP:18080
 set -gx MINIK8S_HARBOR $HARBOR
-./kubectl get nodes
-./kubectl get pods -n minik8s-system; or true
+./bin/kubectl get nodes
+./bin/kubectl get pods -n minik8s-system; or true
 ```
 
 期望：
@@ -91,11 +91,11 @@ ssh stu1718@sylogin.hpc.sjtu.edu.cn 'hostname && which sbatch && which squeue &&
 ## GPU-02：提交 CUDA vector add Job
 
 ```fish
-./kubectl apply -f manifests/job/cuda-add.yaml
-./kubectl get jobs
-./kubectl describe job cuda-add
-./kubectl get pods
-./kubectl get services
+./bin/kubectl apply -f manifests/job/cuda-add.yaml
+./bin/kubectl get jobs
+./bin/kubectl describe job cuda-add
+./bin/kubectl get pods
+./bin/kubectl get services
 ```
 
 期望：
@@ -124,8 +124,8 @@ Remote Host: sylogin.hpc.sjtu.edu.cn
 当 submitter 成功提交后：
 
 ```fish
-./kubectl get jobs
-./kubectl describe job cuda-add
+./bin/kubectl get jobs
+./bin/kubectl describe job cuda-add
 ```
 
 期望：
@@ -154,7 +154,7 @@ ssh stu1718@sylogin.hpc.sjtu.edu.cn 'squeue -j <SLURM_JOB_ID> || sacct -j <SLURM
 ## GPU-04：查看 CUDA 结果
 
 ```fish
-./kubectl logs job cuda-add
+./bin/kubectl logs job cuda-add
 ```
 
 期望输出包含：
@@ -187,10 +187,10 @@ Result: PASS
 ## GPU-05：隔离性
 
 ```fish
-./kubectl apply -f manifests/job/cuda-add-2.yaml
-./kubectl get jobs
-./kubectl describe job cuda-add
-./kubectl describe job cuda-add-2
+./bin/kubectl apply -f manifests/job/cuda-add-2.yaml
+./bin/kubectl get jobs
+./bin/kubectl describe job cuda-add
+./bin/kubectl describe job cuda-add-2
 ```
 
 期望：
@@ -208,10 +208,10 @@ Result: PASS
 tile、block 内同步，以及结果回收。
 
 ```fish
-./kubectl apply -f manifests/job/cuda-matmul.yaml
-./kubectl get jobs
-./kubectl describe job cuda-matmul-tiled
-./kubectl logs job cuda-matmul-tiled
+./bin/kubectl apply -f manifests/job/cuda-matmul.yaml
+./bin/kubectl get jobs
+./bin/kubectl describe job cuda-matmul-tiled
+./bin/kubectl logs job cuda-matmul-tiled
 ```
 
 期望：
@@ -258,12 +258,12 @@ Result: PASS
 ## GPU-07：删除和清理
 
 ```fish
-./kubectl delete job cuda-add
-./kubectl delete job cuda-add-2
-./kubectl delete job cuda-matmul-tiled
-./kubectl get jobs
-./kubectl get pods
-./kubectl get services
+./bin/kubectl delete job cuda-add
+./bin/kubectl delete job cuda-add-2
+./bin/kubectl delete job cuda-matmul-tiled
+./bin/kubectl get jobs
+./bin/kubectl get pods
+./bin/kubectl get services
 ```
 
 期望：

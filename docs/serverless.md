@@ -55,10 +55,10 @@ cd /opt/minik8s/demo/serverless/harbor-incident-triage
 ```bash
 ./scripts/apply-functions.sh
 ./scripts/apply-workflow.sh
-../../../kubectl get functions
-../../../kubectl get workflows
-../../../kubectl get eventtriggers
-../../../kubectl get replicasets
+../../../bin/kubectl get functions
+../../../bin/kubectl get workflows
+../../../bin/kubectl get eventtriggers
+../../../bin/kubectl get replicasets
 ```
 
 讲解重点：
@@ -76,8 +76,8 @@ cd /opt/minik8s/demo/serverless/harbor-incident-triage
 
 ```bash
 ./scripts/invoke-app.sh
-../../../kubectl describe workflow harbor-incident-triage
-../../../kubectl get workflowruns
+../../../bin/kubectl describe workflow harbor-incident-triage
+../../../bin/kubectl get workflowruns
 ```
 
 需要指出的证据：
@@ -92,7 +92,7 @@ cd /opt/minik8s/demo/serverless/harbor-incident-triage
 
 ```bash
 ./scripts/invoke-critical.sh
-../../../kubectl get workflowruns
+../../../bin/kubectl get workflowruns
 ```
 
 讲解重点：
@@ -106,8 +106,8 @@ cd /opt/minik8s/demo/serverless/harbor-incident-triage
 取最新一条 run 查看详情：
 
 ```bash
-RUN=$(../../../kubectl get workflowruns | awk 'NR==2 {print $2}')
-../../../kubectl describe workflowrun "$RUN"
+RUN=$(../../../bin/kubectl get workflowruns | awk 'NR==2 {print $2}')
+../../../bin/kubectl describe workflowrun "$RUN"
 ```
 
 如果表格排序不是最新优先，可以直接从 `get workflowruns` 里复制一个 run 名称。展示时关注：
@@ -129,10 +129,10 @@ Workflow status 是最近一次摘要；WorkflowRun 是每次 invoke 的执行�
 用 NATS request/reply 触发同一个 Workflow：
 
 ```bash
-../../../minik8s request minik8s.incident.created \
+../../../bin/minik8s request minik8s.incident.created \
   --data "$(cat inputs/low-risk-incident.json)" \
   --timeout 30s
-../../../kubectl get workflowruns
+../../../bin/kubectl get workflowruns
 ```
 
 讲解重点：
@@ -164,11 +164,11 @@ HTTP Workflow invoke / NATS Event
 如果现场时间足够，可以补一个冷启动/缩零证据：
 
 ```bash
-../../../kubectl get replicasets
+../../../bin/kubectl get replicasets
 ./scripts/invoke-network.sh
-../../../kubectl get replicasets
+../../../bin/kubectl get replicasets
 sleep 40
-../../../kubectl get replicasets
+../../../bin/kubectl get replicasets
 ```
 
 讲解口径：
@@ -194,7 +194,7 @@ sleep 40
 以如下命令为例：
 
 ```bash
-./minik8s invoke function echo --data hello
+./bin/minik8s invoke function echo --data hello
 ```
 
 调用路径如下：
@@ -374,7 +374,7 @@ Function，前一个 step 的输出作为后一个 step 的输入。执行完 st
 当前 Workflow 不是后台自动调度执行，而是通过：
 
 ```bash
-./minik8s invoke workflow text-branch --data "..."
+./bin/minik8s invoke workflow text-branch --data "..."
 ```
 
 同步执行一次 workflow。Harbor 使用 Kubernetes-like subresource：

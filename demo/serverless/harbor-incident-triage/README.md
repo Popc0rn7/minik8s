@@ -85,7 +85,8 @@ the remote runtime directory.
 ### 1. Copy the repository or demo files
 
 First deploy the normal Minik8s runtime from the development machine. This
-syncs `minik8s`, `kubectl`, and `manifests/` to `/opt/minik8s`:
+syncs `bin/minik8s`, `bin/kubectl`, `bin/mooring`, and `manifests/` to
+`/opt/minik8s`:
 
 ```bash
 make deploy-prod
@@ -104,23 +105,25 @@ make prod-demo
 The demo scripts expect these executables by default:
 
 ```text
-/opt/minik8s/kubectl
-/opt/minik8s/minik8s
+/opt/minik8s/bin/minik8s
+/opt/minik8s/bin/kubectl
 ```
 
 If those binaries are missing, run `make deploy-prod` on the development
 machine. For a manual fallback after `make prod`, copy the built binaries:
 
 ```bash
-scp dist/prod/minik8s dist/prod/kubectl node-1:/opt/minik8s/
-scp dist/prod/minik8s dist/prod/kubectl node-2:/opt/minik8s/
+ssh node-1 'mkdir -p /opt/minik8s/bin'
+ssh node-2 'mkdir -p /opt/minik8s/bin'
+scp bin/minik8s bin/kubectl bin/mooring node-1:/opt/minik8s/bin/
+scp bin/minik8s bin/kubectl bin/mooring node-2:/opt/minik8s/bin/
 ```
 
 If the binaries live somewhere else, override the script paths. In fish:
 
 ```fish
-set -gx CLI /opt/minik8s/kubectl
-set -gx MINIK8S /opt/minik8s/minik8s
+set -gx MINIK8S /opt/minik8s/bin/minik8s
+set -gx CLI /opt/minik8s/bin/kubectl
 ```
 
 ### 2. Set remote environment variables
@@ -147,8 +150,8 @@ On `node-1`, terminal 1:
 
 ```bash
 cd /opt/minik8s
-./minik8s init --force
-./minik8s bridge \
+./bin/minik8s init --force
+./bin/minik8s bridge \
   --listen :18080 \
   --cluster-cidr $CLUSTER_CIDR \
   --node-cidr-mask-size 24 \
@@ -159,39 +162,39 @@ On `node-1`, terminal 2:
 
 ```bash
 cd /opt/minik8s
-./kubectl apply -f manifests/cni/mooring.yaml
-./minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
-./minik8s doctor addon serverless
-./minik8s doctor serverless
+./bin/kubectl apply -f manifests/cni/mooring.yaml
+./bin/minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
+./bin/minik8s doctor addon serverless
+./bin/minik8s doctor serverless
 ```
 
 On `node-1`, worker terminal:
 
 ```bash
 cd /opt/minik8s
-./minik8s sailer join \
+./bin/minik8s sailer join \
   --apiserver http://$NODE_1_IP:18080 \
   --token $MINIK8S_TOKEN \
   --node-name node-a
-./minik8s sailer run
+./bin/minik8s sailer run
 ```
 
 On `node-2`, worker terminal:
 
 ```bash
 cd /opt/minik8s
-./minik8s sailer join \
+./bin/minik8s sailer join \
   --apiserver http://$NODE_1_IP:18080 \
   --token $MINIK8S_TOKEN \
   --node-name node-b
-./minik8s sailer run
+./bin/minik8s sailer run
 ```
 
 Back on `node-1`, verify:
 
 ```bash
-./kubectl get nodes
-./kubectl get pods
+./bin/kubectl get nodes
+./bin/kubectl get pods
 ```
 
 ### 4. Run this demo from node-1
@@ -220,7 +223,7 @@ one of them, not from the Workflow YAML.
   `curl --noproxy '*' -fsS http://$NODE_1_IP:18080/version` should work on
   `node-2`.
 - **Serverless addon is running**:
-  `./minik8s doctor addon serverless` and `./minik8s doctor serverless` should
+  `./bin/minik8s doctor addon serverless` and `./bin/minik8s doctor serverless` should
   pass on `node-1`.
 - **NATS URL is reachable by CLI**: set
   `MINIK8S_NATS_URL=nats://$NODE_1_IP:4222` before using `publish`.
@@ -248,10 +251,10 @@ one of them, not from the Workflow YAML.
 - **Keep processes alive**: bridge on `node-1`, `sailer run` on `node-1`, and
   `sailer run` on `node-2` must remain running throughout the demo.
 - **Wait for controllers**: after `apply-functions.sh`, wait a few seconds and
-  check `./kubectl get replicasets`; `fn-*` ReplicaSets should exist before
+  check `./bin/kubectl get replicasets`; `fn-*` ReplicaSets should exist before
   invoking the Workflow.
-- **Inspect WorkflowRun for trace**: use `./kubectl get workflowruns` and
-  `./kubectl describe workflowrun <name>` for per-invocation execution history.
+- **Inspect WorkflowRun for trace**: use `./bin/kubectl get workflowruns` and
+  `./bin/kubectl describe workflowrun <name>` for per-invocation execution history.
 
 ## Single-Node Quick Start
 
@@ -259,7 +262,7 @@ From the repository root, build and start the serverless addon:
 
 ```bash
 make build
-./minik8s bridge --listen :18080 --addons serverless
+./bin/minik8s bridge --listen :18080 --addons serverless
 ```
 
 In the demo terminal:
@@ -270,7 +273,7 @@ export MINIK8S_NATS_URL=nats://127.0.0.1:4222
 ```
 
 For multi-node demos, use the normal course testcase startup flow and keep the
-same `MINIK8S_HARBOR` value used by `./kubectl` and `./minik8s`.
+same `MINIK8S_HARBOR` value used by `./bin/kubectl` and `./bin/minik8s`.
 
 ## Function
 
@@ -279,8 +282,8 @@ Apply all Functions:
 ```bash
 cd demo/serverless/harbor-incident-triage
 ./scripts/apply-functions.sh
-../../../kubectl get functions
-../../../kubectl get replicasets
+../../../bin/kubectl get functions
+../../../bin/kubectl get replicasets
 ```
 
 Each Function uses the current Minik8s Function spec:
@@ -305,9 +308,9 @@ Apply the Workflow and EventTrigger:
 
 ```bash
 ./scripts/apply-workflow.sh
-../../../kubectl get workflows
-../../../kubectl describe workflow harbor-incident-triage
-../../../kubectl get eventtriggers
+../../../bin/kubectl get workflows
+../../../bin/kubectl describe workflow harbor-incident-triage
+../../../bin/kubectl get eventtriggers
 ```
 
 `workflow.yaml` uses the current Minik8s DSL:
@@ -356,7 +359,7 @@ Invoke the Workflow through Harbor HTTP invoke:
 Equivalent explicit command:
 
 ```bash
-../../../minik8s invoke workflow harbor-incident-triage \
+../../../bin/minik8s invoke workflow harbor-incident-triage \
   --data "$(cat inputs/network-incident.json)"
 ```
 
@@ -374,8 +377,8 @@ low-risk-incident.json  -> category=unknown, quick_reply, then compose_report
 Show the last Workflow output:
 
 ```bash
-../../../kubectl describe workflow harbor-incident-triage
-../../../kubectl get workflowruns
+../../../bin/kubectl describe workflow harbor-incident-triage
+../../../bin/kubectl get workflowruns
 ```
 
 ## Event Trigger
@@ -384,10 +387,10 @@ The EventTrigger binds NATS subject `minik8s.incident.created` directly to the
 Workflow:
 
 ```bash
-../../../minik8s request minik8s.incident.created \
+../../../bin/minik8s request minik8s.incident.created \
   --data "$(cat inputs/low-risk-incident.json)" \
   --timeout 30s
-../../../kubectl get workflowruns
+../../../bin/kubectl get workflowruns
 ```
 
 ## One-Shot Demo
@@ -408,11 +411,11 @@ The first invoke cold-starts the involved Functions. After `idleTimeoutSeconds`
 with no new requests, the Function controller scales them back to zero.
 
 ```bash
-../../../kubectl get replicasets
+../../../bin/kubectl get replicasets
 ./scripts/invoke-network.sh
-../../../kubectl get replicasets
+../../../bin/kubectl get replicasets
 sleep 40
-../../../kubectl get replicasets
+../../../bin/kubectl get replicasets
 ```
 
 Run a simple concurrent stress loop:
@@ -425,8 +428,8 @@ During the stress loop, watch for at least one hot Function ReplicaSet scaling
 above one replica:
 
 ```bash
-../../../kubectl get replicasets
-../../../kubectl get pods
+../../../bin/kubectl get replicasets
+../../../bin/kubectl get pods
 ```
 
 ## Local Handler Test
@@ -445,14 +448,14 @@ The output is JSON and contains `workflow`, `requestId`, `category`, `severity`,
 ## Cleanup
 
 ```bash
-../../../kubectl delete eventtrigger harbor-incident-created; true
-../../../kubectl delete workflow harbor-incident-triage; true
-../../../kubectl delete function normalize-input; true
-../../../kubectl delete function tiny-log-classifier; true
-../../../kubectl delete function network-diagnose; true
-../../../kubectl delete function runtime-diagnose; true
-../../../kubectl delete function build-diagnose; true
-../../../kubectl delete function app-diagnose; true
-../../../kubectl delete function quick-reply; true
-../../../kubectl delete function notify-captain; true
+../../../bin/kubectl delete eventtrigger harbor-incident-created; true
+../../../bin/kubectl delete workflow harbor-incident-triage; true
+../../../bin/kubectl delete function normalize-input; true
+../../../bin/kubectl delete function tiny-log-classifier; true
+../../../bin/kubectl delete function network-diagnose; true
+../../../bin/kubectl delete function runtime-diagnose; true
+../../../bin/kubectl delete function build-diagnose; true
+../../../bin/kubectl delete function app-diagnose; true
+../../../bin/kubectl delete function quick-reply; true
+../../../bin/kubectl delete function notify-captain; true
 ```

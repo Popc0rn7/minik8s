@@ -10,14 +10,14 @@ http://127.0.0.1:18080
 CLI resource commands read Harbor from that file by default:
 
 ```bash
-./kubectl get pods
+./bin/kubectl get pods
 ```
 
 `MINIK8S_HARBOR` remains available as an environment override for one shell or
 one invocation:
 
 ```bash
-MINIK8S_HARBOR=http://127.0.0.1:18080 ./kubectl get pods
+MINIK8S_HARBOR=http://127.0.0.1:18080 ./bin/kubectl get pods
 ```
 
 ## Discovery
