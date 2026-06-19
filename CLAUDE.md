@@ -46,7 +46,7 @@ internal/service/         # Service 类型和 ClusterIP 工具
 internal/replicaset/      # ReplicaSet 类型
 internal/node/            # Node 类型
 pkg/yaml/                 # YAML loader、default、validate
-manifest/                 # 演示 YAML
+manifests/                 # 演示 YAML
 test/                     # integration tests、mocks、testdata
 docs/testcase/            # 人工验收步骤
 ```

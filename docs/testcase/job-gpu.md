@@ -91,7 +91,7 @@ ssh stu1718@sylogin.hpc.sjtu.edu.cn 'hostname && which sbatch && which squeue &&
 ## GPU-02：提交 CUDA vector add Job
 
 ```fish
-./kubectl apply -f manifest/job/cuda-add.yaml
+./kubectl apply -f manifests/job/cuda-add.yaml
 ./kubectl get jobs
 ./kubectl describe job cuda-add
 ./kubectl get pods
@@ -187,7 +187,7 @@ Result: PASS
 ## GPU-05：隔离性
 
 ```fish
-./kubectl apply -f manifest/job/cuda-add-2.yaml
+./kubectl apply -f manifests/job/cuda-add-2.yaml
 ./kubectl get jobs
 ./kubectl describe job cuda-add
 ./kubectl describe job cuda-add-2
@@ -208,7 +208,7 @@ Result: PASS
 tile、block 内同步，以及结果回收。
 
 ```fish
-./kubectl apply -f manifest/job/cuda-matmul.yaml
+./kubectl apply -f manifests/job/cuda-matmul.yaml
 ./kubectl get jobs
 ./kubectl describe job cuda-matmul-tiled
 ./kubectl logs job cuda-matmul-tiled

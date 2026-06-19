@@ -61,7 +61,7 @@ node-a 终端 1 启动控制面：
 node-a 测试终端启用 mooring CNI 并设置 bootstrap token：
 
 ```fish
-./kubectl apply -f manifest/cni/mooring.yaml
+./kubectl apply -f manifests/cni/mooring.yaml
 ./minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
 ```
 

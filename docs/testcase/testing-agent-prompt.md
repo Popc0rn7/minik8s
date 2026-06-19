@@ -16,7 +16,7 @@
 1. 读取：
    - `docs/testcase/README.md`
    - 当前要跑的 `docs/testcase/<feature>.md`
-   - 相关 `manifest/` YAML
+   - 相关 `manifests/` YAML
 2. 检查工作区：
    - `git status --short`
    - 标出已有未提交改动，后续不要覆盖。

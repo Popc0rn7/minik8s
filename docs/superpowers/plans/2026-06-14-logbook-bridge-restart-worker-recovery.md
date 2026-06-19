@@ -363,10 +363,10 @@ export HARBOR=http://192.168.1.8:18080
 export MINIK8S_HARBOR=$HARBOR
 export MINIK8S_LOGBOOK_ENDPOINTS=http://127.0.0.1:2379
 export ETCDCTL_API=3
-./kubectl apply -f manifest/pod/pod_nginx_node_a.yaml
-./kubectl apply -f manifest/pod/pod_nginx_node_b.yaml
-./kubectl apply -f manifest/service/service_clusterip_nginx.yaml
-./kubectl apply -f manifest/replicaset/replicaset_nginx.yaml
+./kubectl apply -f manifests/service/pod_03_nginx_node_a.yaml
+./kubectl apply -f manifests/service/pod_03_nginx_node_b.yaml
+./kubectl apply -f manifests/service/service_03_clusterip.yaml
+./kubectl apply -f manifests/replicaset/replicaset_04_acceptance.yaml
 sleep 12
 ./kubectl get nodes
 ./kubectl get pods

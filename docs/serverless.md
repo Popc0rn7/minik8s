@@ -314,8 +314,8 @@ port: 8080
 当前仓库提供一个 SAM CPU 图像分割容器 demo：
 
 - 镜像源码：`demo/serverless/sam/`
-- Function manifest：`manifest/function/function_sam_segment.yaml`
-- 人工验收：`docs/testcase/serverless-sam.md`
+- 该 demo 已不属于最终验收 manifests；最终 Serverless 展示使用
+  `manifests/serverless/harbor-incident-triage/`。
 
 ## EventTrigger 的路径
 

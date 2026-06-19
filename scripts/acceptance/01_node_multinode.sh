@@ -135,7 +135,7 @@ cni_manifest_path() {
     printf '%s\n' "$REMOTE_DIR/manifests/cni/mooring.yaml"
     return 0
   fi
-  printf '%s\n' "$ROOT/manifest/cni/mooring.yaml"
+  printf '%s\n' "$ROOT/manifests/cni/mooring.yaml"
 }
 
 CNI_MANIFEST="$(cni_manifest_path)"

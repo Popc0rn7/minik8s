@@ -94,7 +94,8 @@ make deploy-prod DEPLOY_ARGS="--sync-only" \
 `scripts/deploy-prod.sh` 只在显式给出 `DEPLOY_NODES` 后执行远端动作：
 
 - 用当前本机产物 `./minik8s`、`./kubectl` 同步到目标机器的 `/opt/minik8s/bin/`。
-- 同步 `manifest/`、`scripts/acceptance/` 和 serverless triage demo 到目标机器。
+- 同步 `manifests/`、`scripts/acceptance/`、serverless triage demo，以及本地存在的
+  `secrets/` 到目标机器。
 - 带 `--pull-image` 时，在目标机器上 `docker pull ghcr.io/popc0rn7/mooring-cni:v0.1.0`。
 
 默认部署脚本不会把 `.minik8s/cni/bin/mooring` 复制到目标机器；自研 CNI 插件由
@@ -202,7 +203,7 @@ cd /opt/minik8s
 
 ```bash
 cd /opt/minik8s
-./kubectl apply -f manifest/cni/mooring.yaml
+./kubectl apply -f manifests/cni/mooring.yaml
 ```
 
 预期输出包含：
@@ -266,9 +267,9 @@ cd /opt/minik8s
 ./minik8s sailer run
 ```
 
-兼容旧调试路径仍可直接运行
-`./minik8s sailer manifest/node/node_b.yaml --harbor "$HARBOR"`，但远程部署主路径建议使用
-`join`/`run`，避免每次手工传 Harbor 地址和 bootstrap 信息。
+旧的 Node YAML 调试入口已从最终验收 manifests 中移除。远程部署主路径统一使用
+`sailer join --node-name <node>` 和 `sailer run`，避免每次手工维护 Harbor 地址和
+bootstrap 信息。
 
 `sailer run` 启动时会：
 
@@ -317,14 +318,12 @@ ip link show mk8s-vxlan
 bridge fdb show dev mk8s-vxlan
 ```
 
-部署 Pod 并查看调度结果：
+运行最终验收脚本查看 Pod 调度和网络结果：
 
 ```bash
 cd /opt/minik8s
-./kubectl apply -f manifest/pod/pod_nginx_node_a.yaml
-./kubectl apply -f manifest/pod/pod_nginx_node_b.yaml
-sleep 8
-./kubectl get pods
+bash scripts/acceptance/02_pod_lifecycle.sh
+bash scripts/acceptance/03_service.sh
 ```
 
 网络实验后需要清理本地 mooring 网络状态时，在每台 worker 上执行：

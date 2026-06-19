@@ -151,8 +151,8 @@ After invoking `sam-segment`, save each response as:
 /tmp/most-dog/results/<case-id>.json
 ```
 
-Then run the one-shot Pod from `manifest/pod/pod_most_dog_collage.yaml`. It
-reads `/tmp/most-dog/dataset.json`, `/tmp/most-dog/images/` and
+Then run a restored one-shot collage Pod. It reads
+`/tmp/most-dog/dataset.json`, `/tmp/most-dog/images/` and
 `/tmp/most-dog/results/`, then writes:
 
 ```text

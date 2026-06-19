@@ -10,7 +10,7 @@ Usage:
 
 Run on node-a after 01_node_multinode.sh has started bridge and all sailers.
 This script uses fixed manifests under manifests/pod/ in the deployed tree
-or manifest/pod/ in the source tree. It does not create temporary manifests.
+or manifests/pod/ in the source tree. It does not create temporary manifests.
 
 Sections:
   02.1 Pod create, start, delete, parameters, and restartCount
@@ -58,7 +58,7 @@ manifest_dir() {
     printf '%s\n' "$REMOTE_DIR/manifests/pod"
     return 0
   fi
-  printf '%s\n' "$ROOT/manifest/pod"
+  printf '%s\n' "$ROOT/manifests/pod"
 }
 
 MANIFEST_DIR="$(manifest_dir)"

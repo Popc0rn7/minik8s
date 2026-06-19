@@ -12,7 +12,7 @@ manifest_file() {
   local candidate
   for candidate in \
     "$REPO_ROOT/manifests/serverless/harbor-incident-triage/functions/$PATTERN.yaml" \
-    "$REPO_ROOT/manifest/serverless/harbor-incident-triage/functions/$PATTERN.yaml"; do
+    "$REPO_ROOT/manifests/serverless/harbor-incident-triage/functions/$PATTERN.yaml"; do
     if [[ -f "$candidate" ]]; then
       printf '%s\n' "$candidate"
       return 0

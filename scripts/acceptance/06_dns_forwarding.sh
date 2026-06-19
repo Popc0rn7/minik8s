@@ -62,7 +62,7 @@ manifest_dir() {
     printf '%s\n' "$REMOTE_DIR/manifests/dns"
     return 0
   fi
-  printf '%s\n' "$ROOT/manifest/dns"
+  printf '%s\n' "$ROOT/manifests/dns"
 }
 
 MANIFEST_DIR="$(manifest_dir)"

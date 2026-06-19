@@ -22,7 +22,7 @@ ClusterIP 和标准 53 端口；Service 再转发到 node-a 上 DNS addon 的 ho
 
 ## 固定资源
 
-脚本只使用固定 DNS YAML；仓库内路径是 `manifest/dns/`，部署到 `/opt/minik8s` 后为
+脚本只使用固定 DNS YAML；仓库内路径是 `manifests/dns/`，部署到 `/opt/minik8s` 后为
 `manifests/dns/`：
 
 - `replicaset_06_alpha.yaml`：创建 `rs-06-alpha`，后端 HTTP 返回 `route=alpha`。

@@ -56,7 +56,10 @@ func (c *ReplicaSetController) DeleteReplicaSet(ctx context.Context, name, names
 	if err != nil {
 		return err
 	}
-	owned, err := c.ownedPods(rs)
+	if err := c.replicaSetStore.Delete(name, namespace); err != nil {
+		return err
+	}
+	owned, err := c.ownedPodsByOwnerLabel(rs.Namespace, rs.Name)
 	if err != nil {
 		return err
 	}
@@ -64,9 +67,6 @@ func (c *ReplicaSetController) DeleteReplicaSet(ctx context.Context, name, names
 		if err := c.podStore.Delete(p.Name, p.Namespace); err != nil && err != store.ErrPodNotFound {
 			return fmt.Errorf("deleting owned pod %s/%s: %w", p.Namespace, p.Name, err)
 		}
-	}
-	if err := c.replicaSetStore.Delete(name, namespace); err != nil {
-		return err
 	}
 	_ = ctx
 	minilog.Info("replicaset-delete", "replicaset=%s/%s pods=%d", podNamespace(namespace), name, len(owned))
@@ -85,6 +85,12 @@ func (c *ReplicaSetController) reconcileReplicaSet(ctx context.Context, rs *repl
 	desired := rs.Spec.Replicas
 
 	if current < desired {
+		if _, err := c.replicaSetStore.Get(rs.Name, rs.Namespace); err != nil {
+			if err == store.ErrReplicaSetNotFound {
+				return nil
+			}
+			return fmt.Errorf("refreshing replicaset %s/%s before pod create: %w", rs.Namespace, rs.Name, err)
+		}
 		allPods, err := c.podStore.List(rs.Namespace, nil)
 		if err != nil {
 			return fmt.Errorf("listing pods for replicaset %s/%s: %w", rs.Namespace, rs.Name, err)
@@ -116,6 +122,9 @@ func (c *ReplicaSetController) reconcileReplicaSet(ctx context.Context, rs *repl
 	}
 	rs.Status.Replicas = int32(len(activeReplicaPods(refreshed)))
 	if err := c.replicaSetStore.Update(rs); err != nil {
+		if err == store.ErrReplicaSetNotFound {
+			return nil
+		}
 		return fmt.Errorf("updating replicaset status: %w", err)
 	}
 	_ = ctx
@@ -123,12 +132,12 @@ func (c *ReplicaSetController) reconcileReplicaSet(ctx context.Context, rs *repl
 	return nil
 }
 
-func (c *ReplicaSetController) ownedPods(rs *replicaset.ReplicaSet) ([]*pod.Pod, error) {
-	selected, err := c.podStore.List(rs.Namespace, &rs.Spec.Selector)
+func (c *ReplicaSetController) ownedPodsByOwnerLabel(namespace, owner string) ([]*pod.Pod, error) {
+	pods, err := c.podStore.List(namespace, nil)
 	if err != nil {
-		return nil, fmt.Errorf("listing selected pods for replicaset %s/%s: %w", rs.Namespace, rs.Name, err)
+		return nil, fmt.Errorf("listing pods for replicaset %s/%s delete: %w", namespace, owner, err)
 	}
-	owned := filterOwnedPods(selected, rs.Name)
+	owned := filterOwnedPods(pods, owner)
 	sortPodsByName(owned)
 	return owned, nil
 }

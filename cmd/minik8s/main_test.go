@@ -158,7 +158,7 @@ func TestPrepareBridgeDependenciesSkipsBridgeTokenCommands(t *testing.T) {
 func TestNeedsDockerRuntimeSkipsSailerJoin(t *testing.T) {
 	assert.False(t, needsDockerRuntime([]string{"sailer", "join", "--apiserver", "http://127.0.0.1:18080"}))
 	assert.True(t, needsDockerRuntime([]string{"sailer", "run"}))
-	assert.True(t, needsDockerRuntime([]string{"sailer", "manifest/node/node_a.yaml"}))
+	assert.True(t, needsDockerRuntime([]string{"sailer", "node.yaml"}))
 }
 
 func TestPrepareBridgeDependenciesPreservesExplicitEnv(t *testing.T) {

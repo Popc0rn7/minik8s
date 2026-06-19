@@ -10,7 +10,7 @@ Usage:
 
 Run on node-a after 01_node_multinode.sh has started bridge, all sailers,
 mooring CNI, and kube-proxy. This script uses fixed manifests under
-manifests/fault/ in the deployed tree or manifest/fault/ in the source tree.
+manifests/fault/ in the deployed tree or manifests/fault/ in the source tree.
 It restarts bridge and stops the local minik8s-sailer.service for fault
 injection, then tries to restart both services during cleanup.
 
@@ -66,7 +66,7 @@ manifest_dir() {
     printf '%s\n' "$REMOTE_DIR/manifests/fault"
     return 0
   fi
-  printf '%s\n' "$ROOT/manifest/fault"
+  printf '%s\n' "$ROOT/manifests/fault"
 }
 
 MANIFEST_DIR="$(manifest_dir)"

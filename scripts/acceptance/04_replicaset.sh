@@ -10,7 +10,7 @@ Usage:
 
 Run on node-a after 01_node_multinode.sh has started bridge, all sailers,
 mooring CNI, and kube-proxy. This script uses fixed manifests under
-manifests/replicaset/ in the deployed tree or manifest/replicaset/ in the
+manifests/replicaset/ in the deployed tree or manifests/replicaset/ in the
 source tree.
 
 Sections:
@@ -60,7 +60,7 @@ manifest_dir() {
     printf '%s\n' "$REMOTE_DIR/manifests/replicaset"
     return 0
   fi
-  printf '%s\n' "$ROOT/manifest/replicaset"
+  printf '%s\n' "$ROOT/manifests/replicaset"
 }
 
 MANIFEST_DIR="$(manifest_dir)"

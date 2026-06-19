@@ -85,7 +85,7 @@ the remote runtime directory.
 ### 1. Copy the repository or demo files
 
 First deploy the normal Minik8s runtime from the development machine. This
-syncs `minik8s`, `kubectl`, and `manifest/` to `/opt/minik8s`:
+syncs `minik8s`, `kubectl`, and `manifests/` to `/opt/minik8s`:
 
 ```bash
 make deploy-prod
@@ -159,7 +159,7 @@ On `node-1`, terminal 2:
 
 ```bash
 cd /opt/minik8s
-./kubectl apply -f manifest/cni/mooring.yaml
+./kubectl apply -f manifests/cni/mooring.yaml
 ./minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
 ./minik8s doctor addon serverless
 ./minik8s doctor serverless
@@ -172,7 +172,7 @@ cd /opt/minik8s
 ./minik8s sailer join \
   --apiserver http://$NODE_1_IP:18080 \
   --token $MINIK8S_TOKEN \
-  -f manifest/node/node_a.yaml
+  --node-name node-a
 ./minik8s sailer run
 ```
 
@@ -183,7 +183,7 @@ cd /opt/minik8s
 ./minik8s sailer join \
   --apiserver http://$NODE_1_IP:18080 \
   --token $MINIK8S_TOKEN \
-  -f manifest/node/node_b.yaml
+  --node-name node-b
 ./minik8s sailer run
 ```
 
@@ -214,9 +214,8 @@ alive so Function Pods scheduled there can start and report status.
 Before presenting, manually confirm these points. Most demo failures come from
 one of them, not from the Workflow YAML.
 
-- **Node IPs are correct**: `manifest/node/node_a.yaml` and
-  `manifest/node/node_b.yaml` must contain the real InternalIP values for
-  `node-1` and `node-2`.
+- **Node names are correct**: `sailer join --node-name` should use stable names
+  matching the acceptance environment, for example `node-a` and `node-b`.
 - **Harbor is reachable from node-2**:
   `curl --noproxy '*' -fsS http://$NODE_1_IP:18080/version` should work on
   `node-2`.

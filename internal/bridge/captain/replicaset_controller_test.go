@@ -178,6 +178,54 @@ func TestReplicaSetControllerDeleteCascadesOwnedPods(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrPodNotFound)
 }
 
+func TestReplicaSetControllerSyncSkipsCreateWhenReplicaSetDeletedAfterList(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	baseRSStore := store.NewInMemoryReplicaSetStore()
+	require.NoError(t, baseRSStore.Create(testControllerReplicaSet("nginx-rs", 1)))
+	rsStore := &deleteAfterListReplicaSetStore{ReplicaSetStore: baseRSStore}
+
+	ctrl := NewReplicaSetController(podStore, rsStore)
+	require.NoError(t, ctrl.Sync(context.Background()))
+
+	pods, err := podStore.List("default", nil)
+	require.NoError(t, err)
+	assert.Empty(t, pods)
+}
+
+func TestReplicaSetControllerDeleteRemovesOwnerPodsOutsideCurrentSelector(t *testing.T) {
+	podStore := store.NewInMemoryPodStore()
+	rsStore := store.NewInMemoryReplicaSetStore()
+	require.NoError(t, rsStore.Create(testControllerReplicaSet("nginx-rs", 1)))
+	old := ownedControllerPod("nginx-rs-old", "nginx-rs")
+	old.Labels["app"] = "old-nginx"
+	require.NoError(t, podStore.Create(old))
+
+	ctrl := NewReplicaSetController(podStore, rsStore)
+	require.NoError(t, ctrl.DeleteReplicaSet(context.Background(), "nginx-rs", "default"))
+
+	_, err := podStore.Get("nginx-rs-old", "default")
+	require.ErrorIs(t, err, store.ErrPodNotFound)
+}
+
+type deleteAfterListReplicaSetStore struct {
+	store.ReplicaSetStore
+	deleted bool
+}
+
+func (s *deleteAfterListReplicaSetStore) List(namespace string, selector *pod.LabelSelector) ([]*replicaset.ReplicaSet, error) {
+	items, err := s.ReplicaSetStore.List(namespace, selector)
+	if err != nil {
+		return nil, err
+	}
+	if !s.deleted {
+		s.deleted = true
+		if err := s.Delete("nginx-rs", "default"); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
 func testControllerReplicaSet(name string, replicas int32) *replicaset.ReplicaSet {
 	return &replicaset.ReplicaSet{
 		TypeMeta:   pod.TypeMeta{Kind: "ReplicaSet", APIVersion: "v1"},

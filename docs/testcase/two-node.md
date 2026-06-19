@@ -91,7 +91,7 @@ node-a 测试终端：
 
 ```fish
 ./kubectl version
-./kubectl apply -f manifest/cni/mooring.yaml
+./kubectl apply -f manifests/cni/mooring.yaml
 ./minik8s bridge token set $MINIK8S_TOKEN --ttl 24h
 curl --noproxy '*' -fsS $HARBOR/version
 ```
@@ -222,17 +222,16 @@ bridge fdb show dev mk8s-vxlan
 - PodCIDR 为空：确认 `bridge` 启动时包含 `--cluster-cidr` 和
   `--node-cidr-mask-size 24`，然后重新 `sailer join`。
 
-## NODE-04：旧入口兼容性
+## NODE-04：启动入口
 
-旧命令 `./minik8s sailer manifest/node/node_a.yaml --harbor ...` 仍可能在代码里保留为
-兼容路径，但默认 testcase 不使用它。人工验收统一使用：
+旧的 Node YAML 启动材料已从最终验收 manifests 中移除。人工验收统一使用：
 
 ```fish
 ./minik8s sailer join --apiserver http://$NODE_A_IP:18080 --token $MINIK8S_TOKEN --node-name node-a
 ./minik8s sailer run
 ```
 
-只有在验证历史兼容性或排查旧文档时，才记录旧入口输出；不要把旧入口混入默认启动流程。
+不要把旧 YAML 入口混入默认启动流程。
 
 ## 恢复
 

@@ -45,8 +45,9 @@ source "$ROOT/scripts/acceptance/lib/common.sh"
 
 REMOTE_DIR="${MINIK8S_REMOTE_DIR:-/opt/minik8s}"
 KUBECTL_BIN="${KUBECTL_BIN:-$REMOTE_DIR/bin/kubectl}"
-WAIT_ATTEMPTS="${MINIK8S_ACCEPTANCE_GPU_WAIT_ATTEMPTS:-72}"
+WAIT_ATTEMPTS="${MINIK8S_ACCEPTANCE_GPU_WAIT_ATTEMPTS:-12}"
 WAIT_SLEEP_SECONDS="${MINIK8S_ACCEPTANCE_GPU_WAIT_SLEEP_SECONDS:-10}"
+CLEANUP_JOBS_ON_EXIT="${MINIK8S_ACCEPTANCE_GPU_CLEANUP_JOBS_ON_EXIT:-1}"
 GPU_IMAGE="${MINIK8S_GPU_SUBMITTER_IMAGE:-ghcr.io/popc0rn7/gpu-submitter:v0.1.0}"
 GPU_SSH_DIR="${MINIK8S_GPU_SSH_DIR:-$REMOTE_DIR/secrets/gpu-ssh}"
 GPU_REMOTE_HOST="${MINIK8S_GPU_REMOTE_HOST:-sylogin.hpc.sjtu.edu.cn}"
@@ -55,6 +56,8 @@ GPU_SUBMITTER_NODE="${MINIK8S_GPU_SUBMITTER_NODE:-${MINIK8S_NODE_A_NAME:-node-a}
 GPU_SSH_KEY=""
 GPU_SSH_CERT=""
 GPU_MANIFEST_WORKDIR=""
+JOB_ADD_APPLIED=0
+CLEANUP_ARMED=0
 
 JOB_ADD="cuda-add"
 JOB_ADD_2="cuda-add-2"
@@ -76,7 +79,7 @@ manifest_dir() {
     printf '%s\n' "$REMOTE_DIR/manifests/job"
     return 0
   fi
-  printf '%s\n' "$ROOT/manifest/job"
+  printf '%s\n' "$ROOT/manifests/job"
 }
 
 MANIFEST_DIR="$(manifest_dir)"
@@ -87,6 +90,9 @@ MATMUL_MANIFEST="$MANIFEST_DIR/cuda-matmul.yaml"
 cleanup_runtime() {
   if [ -n "$GPU_MANIFEST_WORKDIR" ] && [ -d "$GPU_MANIFEST_WORKDIR" ]; then
     rm -rf "$GPU_MANIFEST_WORKDIR"
+  fi
+  if [ "${CLEANUP_ARMED:-0}" -eq 1 ] && [ "${CLEANUP_JOBS_ON_EXIT:-1}" -eq 1 ]; then
+    cleanup_jobs >/dev/null 2>&1 || true
   fi
 }
 trap cleanup_runtime EXIT
@@ -318,6 +324,10 @@ prepare_job_manifests() {
   force_job_node_selector "$ADD_MANIFEST" "$GPU_MANIFEST_WORKDIR/cuda-add.yaml"
   force_job_node_selector "$ADD_2_MANIFEST" "$GPU_MANIFEST_WORKDIR/cuda-add-2.yaml"
   force_job_node_selector "$MATMUL_MANIFEST" "$GPU_MANIFEST_WORKDIR/cuda-matmul.yaml"
+  cp "$MANIFEST_DIR/vector_add.cu" "$GPU_MANIFEST_WORKDIR/vector_add.cu"
+  cp "$MANIFEST_DIR/matmul_tiled.cu" "$GPU_MANIFEST_WORKDIR/matmul_tiled.cu"
+  cp "$MANIFEST_DIR/Makefile" "$GPU_MANIFEST_WORKDIR/Makefile"
+  cp "$MANIFEST_DIR/Makefile.matmul" "$GPU_MANIFEST_WORKDIR/Makefile.matmul"
   ADD_MANIFEST="$GPU_MANIFEST_WORKDIR/cuda-add.yaml"
   ADD_2_MANIFEST="$GPU_MANIFEST_WORKDIR/cuda-add-2.yaml"
   MATMUL_MANIFEST="$GPU_MANIFEST_WORKDIR/cuda-matmul.yaml"
@@ -340,6 +350,10 @@ cuda_source_summary() {
 
 wait_for_submitter_resources() {
   local job_name="$1" submitter="$2" attempt=1
+  if ! "$KUBECTL_BIN" get job "$job_name" >/dev/null 2>&1; then
+    section_fail "$job_name does not exist; submitter wait skipped"
+    return 1
+  fi
   while [ "$attempt" -le "$WAIT_ATTEMPTS" ]; do
     if "$KUBECTL_BIN" get pod "$submitter" >/dev/null 2>&1 &&
       "$KUBECTL_BIN" get svc "$submitter" >/dev/null 2>&1; then
@@ -355,6 +369,10 @@ wait_for_submitter_resources() {
 
 wait_for_terminal_or_slurm_evidence() {
   local job_name="$1" attempt=1
+  if ! "$KUBECTL_BIN" get job "$job_name" >/dev/null 2>&1; then
+    section_fail "$job_name does not exist; Slurm status wait skipped"
+    return 1
+  fi
   while [ "$attempt" -le "$WAIT_ATTEMPTS" ]; do
     local phase
     phase="$(job_phase "$job_name" 2>/dev/null || true)"
@@ -376,7 +394,7 @@ wait_for_terminal_or_slurm_evidence() {
   printf '[OUTPUT]\n'
   job_summary "$job_name"
   if [ -n "$(job_slurm_id "$job_name" 2>/dev/null || true)" ]; then
-    pass "$job_name did not finish before timeout; Slurm pending/running evidence printed"
+    pass "$job_name did not finish before ${WAIT_ATTEMPTS}x${WAIT_SLEEP_SECONDS}s wait budget; Slurm pending/running evidence printed"
     return 0
   fi
   section_fail "$job_name did not reach Slurm submission before timeout"
@@ -415,6 +433,19 @@ cleanup_jobs() {
   for job_name in "${ALL_JOBS[@]}"; do
     delete_job_if_exists "$job_name"
   done
+}
+
+gpu_acceptance_resource_summary() {
+  printf 'jobs:\n'
+  "$KUBECTL_BIN" get jobs | grep -E 'cuda-add|cuda-matmul-tiled' || true
+  printf 'pods:\n'
+  "$KUBECTL_BIN" get pods | grep -E 'job-cuda-add|job-cuda-matmul-tiled' || true
+  printf 'services:\n'
+  "$KUBECTL_BIN" get services | grep -E 'job-cuda-add|job-cuda-matmul-tiled' || true
+}
+
+gpu_acceptance_resources_absent() {
+  ! gpu_acceptance_resource_summary | grep -E 'cuda-add|cuda-matmul-tiled|job-cuda-add|job-cuda-matmul-tiled'
 }
 
 run_cleanup_mode() {
@@ -496,34 +527,58 @@ preflight() {
 section_submit_vector_add() {
   section_begin "GPU.2 submit vector-add Job and inspect submitter Pod/Service"
   delete_job_if_exists "$JOB_ADD"
-  evidence_run "apply cuda-add Job" "$KUBECTL_BIN" apply -f "$ADD_MANIFEST" || true
+  if evidence_run "apply cuda-add Job" "$KUBECTL_BIN" apply -f "$ADD_MANIFEST"; then
+    JOB_ADD_APPLIED=1
+  else
+    section_end "GPU.2 failed before Job object creation"
+    return 1
+  fi
   wait_for_submitter_resources "$JOB_ADD" "$SUBMITTER_ADD" || true
   evidence_run "get jobs after cuda-add apply" "$KUBECTL_BIN" get jobs || true
   evidence_run "describe cuda-add Job" "$KUBECTL_BIN" describe job "$JOB_ADD" || true
   evidence_run "get cuda-add submitter Pod" "$KUBECTL_BIN" get pod "$SUBMITTER_ADD" -o yaml || true
   evidence_run "get cuda-add submitter Service" "$KUBECTL_BIN" get svc "$SUBMITTER_ADD" -o yaml || true
   section_end "GPU.2 submit vector-add complete"
+  [ "$SECTION_STATUS" = "PASS" ]
 }
 
 section_observe_vector_add() {
   section_begin "GPU.3 observe vector-add Slurm status and result"
+  if [ "$JOB_ADD_APPLIED" -ne 1 ]; then
+    section_fail "$JOB_ADD was not applied; skipping vector-add observation"
+    section_end "GPU.3 skipped because cuda-add was not created"
+    return 1
+  fi
   wait_for_terminal_or_slurm_evidence "$JOB_ADD" || true
   evidence_run "describe cuda-add after wait" "$KUBECTL_BIN" describe job "$JOB_ADD" || true
   printf '[OUTPUT]\n'
   job_summary "$JOB_ADD"
-  if [ "$(job_phase "$JOB_ADD" 2>/dev/null || true)" = "Succeeded" ]; then
+  local add_phase add_slurm_id
+  add_phase="$(job_phase "$JOB_ADD" 2>/dev/null || true)"
+  add_slurm_id="$(job_slurm_id "$JOB_ADD" 2>/dev/null || true)"
+  if [ "$add_phase" = "Succeeded" ]; then
     assert_logs_contain "$JOB_ADD" 'N = 1048576|threadsPerBlock = 256|blocksPerGrid = 4096|Result: PASS' "cuda-add logs show vector-add result" || true
     assert_logs_contain "$JOB_ADD" 'Result: PASS' "cuda-add result passed" || true
-  else
+  elif [ "$add_phase" != "Failed" ] && [ -n "$add_slurm_id" ]; then
     pass "$JOB_ADD has Slurm pending/running evidence as substitute for CUDA result"
+  else
+    section_fail "$JOB_ADD has no successful CUDA result or Slurm pending/running evidence"
   fi
   section_end "GPU.3 observe vector-add complete"
 }
 
 section_isolation() {
   section_begin "GPU.4 submit second vector-add Job and check isolation"
+  if [ "$JOB_ADD_APPLIED" -ne 1 ]; then
+    section_fail "$JOB_ADD was not applied; skipping isolation check"
+    section_end "GPU.4 skipped because first Job was not created"
+    return 1
+  fi
   delete_job_if_exists "$JOB_ADD_2"
-  evidence_run "apply cuda-add-2 Job" "$KUBECTL_BIN" apply -f "$ADD_2_MANIFEST" || true
+  if ! evidence_run "apply cuda-add-2 Job" "$KUBECTL_BIN" apply -f "$ADD_2_MANIFEST"; then
+    section_end "GPU.4 failed before second Job object creation"
+    return 1
+  fi
   wait_for_submitter_resources "$JOB_ADD_2" "$SUBMITTER_ADD_2" || true
   wait_for_terminal_or_slurm_evidence "$JOB_ADD_2" || true
   evidence_run "describe cuda-add Job for isolation" "$KUBECTL_BIN" describe job "$JOB_ADD" || true
@@ -556,17 +611,25 @@ section_isolation() {
 section_matmul() {
   section_begin "GPU.5 submit tiled matrix multiplication Job and inspect result"
   delete_job_if_exists "$JOB_MATMUL"
-  evidence_run "apply cuda-matmul Job" "$KUBECTL_BIN" apply -f "$MATMUL_MANIFEST" || true
+  if ! evidence_run "apply cuda-matmul Job" "$KUBECTL_BIN" apply -f "$MATMUL_MANIFEST"; then
+    section_end "GPU.5 failed before tiled matmul Job object creation"
+    return 1
+  fi
   wait_for_submitter_resources "$JOB_MATMUL" "$SUBMITTER_MATMUL" || true
   wait_for_terminal_or_slurm_evidence "$JOB_MATMUL" || true
   evidence_run "describe cuda-matmul-tiled Job" "$KUBECTL_BIN" describe job "$JOB_MATMUL" || true
   printf '[OUTPUT]\n'
   job_summary "$JOB_MATMUL"
-  if [ "$(job_phase "$JOB_MATMUL" 2>/dev/null || true)" = "Succeeded" ]; then
+  local matmul_phase matmul_slurm_id
+  matmul_phase="$(job_phase "$JOB_MATMUL" 2>/dev/null || true)"
+  matmul_slurm_id="$(job_slurm_id "$JOB_MATMUL" 2>/dev/null || true)"
+  if [ "$matmul_phase" = "Succeeded" ]; then
     assert_logs_contain "$JOB_MATMUL" 'Matrix N = 1024|Tile size = 16|Block = 16 x 16|Grid = 64 x 64|Kernel: tiled shared-memory matrix multiplication|Result: PASS' "cuda-matmul logs show tiled GPU result" || true
     assert_logs_contain "$JOB_MATMUL" 'Result: PASS' "cuda-matmul result passed" || true
-  else
+  elif [ "$matmul_phase" != "Failed" ] && [ -n "$matmul_slurm_id" ]; then
     pass "$JOB_MATMUL has Slurm pending/running evidence as substitute for CUDA result"
+  else
+    section_fail "$JOB_MATMUL has no successful CUDA result or Slurm pending/running evidence"
   fi
   section_end "GPU.5 tiled matmul complete"
 }
@@ -590,12 +653,15 @@ if [ "$PREFLIGHT_OK" -ne 1 ]; then
   exit 1
 fi
 
-section_submit_vector_add
-section_observe_vector_add
-section_isolation
-section_matmul
+CLEANUP_ARMED=1
+section_submit_vector_add || true
+section_observe_vector_add || true
+section_isolation || true
+section_matmul || true
 
-cleanup "GPU acceptance leaves completed Job records until explicit cleanup; run scripts/acceptance/20_personal_gpu.sh cleanup to delete them"
+cleanup_jobs
+evidence_run "GPU Job, submitter Pod, and submitter Service resources are cleaned after acceptance" gpu_acceptance_resources_absent || true
+cleanup "GPU acceptance cleaned Job records and submitter resources"
 printf '[END] status=%s/%s accepted limited=%s\n' "$SECTION_ACCEPT_COUNT" "$SECTION_TOTAL" "$SECTION_LIMITED_COUNT"
 if [ "$SECTION_ACCEPT_COUNT" -eq "$SECTION_TOTAL" ]; then
   exit 0

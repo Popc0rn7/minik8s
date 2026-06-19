@@ -4,7 +4,7 @@
 
 ## Target Machines
 
-最终验收按三台 identical Ubuntu 22.04 节点准备，用来模拟三节点 Minik8s 环境。三台机器应使用相同操作系统、内核、CPU 架构、Go 工具链和 Docker 配置，并都把交付产物安装在 `/opt/minik8s`。
+最终验收按三台 identical Ubuntu 22.04 节点准备，用来模拟三节点 Minik8s 环境。三台机器应使用相同操作系统、内核、CPU 架构和 Docker 配置，并都把交付产物安装在 `/opt/minik8s`。Go 1.25.9 仅用于编译/打包交付产物，远程验收机器运行已部署二进制，不要求安装 Go。
 
 固定节点为 node-a、node-b、node-c；node-a 作为 bridge 节点，node-b 和 node-c 作为同配置 worker。验收脚本在目标机器本地运行；先加载标准环境变量，再运行环境检查：
 
@@ -18,8 +18,8 @@ bash scripts/acceptance/00_env_check.sh
 
 - OS：Ubuntu 22.04。
 - Kernel：三台机器内核版本必须一致；Ubuntu 22.04 常见为 `5.15.x` 或同一 HWE 内核线。
-- Go：`go version` 必须匹配 `go.mod`，当前为 `go1.25.9`。
-- 必要命令：`docker`、`go`、`make`、`ip`、`bridge`、`iptables`、`nsenter`、`curl`、`ping`、`ss`。
+- 编译侧 Go：`go version` 必须匹配 `go.mod`，当前为 `go1.25.9`。
+- 远程验收必要命令：`docker`、`make`、`ip`、`bridge`、`iptables`、`nsenter`、`curl`、`ping`、`ss`。
 - 安装目录：`/opt/minik8s/bin/{minik8s,kubectl}`、`/opt/minik8s/scripts/acceptance`、`/opt/minik8s/manifests`、`/opt/minik8s/demo/serverless/harbor-incident-triage`。
 - CNI host path：`/etc/cni/net.d` 和 `/opt/cni/bin`。
 - 网络：三台机器必须能互相 `ping`，并且 node-b/node-c 能访问 node-a 的 Harbor API `TCP 18080`；三台机器之间需要放通 VXLAN `UDP 4789`。
@@ -33,7 +33,7 @@ bash scripts/acceptance/00_env_check.sh
 | 基础必备 | Busybox client / volume / metrics placeholder | `busybox:1.36` | Docker Hub | 所有 busybox 示例统一使用该 tag。 |
 | HPA | CPU 压测 sidecar | `polinux/stress:1.0.4` | Docker Hub | 05 HPA 验收使用真实 `stress` binary 制造 CPU load。 |
 | 基础必备 | 控制面 etcd static dependency | `quay.io/coreos/etcd:v3.5.15` | Quay | `minik8s bridge` 默认 dependency pod 使用。 |
-| CNI 必备 | 自研 Mooring CNI 安装镜像 | `ghcr.io/popc0rn7/mooring-cni:v0.1.0` | GHCR | `manifest/cni/mooring.yaml` 和部署脚本默认使用。 |
+| CNI 必备 | 自研 Mooring CNI 安装镜像 | `ghcr.io/popc0rn7/mooring-cni:v0.1.0` | GHCR | `manifests/cni/mooring.yaml` 和部署脚本默认使用。 |
 | DNS | CoreDNS | `coredns/coredns:1.11.1` | Docker Hub | 启用 `--addons dns` 时使用。 |
 | DNS | DNS gateway nginx | `nginx:1.27-alpine` | Docker Hub | 启用 `--addons dns` 时使用。 |
 | DNS | route-proxy sidecar base | `alpine:3.20` | Docker Hub | 挂载本地 `minik8s` 二进制运行 route-proxy。 |

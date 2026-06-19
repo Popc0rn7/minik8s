@@ -10,7 +10,6 @@ source "$ROOT/scripts/acceptance/lib/common.sh"
 ACCEPTANCE_CLEANUP_ON_FAIL="00_env_check creates no cluster resources and has no environment cleanup to run"
 
 REMOTE_DIR="${MINIK8S_REMOTE_DIR:-/opt/minik8s}"
-REQUIRED_GO_VERSION="${MINIK8S_REQUIRED_GO_VERSION:-1.25.9}"
 REQUIRED_OS_ID="${MINIK8S_REQUIRED_OS_ID:-ubuntu}"
 REQUIRED_OS_VERSION="${MINIK8S_REQUIRED_OS_VERSION:-22.04}"
 REQUIRED_TCP_PORTS="${MINIK8S_REQUIRED_FREE_TCP_PORTS:-$MINIK8S_DNS_PORT 80 2379 2380 4222 8080 8088 18080 30080 30082 30085}"
@@ -44,7 +43,7 @@ port_free_udp() {
 begin "env-check acceptance"
 
 step "local target"
-output "install_root=$REMOTE_DIR node_a=$MINIK8S_NODE_A_IP node_b=$MINIK8S_NODE_B_IP node_c=$MINIK8S_NODE_C_IP dns_port=$MINIK8S_DNS_PORT required_os=$REQUIRED_OS_ID-$REQUIRED_OS_VERSION required_go=$REQUIRED_GO_VERSION"
+output "install_root=$REMOTE_DIR node_a=$MINIK8S_NODE_A_IP node_b=$MINIK8S_NODE_B_IP node_c=$MINIK8S_NODE_C_IP dns_port=$MINIK8S_DNS_PORT required_os=$REQUIRED_OS_ID-$REQUIRED_OS_VERSION go_check=build-host-only"
 
 step "host metadata"
 check_run "kernel and host metadata readable" uname -a
@@ -55,7 +54,6 @@ output "os=$(bash -lc '. /etc/os-release && printf "%s-%s" "$ID" "$VERSION_ID"')
 
 step "required runtime commands"
 need_cmd docker
-need_cmd go
 need_cmd make
 need_cmd ip
 need_cmd bridge
@@ -66,10 +64,6 @@ need_cmd ping
 need_cmd ss
 need_cmd systemctl
 need_cmd journalctl
-
-step "go toolchain"
-check_run "go is installed and runnable" go version
-check_run "target machine uses Go $REQUIRED_GO_VERSION" bash -lc "go version | grep -F 'go$REQUIRED_GO_VERSION '"
 
 step "docker runtime"
 check_run "Docker is usable by root" docker version

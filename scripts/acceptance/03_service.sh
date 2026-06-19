@@ -10,7 +10,7 @@ Usage:
 
 Run on node-a after 01_node_multinode.sh has started bridge, all sailers,
 mooring CNI, and kube-proxy. This script uses fixed manifests under
-manifests/service/ in the deployed tree or manifest/service/ in the source tree.
+manifests/service/ in the deployed tree or manifests/service/ in the source tree.
 
 Sections:
   03.1&2 Service create/delete, info, selector, and endpoints
@@ -64,7 +64,7 @@ manifest_dir() {
     printf '%s\n' "$REMOTE_DIR/manifests/service"
     return 0
   fi
-  printf '%s\n' "$ROOT/manifest/service"
+  printf '%s\n' "$ROOT/manifests/service"
 }
 
 MANIFEST_DIR="$(manifest_dir)"

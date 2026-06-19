@@ -116,8 +116,8 @@ if [ "$sync" -eq 1 ]; then
 		fi
 	done
 
-	if [ ! -d manifest ]; then
-		printf 'missing manifest directory\n' >&2
+	if [ ! -d manifests ]; then
+		printf 'missing manifests directory\n' >&2
 		exit 1
 	fi
 	if [ ! -d scripts/acceptance ]; then
@@ -142,13 +142,18 @@ for node in $DEPLOY_NODES; do
 		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS scripts/acceptance/ "$node:$REMOTE_DIR/scripts/acceptance/"
 
 		printf 'syncing manifests to %s:%s/manifests\n' "$node" "$REMOTE_DIR"
-		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS manifest/ "$node:$REMOTE_DIR/manifests/"
+		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS manifests/ "$node:$REMOTE_DIR/manifests/"
 
 		printf 'syncing triage demo to %s:%s/demo/serverless/harbor-incident-triage\n' "$node" "$REMOTE_DIR"
 		rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS demo/serverless/harbor-incident-triage/ "$node:$REMOTE_DIR/demo/serverless/harbor-incident-triage/"
 
-		printf 'setting executable bits on %s\n' "$node"
-		ssh $SSH_OPTS "$node" "chmod +x '$REMOTE_DIR/bin/minik8s' '$REMOTE_DIR/bin/kubectl' '$REMOTE_DIR/scripts/acceptance/01_pod_network.fish' '$REMOTE_DIR/scripts/acceptance/'*.sh 2>/dev/null || true; chmod 700 '$REMOTE_DIR/secrets/gpu-ssh'"
+		if [ -d secrets ]; then
+			printf 'syncing secrets to %s:%s/secrets\n' "$node" "$REMOTE_DIR"
+			rsync -az --delete -e "$RSYNC_RSH" $RSYNC_OPTS secrets/ "$node:$REMOTE_DIR/secrets/"
+		fi
+
+		printf 'setting executable bits and secret permissions on %s\n' "$node"
+		ssh $SSH_OPTS "$node" "chmod +x '$REMOTE_DIR/bin/minik8s' '$REMOTE_DIR/bin/kubectl' '$REMOTE_DIR/scripts/acceptance/01_pod_network.fish' '$REMOTE_DIR/scripts/acceptance/'*.sh 2>/dev/null || true; chown -R root:root '$REMOTE_DIR/secrets/gpu-ssh' 2>/dev/null || true; chmod 700 '$REMOTE_DIR/secrets/gpu-ssh' 2>/dev/null || true; find '$REMOTE_DIR/secrets/gpu-ssh' -type f -name 'id_*' ! -name '*.pub' -exec chmod 600 {} + 2>/dev/null || true; chmod 600 '$REMOTE_DIR/secrets/gpu-ssh/config' 2>/dev/null || true; chmod 644 '$REMOTE_DIR/secrets/gpu-ssh/'*.pub '$REMOTE_DIR/secrets/gpu-ssh/known_hosts' 2>/dev/null || true"
 	fi
 
 	if [ "$pull_image" -eq 1 ]; then

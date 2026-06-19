@@ -5,9 +5,11 @@
 ## Submission
 
 - Repository: https://github.com/Popc0rn7/minik8s
-- Final tag: v0.1.0
-- Final commit: `ae9d70de0b30ce375ec45f53e2aa6c498db717f2`（提交前以最终 tag 指向的 commit 为准）
+- Final branch: `fix/release`
+- Final tag: `v0.1.0`（最终提交后同步更新 tag）
+- Final commit: 以最终 push 的 `fix/release` HEAD 和 Canvas/GitHub 页面为准
 - Install root on target machines: `/opt/minik8s`。
+- Developer Contribution: 100% by 王启源522021910372
 
 现有交付布局固定为：
 
@@ -60,35 +62,38 @@ Minik8s 是一个教学版 Kubernetes 核心闭环实现，控制面由 `bridge`
 | --- | --- |
 | Go | 主实现语言 |
 | Docker / containerd | 本地容器运行时 |
-| CNI | Pod 网络插件接口，mooring 插件负责创建 Pod 网络 |
 | Linux bridge / VXLAN / route | Pod 同节点和跨节点通信 |
 | iptables | ClusterIP/NodePort Service 转发和负载均衡 |
 | etcd | 设置 `MINIK8S_LOGBOOK_ENDPOINTS` 后作为 Logbook 后端 |
-| metrics-server 接口 | HPA 读取 Pod CPU/Memory metrics |
-| NATS-lite/本地事件总线 | Serverless invoke、event trigger 和 workflow 调用链 |
+| NATS消息队列 | Serverless invoke、event trigger 和 workflow 调用链 |
 | Slurm | GPU Job 远程提交到交我算平台 |
-| wrk | Serverless 并发压测 |
 
-项目分支说明：
+## TA Quick Start
 
-- `main`：主分支，用于稳定代码和最终 tag。
-- `dev`：开发集成分支，CI 对 push 和 PR 执行格式、lint、测试和构建检查。
-- 功能分支：按功能模块开发并通过 PR 合并。
-- `v0.1.0`：最终验收 tag。
+所有脚本默认从 `/opt/minik8s` 运行，并先执行：
 
-组员分工和贡献度需在最终提交前按实际小组成员补齐。当前个人作业验收入口为 GPU Job：`scripts/acceptance/20_personal_gpu.sh`，主要代码路径为 `internal/bridge/captain/job_controller.go`、`internal/job/`、`internal/slurm/`、`manifest/job/`。
+```bash
+source scripts/acceptance/env.sh
+```
 
-已知限制和未完成内容：
-
-- PV/PVC 和 Security Context 尚未实现，本仓库个人作业选择 GPU Job。
-- 自选功能选择 Serverless；MicroService/Service Mesh 未作为最终展示方向。
-- HPA、DNS、GPU Job、Serverless 均为教学版简化实现，依赖指定验收环境和脚本路径展示。
-- CNI、VXLAN、iptables、NodePort 数据面测试需要 Linux 网络工具和 root 权限。
-- 干净模块缓存下，`go test ./...` 可能受 `github.com/docker/docker v27.0.0+incompatible` 依赖解析影响；修复依赖前不声明全量 `go test ./...` 稳定通过。
+| 顺序 | 验收项 | 入口 | 运行机器 | 预计时间 | 主要依赖 | 清理方式 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 00 | 环境检查 | `bash scripts/acceptance/00_env_check.sh` | 三台机器均可，建议先在 node-a | 1-3 分钟 | Linux root、Docker、iptables、CNI 目录、端口和节点连通性 | 无资源创建 |
+| 01 | 三节点部署与 Node 抽象 | `bash scripts/acceptance/01_node_multinode.sh bridge`、`bash scripts/acceptance/01_node_multinode.sh sailer <node>`、`bash scripts/acceptance/01_node_multinode.sh` | node-a 启动 bridge；node-a/node-b/node-c 启动各自 sailer；node-a 验证 | 5-10 分钟 | 三台机器互通、`TCP 18080`、`UDP 4789`、root 网络权限 | `bash scripts/acceptance/00_cleanup.sh` 或停止 minik8s service；CNI 残留用 `bash scripts/acceptance/01_node_multinode.sh cni-clean` |
+| 02 | Pod 生命周期、多容器、调度、volume | `bash scripts/acceptance/02_pod_lifecycle.sh` | node-a | 5-8 分钟 | 01 已完成，多节点 Ready，Docker 镜像已就绪 | `bash scripts/acceptance/02_pod_lifecycle.sh cleanup` |
+| 03 | Service ClusterIP/NodePort/endpoints | `bash scripts/acceptance/03_service.sh` | node-a | 5-8 分钟 | 01 已完成，kube-proxy/iptables 可用，NodePort 端口可访问 | `bash scripts/acceptance/03_service.sh cleanup` |
+| 04 | ReplicaSet、Service 绑定、恢复 | `bash scripts/acceptance/04_replicaset.sh` | node-a | 5-8 分钟 | 01 已完成，Service 数据面可用 | `bash scripts/acceptance/04_replicaset.sh cleanup` |
+| 05 | HPA、metrics、扩缩容 | `bash scripts/acceptance/05_hpa.sh` | node-a | 10-20 分钟 | 01 已完成，metrics addon、`polinux/stress:1.0.4` 镜像 | `bash scripts/acceptance/05_hpa.sh cleanup` |
+| 06 | DNS host/path 转发 | `bash scripts/acceptance/06_dns_forwarding.sh` | node-a | 5-10 分钟 | 01 已完成，DNS addon，占用 host `80` 端口 | `bash scripts/acceptance/06_dns_forwarding.sh cleanup` |
+| 07 | 控制面和 Node 容错 | `bash scripts/acceptance/07_fault_tolerance.sh` | node-a | 10-20 分钟 | 01 已完成，systemd/minik8s service 可被脚本重启 | `bash scripts/acceptance/07_fault_tolerance.sh cleanup` |
+| 20 | 个人作业 GPU Job | `bash scripts/acceptance/20_personal_gpu.sh` | node-a | 10-30 分钟，取决于 Slurm 排队 | 01 已完成，交我算 SSH 凭据、submitter 镜像、Slurm 可访问 | `bash scripts/acceptance/20_personal_gpu.sh cleanup`，已提交 Slurm 任务会 best-effort `scancel` |
+| 自选 | Serverless 日志检查应用 | 按本文 `Serverless - Minik8s 日志检查应用` 小节逐条运行；并发压测用 `wrk -t2 -c20 -d45s ...` | node-a | 20-40 分钟，建议结合录屏展示 | serverless addon、NATS、预构建函数镜像、`wrk` | 删除对应 Function/EventTrigger/Workflow/ReplicaSet，或执行 `bash scripts/acceptance/00_cleanup.sh` |
 
 ## 00 Environment Requirements
 
 ### 提供环境
+
+**强烈建议使用作者提供的 3 台云主机进行测试，避免环境差异带来的问题。**
 
 本项目配置好了三台符合要求的云主机，可以凭借专用ssh key在交大校园网下访问，详情见 `secrets/node-ssh`。
 
@@ -101,15 +106,7 @@ ssh root@10.119.5.94 -i secrets/node-ssh/id_ed25519_minik8s
 ssh root@10.119.6.252 -i secrets/node-ssh/id_ed25519_minik8s
 ```
 
-固定验收内网 IP：
-
-| Node | 内网 IP |
-| --- | --- |
-| node-a | `192.168.1.4` |
-| node-b | `192.168.1.10` |
-| node-c | `192.168.1.15` |
-
-直接检查环境：
+后续验收统一用内网地址访问，可以直接在三台机器上检查环境：
 
 ```bash
 cd /opt/minik8s
@@ -119,7 +116,7 @@ bash scripts/acceptance/00_env_check.sh
 
 ### 个人环境
 
-`scripts/acceptance/00_env_check.sh` 会检查 OS、kernel、Go、Docker、必要命令、目录、端口和基础连通性。以下条件仍需在运行前确认：
+`scripts/acceptance/00_env_check.sh` 会检查 OS、kernel、Docker、必要运行命令、目录、端口和基础连通性。远程验收机器只运行已部署的二进制，不检查 Go；Go 1.25.9 仅是编译/打包侧要求。以下条件仍需在运行前确认：
 
 - 要求至少有三台环境一致的机器来构建多节点环境，而且三台机器通过能够通过内网或其他网络通信。
 - 除了互联之外，也要保证安全组开放端口
@@ -137,8 +134,6 @@ cd /opt/minik8s
 source scripts/acceptance/env.sh
 bash scripts/acceptance/00_env_check.sh
 ```
-
-脚本日志遵循 `docs/FINAL.md` 的验收格式：每条检查输出 `[RUN]`、`[EXIT]`、`[OUTPUT]` 和对应结论 `[PASS]`/`[FAIL]`/`[LIMITED]`，最后输出 `[CLEANUP]` 和 `[END]`。`00_env_check.sh` 只做环境预检，不执行 `minik8s init`、不 `kubectl apply` CNI、不运行 `go test`，也不创建或删除集群资源。
 
 ## 01 Deploy
 
@@ -190,6 +185,8 @@ source scripts/acceptance/env.sh
 bash scripts/acceptance/02_pod_lifecycle.sh
 ```
 
+本次验收参考耗时：约 35s。
+
 该脚本使用 `manifests/pod/`下的四个YAML执行：
 
 **02.1 生命周期、配置参数和容错**
@@ -212,8 +209,7 @@ bash scripts/acceptance/02_pod_lifecycle.sh
 - 复用 02.2 的 Pod，声明 `hostPath` volume，并分别挂载到 web 容器的 `/usr/share/nginx/html/shared` 和 sidecar 容器的 `/shared`。
 - 在 web 容器中写入 `from-web.txt`，再在 sidecar 容器中读取同一文件内容，验证同一 Pod 内多个容器共享 volume。同时进行了双向验证。
 
-单独清理 02 资源可运行：
-
+只有在意外中断下需要手动清理资源：
 ```bash
 source scripts/acceptance/env.sh
 bash scripts/acceptance/02_pod_lifecycle.sh cleanup
@@ -223,11 +219,7 @@ bash scripts/acceptance/02_pod_lifecycle.sh cleanup
 
 `scripts/acceptance/03_service.sh` 是 Service 抽象、endpoint controller 和 kube-proxy 数据面验收脚本。运行前需保证已经执行好 01 的多机部署，脚本只需要在 node-a 上执行
 
-只有在意外中断下需要手动清理资源：
-```bash
-source scripts/acceptance/env.sh
-bash scripts/acceptance/03_service.sh
-```
+本次验收参考耗时：约 60s。
 
 该脚本使用 `manifests/service/`下的五个YAML执行：
 
@@ -268,6 +260,8 @@ source scripts/acceptance/env.sh
 bash scripts/acceptance/04_replicaset.sh
 ```
 
+本次验收参考耗时：约 91s。
+
 该脚本使用 `manifests/replicaset/`下的两个YAML执行：
 
 **04.1 ReplicaSet 创建删除、基本信息和多机调度**
@@ -303,6 +297,8 @@ bash scripts/acceptance/04_replicaset.sh cleanup
 source scripts/acceptance/env.sh
 bash scripts/acceptance/05_hpa.sh
 ```
+
+本次验收参考耗时：约 5 minutes。
 
 该脚本使用 `manifests/hpa/`下的 ReplicaSet、Service 和一个 HPA YAML 执行，脚本小节号对应 `docs/FINAL.md` 的 7.5 小节。
 
@@ -345,6 +341,8 @@ source scripts/acceptance/env.sh
 bash scripts/acceptance/06_dns_forwarding.sh
 ```
 
+本次验收参考耗时：约 60s。
+
 该脚本使用 `manifests/dns/` 下的六个固定 manifest：
 
 **06.1 配置域名和子路径**
@@ -377,6 +375,8 @@ source scripts/acceptance/env.sh
 bash scripts/acceptance/07_fault_tolerance.sh
 ```
 
+本次验收参考耗时：约 4 minutes。
+
 该脚本使用 `manifests/fault/` 下的固定 manifest：
 
 **07.1 Pod 和 Service 容错**
@@ -404,12 +404,12 @@ bash scripts/acceptance/07_fault_tolerance.sh cleanup
 
 `scripts/acceptance/20_personal_gpu.sh` 是个人作业 GPU 验收脚本。运行前需保证 01 多机部署已完成，脚本只需要在 node-a 上执行。
 
-个人作业映射：本仓库当前提供 GPU Job 方向的独立验收脚本，最终提交时应在小组贡献说明中写明负责该方向的同学姓名、学号、主要代码路径和贡献比例。如果课程要求脚本名包含学号，可将该脚本复制或软链接为 `scripts/acceptance/20_personal_<student_id>_gpu.sh`，脚本内容和入口保持一致。
-
 ```bash
 source scripts/acceptance/env.sh
 bash scripts/acceptance/20_personal_gpu.sh
 ```
+
+共三个GPU Job，每个 GPU Job 最多等待约 2 分钟，具体时间依排队/网络问题定。
 
 GPU 验收依赖交我算 SSH 凭据，这里提供我配置好的私钥 `secrets/gpu-ssh`，验收时需保证上传到远程机器的 `/opt/minik8s/secrets/gpu-ssh`，如果需要用自己的私钥可以参考[交我算文档](https://docs.hpc.sjtu.edu.cn/login/sshlogin.html#label-no-password-login)：
 
@@ -421,6 +421,7 @@ GPU 验收依赖交我算 SSH 凭据，这里提供我配置好的私钥 `secret
 └── known_hosts
 ```
 
+本次验收参考耗时：约 72s（本次为外部 DNS 解析失败后退出并完成清理；排队场景单个 GPU Job 默认等待窗口约 2 分钟）。
 该脚本使用 `manifests/job/` 下的三个 YAML 和两个 CUDA 程序执行：
 
 **08.1 CUDA 程序、Job YAML 和 Slurm 凭据**
@@ -432,7 +433,7 @@ GPU 验收依赖交我算 SSH 凭据，这里提供我配置好的私钥 `secret
 - 通过 `kubectl apply` 创建 Job `cuda-add`，通过一维 grid/block 把 N = 1048576 个元素并行分配到 GPU 线程执行。
 - 等待控制面创建独立 submitter Pod/Service：`job-cuda-add-submitter`。
 - 运行 `kubectl get / describe` 等操作，展示 Job 状态、remote host、remote dir、Slurm Job ID、submitter Pod 和 submitter Service。
-- 等待 Job 从 `PodCreating/Preparing/Uploading/Submitted/Running/Collecting` 进入终态。
+- 等待 Job 从 `PodCreating/Preparing/Uploading/Submitted/Running/Collecting` 进入终态，默认等待窗口约 2 分钟。
 - 如果进入 `Succeeded`，运行 `kubectl logs job cuda-add`，得到CUDA程序的期望输出。
 - 如果脚本等待窗口内仍未进入 `Succeeded`，但 Job 已经提交到 Slurm，脚本输出当前 `Phase`、`Message`、`Slurm Job ID`、`Remote Dir`、`StartTime` 和可复制的 `squeue/sacct` 查询命令，作为等待交我算队列/运行中的状态证据并判定本小节通过。若超时且没有 Slurm Job ID，则判定失败。
 
@@ -448,7 +449,7 @@ GPU 验收依赖交我算 SSH 凭据，这里提供我配置好的私钥 `secret
 - 如果进入 `Succeeded`，运行 `kubectl logs job cuda-matmul-tiled`，要求输出包含 `Matrix N = 1024`、`Tile size = 16`、`Block = 16 x 16`、`Grid = 64 x 64`、`Kernel: tiled shared-memory matrix multiplication` 和 `Result: PASS`。
 - 如果脚本等待窗口内仍未进入 `Succeeded`，但 Job 已经提交到 Slurm，脚本同样输出当前阶段、Slurm Job ID、远端目录和 `squeue/sacct` 查询命令，以该 pending/running 状态替代 CUDA 程序 stdout 作为通过证据。若超时且没有 Slurm Job ID，则判定失败。
 
-只有在意外中断下需要手动清理资源：
+脚本默认自动清理资源；需要额外确认或补救时可以手动执行：
 ```bash
 source scripts/acceptance/env.sh
 bash scripts/acceptance/20_personal_gpu.sh cleanup
@@ -458,7 +459,9 @@ bash scripts/acceptance/20_personal_gpu.sh cleanup
 
 ## Serverless - Minik8s 日志检查应用
 
-本段介绍展示 `harbor-incident-triage` demo，覆盖 Final 中 Serverless 的 Function、Workflow、EventTrigger、按需启动、并发伸缩和 scale-to-zero 要求。以下流程耗时较长，请参考加速过的演示录屏：[录屏](https://pan.sjtu.edu.cn/web/share/b6ee991d6d7fa93a2739b677c99fa93b)
+本段介绍展示 `harbor-incident-triage` demo，覆盖 Final 中 Serverless 的 Function、Workflow、EventTrigger、按需启动、并发伸缩和 scale-to-zero 要求。
+
+**!!!重要!!!** 以下流程耗时较长，所以文档仅作为说明，具体演示请参考加速过的演示录屏：[录屏](https://pan.sjtu.edu.cn/web/share/b6ee991d6d7fa93a2739b677c99fa93b)
 
 **前置设置**
 ```bash

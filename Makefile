@@ -18,7 +18,7 @@ PLATFORM ?= linux/amd64
 DEPLOY_ARGS ?=
 DEMO_DIR ?= demo/serverless/harbor-incident-triage
 
-.PHONY: build prod prod-build prod-push prod-cni prod-demo prod-verify mooring-cni-image push-mooring-cni-image gpu-submitter-image push-gpu-submitter-image deploy-prod prod-deploy test bridge sailer-once sailer cni-init doctor-network apply-nginx apply-client apply-volume get-pods get-demo-pods clean-nginx clean-client clean-volume clean-cases
+.PHONY: build prod prod-build prod-push prod-cni prod-demo prod-verify mooring-cni-image push-mooring-cni-image gpu-submitter-image push-gpu-submitter-image deploy-prod prod-deploy test bridge sailer-join sailer cni-init doctor-network apply-pod-acceptance apply-service-acceptance apply-rs-acceptance get-pods clean-pod-acceptance clean-service-acceptance clean-rs-acceptance clean-cases
 
 build:
 	$(GO_BUILD) -o $(MINIK8S) ./cmd/minik8s
@@ -64,11 +64,14 @@ test:
 bridge: build
 	$(MINIK8S) bridge --listen :18080
 
-sailer-once: build
-	$(RUN) sailer $(or $(NODE_FILE),manifest/node/node_a.yaml) --harbor $(HARBOR) --once
+NODE_NAME ?= node-a
+MINIK8S_TOKEN ?= minik8s
+
+sailer-join: build
+	$(RUN) sailer join --apiserver $(HARBOR) --token $(MINIK8S_TOKEN) --node-name $(NODE_NAME)
 
 sailer: build
-	$(RUN) sailer $(or $(NODE_FILE),manifest/node/node_a.yaml) --harbor $(HARBOR)
+	$(RUN) sailer run
 
 cni-init: build
 	$(RUN) cni init
@@ -76,26 +79,30 @@ cni-init: build
 doctor:
 	$(RUN) doctor network
 
-apply-nginx:
-	$(CTL) apply -f manifest/pod/pod_nginx.yaml
+apply-pod-acceptance:
+	$(CTL) apply -f manifests/pod/pod_02_acceptance_main.yaml
 
-apply-client:
-	$(CTL) apply -f manifest/pod/pod_busybox_client.yaml
+apply-service-acceptance:
+	$(CTL) apply -f manifests/service/pod_03_nginx_node_a.yaml
+	$(CTL) apply -f manifests/service/pod_03_nginx_node_b.yaml
+	$(CTL) apply -f manifests/service/service_03_clusterip.yaml
 
-apply-volume:
-	mkdir -p /tmp/minik8s-case-data
-	$(CTL) apply -f manifest/pod/pod_volume_resource.yaml
+apply-rs-acceptance:
+	$(CTL) apply -f manifests/replicaset/replicaset_04_acceptance.yaml
 
 ps:
 	$(CTL) get pods
 
-clean-nginx:
-	-$(CTL) delete pod nginx-pod
+clean-pod-acceptance:
+	-$(CTL) delete pod pod-02-main
 
-clean-client:
-	-$(CTL) delete pod busybox-client
+clean-service-acceptance:
+	-$(CTL) delete service svc-03-clusterip
+	-$(CTL) delete pod svc-03-nginx-a
+	-$(CTL) delete pod svc-03-nginx-b
 
-clean-volume:
-	-$(CTL) delete pod volume-resource-pod -n demo
+clean-rs-acceptance:
+	-$(CTL) delete service rs-04-web
+	-$(CTL) delete rs rs-04-web
 
-clean: clean-client clean-nginx clean-volume
+clean: clean-pod-acceptance clean-service-acceptance clean-rs-acceptance
