@@ -16,7 +16,7 @@ func TestHarborIncidentTriageFinalManifests(t *testing.T) {
 	functionDir := filepath.Join(root, "functions")
 	functionFiles, err := filepath.Glob(filepath.Join(functionDir, "*.yaml"))
 	require.NoError(t, err)
-	require.Len(t, functionFiles, 9)
+	require.Len(t, functionFiles, 11)
 
 	expectedFunctions := map[string]bool{
 		"normalize-input":     false,
@@ -28,6 +28,7 @@ func TestHarborIncidentTriageFinalManifests(t *testing.T) {
 		"quick-reply":         false,
 		"notify-captain":      false,
 		"compose-report":      false,
+		"revision-probe":      false,
 	}
 	for _, path := range functionFiles {
 		fn, err := LoadFunctionFromFile(path)
@@ -35,7 +36,11 @@ func TestHarborIncidentTriageFinalManifests(t *testing.T) {
 		expectedFunctions[fn.Name] = true
 		assert.Equal(t, "python", fn.Spec.Runtime, fn.Name)
 		assert.Equal(t, int32(0), fn.Spec.MinReplicas, fn.Name)
-		assert.Equal(t, int32(5), fn.Spec.MaxReplicas, fn.Name)
+		if fn.Name == "revision-probe" {
+			assert.Equal(t, int32(1), fn.Spec.MaxReplicas, fn.Name)
+		} else {
+			assert.Equal(t, int32(5), fn.Spec.MaxReplicas, fn.Name)
+		}
 		assert.Equal(t, int32(1), fn.Spec.TargetConcurrency, fn.Name)
 		assert.Equal(t, int32(30), fn.Spec.IdleTimeoutSeconds, fn.Name)
 	}
@@ -49,6 +54,15 @@ func TestHarborIncidentTriageFinalManifests(t *testing.T) {
 	assert.Contains(t, classifier.Spec.Code, "modelVersion")
 	assert.Contains(t, classifier.Spec.Code, "demoSleepMs")
 	assert.Contains(t, classifier.Spec.Code, "scores")
+
+	revisionV1, err := LoadFunctionFromFile(filepath.Join(functionDir, "revision-probe-v1.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, "revision-probe", revisionV1.Name)
+	assert.Contains(t, revisionV1.Spec.Code, `"revision": "v1"`)
+	revisionV2, err := LoadFunctionFromFile(filepath.Join(functionDir, "revision-probe-v2.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, "revision-probe", revisionV2.Name)
+	assert.Contains(t, revisionV2.Spec.Code, `"revision": "v2"`)
 
 	workflow, err := LoadWorkflowFromFile(filepath.Join(root, "workflow.yaml"))
 	require.NoError(t, err)
@@ -70,7 +84,7 @@ func TestHarborIncidentTriageFinalInputs(t *testing.T) {
 	inputDir := filepath.Join("..", "..", "manifest", "serverless", "harbor-incident-triage", "inputs")
 	inputFiles, err := filepath.Glob(filepath.Join(inputDir, "*.json"))
 	require.NoError(t, err)
-	require.Len(t, inputFiles, 7)
+	require.Len(t, inputFiles, 8)
 
 	for _, path := range inputFiles {
 		data, err := os.ReadFile(path)

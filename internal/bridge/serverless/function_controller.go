@@ -66,10 +66,13 @@ func (c *FunctionController) upsertReplicaSet(fn *function.Function) error {
 	existing, err := c.replicaSets.Get(desired.Name, desired.Namespace)
 	if err == nil {
 		desired.Spec.Replicas = existing.Spec.Replicas
+		fn.Status.Replicas = existing.Spec.Replicas
+		fn.Status.ReadyReplicas = existing.Status.Replicas
 		if shouldScaleFunctionToZero(fn, existing.Spec.Replicas) {
 			desired.Spec.Replicas = 0
 			fn.Status.LastScaleTime = time.Now().UTC()
 			fn.Status.Replicas = 0
+			fn.Status.ReadyReplicas = 0
 			_ = c.functions.Update(fn)
 		}
 		desired.Status = existing.Status

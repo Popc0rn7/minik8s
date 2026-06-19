@@ -1,0 +1,5 @@
+{
+  "source": "acceptance",
+  "title": "revision lifecycle acceptance probe",
+  "log": "probe function update and delete lifecycle behavior"
+}

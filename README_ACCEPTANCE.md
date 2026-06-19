@@ -458,17 +458,29 @@ bash scripts/acceptance/20_personal_gpu.sh cleanup
 
 ## Serverless - Minik8s 日志检查应用
 
-本段介绍展示 `harbor-incident-triage` demo，覆盖 Final 中 Serverless 的 Function、Workflow、EventTrigger、按需启动、并发伸缩和 scale-to-zero 要求。
+本段介绍展示 `harbor-incident-triage` demo，覆盖 Final 中 Serverless 的 Function、Workflow、EventTrigger、按需启动、并发伸缩和 scale-to-zero 要求。以下流程耗时较长，请参考加速过的演示录屏：[录屏](https://pan.sjtu.edu.cn/web/share/b6ee991d6d7fa93a2739b677c99fa93b)
 
 **前置设置**
 ```bash
 cd /opt/minik8s
 source scripts/acceptance/env.sh
 
-kubectl apply -f manifests/serverless/harbor-incident-triage/functions/*.yaml
+kubectl apply -f manifests/serverless/harbor-incident-triage/functions/normalize-input.yaml
+kubectl apply -f manifests/serverless/harbor-incident-triage/functions/tiny-log-classifier.yaml
+kubectl apply -f manifests/serverless/harbor-incident-triage/functions/network-diagnose.yaml
+kubectl apply -f manifests/serverless/harbor-incident-triage/functions/runtime-diagnose.yaml
+kubectl apply -f manifests/serverless/harbor-incident-triage/functions/build-diagnose.yaml
+kubectl apply -f manifests/serverless/harbor-incident-triage/functions/app-diagnose.yaml
+kubectl apply -f manifests/serverless/harbor-incident-triage/functions/quick-reply.yaml
+kubectl apply -f manifests/serverless/harbor-incident-triage/functions/notify-captain.yaml
+kubectl apply -f manifests/serverless/harbor-incident-triage/functions/compose-report.yaml
 kubectl apply -f manifests/serverless/harbor-incident-triage/workflow.yaml
 kubectl apply -f manifests/serverless/harbor-incident-triage/eventtrigger.yaml
 ```
+
+这里不要使用 `functions/*.yaml`，因为 `revision-probe-v1.yaml` 和
+`revision-probe-v2.yaml` 是同名函数的更新演示材料。如果通配符一次性 apply，
+会提前覆盖版本，导致后面的更新前后对比不清楚。
 
 **01. 查看声明式配置**
 ```bash
@@ -483,7 +495,49 @@ cd /opt/minik8s/demo/serverless/harbor-incident-triage
 ./scripts/watch-scale.sh tiny-log-classifier
 ```
 
-**02. Workflow 普通分支**
+**02. Function 更新与删除**
+
+本节单独覆盖 Final Serverless 第 21、22 点，使用不参与主 Workflow 的
+`revision-probe`，避免影响后续 `harbor-incident-triage` 展示。
+
+上传 v1 并调用：
+```bash
+cd /opt/minik8s
+kubectl apply -f manifests/serverless/harbor-incident-triage/functions/revision-probe-v1.yaml
+kubectl get functions
+kubectl describe function revision-probe
+
+minik8s invoke function revision-probe \
+  --data "$(cat manifests/serverless/harbor-incident-triage/inputs/revision-probe.json)"
+```
+
+展示点：输出中应包含 `revision":"v1"` 和 `message":"first uploaded version"`。
+
+更新为 v2 并再次调用：
+```bash
+kubectl apply -f manifests/serverless/harbor-incident-triage/functions/revision-probe-v2.yaml
+kubectl describe function revision-probe
+
+minik8s invoke function revision-probe \
+  --data "$(cat manifests/serverless/harbor-incident-triage/inputs/revision-probe.json)"
+```
+
+展示点：同一个 Function 名称 `revision-probe`，再次调用返回
+`revision":"v2"` 和 `message":"updated function version"`，证明函数更新前后结果可区分。
+
+删除函数并展示删除后调用结果：
+```bash
+kubectl delete function revision-probe
+kubectl get functions
+
+minik8s invoke function revision-probe \
+  --data "$(cat manifests/serverless/harbor-incident-triage/inputs/revision-probe.json)"
+```
+
+展示点：删除后 `kubectl get functions` 不再包含 `revision-probe`，再次 invoke 应返回
+not found 或调用失败结果，证明删除生效。
+
+**03. Workflow 普通分支**
 手动 Invoke 简单的 Workflow 对象，输入日志 json 处理
 ```bash
 minik8s invoke workflow harbor-incident-triage \
@@ -492,7 +546,7 @@ minik8s invoke workflow harbor-incident-triage \
 
 系统按需创建函数 Pod，并返回分类、风险增强和报告生成结果。展示时检查输出中的分类结果、诊断分支、风险字段和最终报告文本，证明函数输出随输入日志变化，并且上游函数结果会传递给下游函数。
 
-**03. Workflow critical 分支**
+**04. Workflow critical 分支**
 手动 Invoke critical 条件分支的 Workflow 对象，输入日志 json 处理
 ```bash
 minik8s invoke workflow harbor-incident-triage \
@@ -502,7 +556,7 @@ minik8s invoke workflow harbor-incident-triage \
 critical 输入会经过 `captain-notifier` 分支，输出中应能看到
 `severity=critical`、`notified=true` 或等价字段，说明 Workflow 支持条件分支。
 
-**04. EventTrigger 主动事件触发**
+**05. EventTrigger 主动事件触发**
 通过触发 EventTrigger 的 subject 发送事件，触发 Workflow 执行，注意当前实践没有设计 audit 来绑定 EventTrigger，request是实验的一个模拟接口，模拟 audit 发现事件后激活消息队列对应事件：
 ```bash
 minik8s request minik8s.incident.created \
@@ -512,7 +566,7 @@ minik8s request minik8s.incident.created \
 
 用户向 EventTrigger 绑定的 subject 发送事件。
 
-**05. 并发压测和自动扩缩容**
+**06. 并发压测和自动扩缩容**
 
 发起 wrk 压测：
 ```bash
@@ -522,21 +576,9 @@ wrk -t2 -c20 -d45s --timeout 120s \
   http://127.0.0.1:18080/
 ```
 
-展示点：
 - wrk 使用 manifest 中的 Lua 请求体反复调用 `tiny-log-classifier`。
-- 监控窗口中 `fn-tiny-log-classifier` ReplicaSet/Pod 数量会从 0 或 1 增长到多个副本。
-- `kubectl get functions` 的 ready 计数是简化教学实现的聚合状态，录屏时以
-  ReplicaSet 和 Pod 副本变化作为伸缩证据。
-
-**06. scale-to-zero**
-```bash
-sleep 40
-kubectl get functions | grep tiny-log-classifier
-kubectl get replicasets | grep fn-tiny-log-classifier || true
-kubectl get pods | grep fn-tiny-log-classifier || true
-```
-
-展示点：压测停止并超过 idle timeout 后，函数副本会自动收缩，Pod 最终消失或回到 0
+- 监控窗口中 `fn-tiny-log-classifier` ReplicaSet/Pod 数量会从 0 或 1 增长到5个副本。
+- 压测停止并超过 idle timeout 后，函数副本会自动收缩，Pod 最终消失或回到 0
 副本，体现 Serverless scale-to-zero。
 
 ## CICD
@@ -552,21 +594,23 @@ GitHub Actions 配置位于 `.github/workflows/`：
 
 测试分为三类：
 
-- 单元测试：常用命令为 `go test ./pkg/yaml ./internal/bridge/logbook ./internal/bridge/captain ./internal/bridge/harbor ./internal/sailer ./internal/kubeproxy ./test/integration -count=1`。
+- 单元测试：每个GO源文件都会配备一个对应单元测试，常用命令为 `go test ./pkg/yaml ./internal/bridge/logbook ./internal/bridge/captain ./internal/bridge/harbor ./internal/sailer ./internal/kubeproxy ./test/integration -count=1`。
 - 构建验证：运行 `make build` 或 CI 中的 `go build ./...`、`go build -o dist/minik8s ./cmd/minik8s`、`go build -o dist/kubectl ./cmd/kubectl`。
-- 端到端/人工验收：以 `scripts/acceptance/00_env_check.sh` 到 `scripts/acceptance/07_fault_tolerance.sh` 覆盖基础功能，以 `scripts/acceptance/20_personal_gpu.sh` 覆盖 GPU 个人作业，以 Serverless demo 命令覆盖自选功能展示。
-
-全量 `go test ./...` 当前不作为最终通过声明依据，原因见上文“已知限制和未完成内容”。
+- 端到端/真机验收：主要依赖人工/AI登陆到远程机器集群，以 `scripts/acceptance/00_env_check.sh` 到 `scripts/acceptance/07_fault_tolerance.sh` 覆盖基础功能，以 `scripts/acceptance/20_personal_gpu.sh` 覆盖 GPU 个人作业，以 Serverless demo 命令覆盖自选功能展示。
 
 ## AI Usage
 
-项目开发和文档整理过程中使用过 AI 工具辅助生成草稿、分析日志、总结变更和提供测试思路，包括 GitHub Actions 中的 `ai-summary.yml` 变更摘要流程，以及本地/在线 AI 助手。AI 输出不直接作为最终结论提交，所有代码、脚本和验收说明均由小组成员人工审阅，并通过本 README 中列出的构建、测试和验收脚本进行验证。最终代码和解释责任归小组成员。
+该项目共计约6万行代码和文档，90%的代码由AI落实，交叉使用Claude Code和Codex，具体合作方法如下：
+- 确定参考 Handout.md 和 Acceptance.md，以及Kubernetes原生实现，对代码规则和项目风格在AGENTS.md中进行明确说明。
+- 实际开发并行，用git worktree来一起开发不同模块，保持代码风格和设计一致。
+- 分支推到Github上后由AI Summary和AI Review协助验收，然后合并进dev分支。
+- 具体开发借助设计testcase文档作为实现目标来引导AI开发，开发过程中遵循，先明确语义，设计计划再开发，测试，真机验证的流程，保持和设计文档的对齐。
 
 ## Develop Process
 
 开发流程按开源协作方式组织：
 
-1. 从 `dev` 或 `main` 拉出功能分支，按 Pod、Service、ReplicaSet、HPA、DNS、Serverless、GPU Job 等模块独立开发。
-2. 功能完成后本地运行相关单元测试、构建命令和对应验收脚本。
+1. 从 `dev` 拉出功能分支，只有可用版本更新才合并 `main`，功能分支按 Pod、Service、ReplicaSet、HPA、DNS、Serverless、GPU Job 等模块独立开发。
+2. 功能完成后本地运行相关单元测试、format/lint检查后push。
 3. 通过 PR 合并到集成分支，CI 检查格式、lint、vet、测试和构建。
-4. 验收前将稳定版本合入 `main`，打 `v0.1.0` tag，并在 Canvas 中提交仓库地址、最终 tag、最终 commit hash 和特殊环境说明。
+4. 验收前将稳定版本合入 `main`，把所用镜像上传GHCR，打 `v0.1.0` tag。

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 PATTERN="${1:-tiny-log-classifier}"
 INTERVAL="${INTERVAL:-2}"
 VERBOSE="${VERBOSE:-0}"
+KUBECTL_TIMEOUT="${KUBECTL_TIMEOUT:-5s}"
 
 manifest_file() {
   local candidate
@@ -36,8 +37,7 @@ yaml_value() {
 
 matching_lines() {
   local text="$1"
-  local header="$2"
-  local pattern="$3"
+  local pattern="$2"
   {
     printf '%s\n' "$text" | head -n 1
     printf '%s\n' "$text" | grep -E "$pattern" || true
@@ -80,6 +80,14 @@ pod_names() {
   printf '%s\n' "$text" | grep -E "$pattern" | grep -oE "$pattern[^[:space:]]*" | sort -u || true
 }
 
+run_cli() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$KUBECTL_TIMEOUT" "$CLI" "$@" 2>&1 || true
+    return 0
+  fi
+  "$CLI" "$@" 2>&1 || true
+}
+
 describe_pod_brief() {
   local pod_name="$1"
   local status="-"
@@ -93,7 +101,7 @@ describe_pod_brief() {
       IP:*) ip="${line#IP: }" ;;
       Node:*) node="${line#Node: }" ;;
     esac
-  done < <("$CLI" describe pod "$pod_name" 2>/dev/null || true)
+  done < <(run_cli describe pod "$pod_name")
 
   printf '%-42s %-14s %-15s %s\n' "$pod_name" "$status" "$ip" "$node"
 }
@@ -132,9 +140,9 @@ PREV_RS_REPLICAS=""
 PREV_POD_COUNT=""
 
 while true; do
-  functions="$("$CLI" get functions 2>&1 || true)"
-  replicasets="$("$CLI" get replicasets 2>&1 || true)"
-  pods="$("$CLI" get pods 2>&1 || true)"
+  functions="$(run_cli get functions)"
+  replicasets="$(run_cli get replicasets)"
+  pods="$(run_cli get pods)"
 
   function_replicas="$(first_replica_pair "$functions" "$PATTERN")"
   function_replicas="${function_replicas:-0/0}"
@@ -160,13 +168,13 @@ while true; do
   printf '%-18s %s/%s\n' 'pods running' "$running_count" "$pod_count"
 
   divider "FUNCTION"
-  matching_lines "$functions" FUNCTION "$PATTERN"
+  matching_lines "$functions" "$PATTERN"
 
   divider "REPLICASET"
-  matching_lines "$replicasets" REPLICASET "fn-$PATTERN"
+  matching_lines "$replicasets" "fn-$PATTERN"
 
   divider "PODS"
-  matching_lines "$pods" POD "fn-$PATTERN"
+  matching_lines "$pods" "fn-$PATTERN"
 
   divider "POD PLACEMENT"
   printf '%-42s %-14s %-15s %s\n' POD STATUS IP NODE
@@ -177,7 +185,7 @@ while true; do
 
   if [[ "$VERBOSE" == "1" ]]; then
     divider "RAW FUNCTION DESCRIBE"
-    "$CLI" describe function "$PATTERN" 2>/dev/null || true
+    run_cli describe function "$PATTERN"
   fi
 
   PREV_FUNCTION_REPLICAS="$function_replicas"
