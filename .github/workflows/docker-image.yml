@@ -39,7 +39,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
@@ -49,7 +49,7 @@ jobs:
 
       - name: Extract Mooring CNI Docker metadata
         id: mooring-cni-meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.MOORING_CNI_IMAGE_NAME }}
           tags: |
@@ -59,7 +59,7 @@ jobs:
 
       - name: Extract GPU submitter Docker metadata
         id: gpu-submitter-meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.GPU_SUBMITTER_IMAGE_NAME }}
           tags: |
