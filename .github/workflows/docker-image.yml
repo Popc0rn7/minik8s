@@ -68,7 +68,7 @@ jobs:
             type=sha,prefix=sha-,format=short
 
       - name: Build and push image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -79,7 +79,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build and push mooring CNI image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.mooring-cni
@@ -91,7 +91,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build and push GPU submitter image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.gpu-submitter
